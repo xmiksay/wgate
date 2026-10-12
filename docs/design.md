@@ -113,8 +113,8 @@ table inet wgate {
   set allow_icmp{ type ipv4_addr . ipv4_addr; flags interval; }   # saddr . daddr
 
   chain tenant {
-    ct state related meta l4proto icmp accept               # ICMP errors (PMTU, unreachable)
     ip daddr 10.50.0.0/16 counter drop                      # never another tenant, whatever the rules
+    ct state related meta l4proto icmp accept               # ICMP errors (PMTU, unreachable)
     ip saddr . ip daddr . meta l4proto . th dport @allow accept
     meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
     counter drop
@@ -132,7 +132,7 @@ table inet wgate {
   chain forward { type filter hook forward priority filter - 5;
     iifname "wg-*" oifname "wg0" ct direction reply ct state established accept  # replies to the admin
     iifname "wg-*" jump tenant
-    oifname "wg-*" iifname "wg0" accept                     # admin sees the tenants
+    oifname "wg-*" iifname "wg0" ct direction original accept  # admin opens to tenants
     oifname "wg-*" ct direction reply ct state established,related jump tenant_reply
     oifname "wg-*" drop                                     # nobody else, not even across tenants
   }

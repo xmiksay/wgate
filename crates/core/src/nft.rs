@@ -67,93 +67,93 @@ pub fn render_nft(state: &NftState) -> NftRender {
         }
     }
 
-    let mut out = String::from("table inet wgate {}\ndelete table inet wgate\n\n");
-    out.push_str("table inet wgate {\n");
-    set(
-        &mut out,
+    let snat = if node_cidrs.is_empty() {
+        String::new()
+    } else {
+        let nodes: Vec<String> = node_cidrs.iter().map(Ipv4Net::to_string).collect();
+        format!(
+            "\t\tip saddr {TENANT_CIDR} ip daddr {{ {} }} snat ip to {}\n",
+            nodes.join(", "),
+            state.snat_source
+        )
+    };
+    let allow = set(
         "allow",
         "ipv4_addr . ipv4_addr . inet_proto . inet_service",
         &allow,
     );
-    set(&mut out, "allow_icmp", "ipv4_addr . ipv4_addr", &allow_icmp);
-    // Tenant space is dropped before @allow: a broad rule (e.g. 0.0.0.0/0) must not
-    // reach other companies or the hub's tenant addresses, and the accept below
-    // would otherwise end the forward chain before its cross-tenant drop.
+    let allow_icmp = set("allow_icmp", "ipv4_addr . ipv4_addr", &allow_icmp);
+
+    // Tenant space is dropped first: a broad rule (e.g. 0.0.0.0/0) must not reach
+    // other companies or the hub's tenant addresses, and an accept would otherwise
+    // end the forward chain before its cross-tenant drop.
     //
     // Revocation must not depend on conntrack, so @allow is checked on every packet
     // in both directions: `tenant` for what a tenant sends, `tenant_reply` (tuple
-    // swapped) for replies coming back to it. Conntrack only decides *which* check
-    // applies. Replies a tenant sends to connections the hub or the admin (wg0)
-    // opened skip the check; a tenant cannot open those itself. ICMP errors related
-    // to a tracked flow pass both ways: they carry no data and PMTU discovery and
-    // port-unreachable depend on them.
-    let _ = write!(
-        out,
-        "\tchain tenant {{
-\t\tct state related meta l4proto icmp accept
+    // swapped) for replies coming back to it, whichever interface they come from.
+    // Conntrack only decides *which* check applies. Replies a tenant sends to
+    // connections the hub or the admin (wg0) opened skip the check; a tenant cannot
+    // open those itself. ICMP errors related to a tracked flow pass: they carry no
+    // data, and PMTU discovery and port-unreachable depend on them.
+    let script = format!(
+        "table inet wgate {{}}
+delete table inet wgate
+
+table inet wgate {{
+{allow}{allow_icmp}\tchain tenant {{
 \t\tip daddr {TENANT_CIDR} counter drop
-\t\tip saddr . ip daddr . meta l4proto . th dport @allow accept"
-    );
-    out.push_str(
-        "
+\t\tct state related meta l4proto icmp accept
+\t\tip saddr . ip daddr . meta l4proto . th dport @allow accept
 \t\tmeta l4proto icmp ip saddr . ip daddr @allow_icmp accept
 \t\tcounter drop
-\t}
+\t}}
 
-\tchain tenant_reply {
+\tchain tenant_reply {{
 \t\tip daddr . ip saddr . meta l4proto . th sport @allow accept
 \t\tmeta l4proto icmp ip daddr . ip saddr @allow_icmp accept
 \t\tct state related meta l4proto icmp accept
 \t\tcounter drop
-\t}
+\t}}
 
-\tchain input {
+\tchain input {{
 \t\ttype filter hook input priority filter - 5; policy accept;
 \t\tiifname \"wg-*\" ct direction reply ct state established accept
 \t\tiifname \"wg-*\" jump tenant
-\t}
+\t}}
 
-\tchain forward {
+\tchain forward {{
 \t\ttype filter hook forward priority filter - 5; policy accept;
 \t\tiifname \"wg-*\" oifname \"wg0\" ct direction reply ct state established accept
 \t\tiifname \"wg-*\" jump tenant
-\t\toifname \"wg-*\" iifname \"wg0\" accept
+\t\toifname \"wg-*\" iifname \"wg0\" ct direction original accept
 \t\toifname \"wg-*\" ct direction reply ct state established,related jump tenant_reply
 \t\toifname \"wg-*\" drop
-\t}
+\t}}
 
-\tchain postrouting {
+\tchain postrouting {{
 \t\ttype nat hook postrouting priority srcnat; policy accept;
-",
+{snat}\t}}
+}}
+"
     );
-    if !node_cidrs.is_empty() {
-        let nodes: Vec<String> = node_cidrs.iter().map(Ipv4Net::to_string).collect();
-        let _ = writeln!(
-            out,
-            "\t\tip saddr {TENANT_CIDR} ip daddr {{ {} }} snat ip to {}",
-            nodes.join(", "),
-            state.snat_source
-        );
-    }
-    out.push_str("\t}\n}\n");
     NftRender {
-        script: out,
+        script,
         duplicate_ips,
     }
 }
 
-fn set(out: &mut String, name: &str, ty: &str, elements: &[String]) {
-    let _ = write!(out, "\tset {name} {{\n\t\ttype {ty}\n\t\tflags interval\n");
+fn set(name: &str, ty: &str, elements: &[String]) -> String {
+    let mut out = format!("\tset {name} {{\n\t\ttype {ty}\n\t\tflags interval\n");
     // nft rejects an empty `elements = { }`.
     if !elements.is_empty() {
-        out.push_str("\t\telements = {\n");
-        for (i, e) in elements.iter().enumerate() {
-            let sep = if i + 1 < elements.len() { "," } else { "" };
-            let _ = writeln!(out, "\t\t\t{e}{sep}");
-        }
-        out.push_str("\t\t}\n");
+        let _ = write!(
+            out,
+            "\t\telements = {{\n\t\t\t{}\n\t\t}}\n",
+            elements.join(",\n\t\t\t")
+        );
     }
     out.push_str("\t}\n\n");
+    out
 }
 
 #[cfg(test)]
