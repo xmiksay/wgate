@@ -1,9 +1,10 @@
 # wgate
 
-Multi-tenant WireGuard gateway: one `wg-<slug>` interface per company, tiered rights
-(company ⊇ group ⊇ user) enforced per packet in `table inet wgate`, and a portal where
-users log in through their company's OIDC and add their own devices. Clients are
-plain WireGuard.
+Multi-tenant WireGuard gateway. Addresses come from one global pool; the admin gives
+tenants blocks of it, tenants run networks (one `wg-<slug>` interface each) and put
+devices into them. Access is default-deny, granted by rules between networks, tenant
+ceilings for external destinations and admin federations between tenants, and enforced
+per packet in `table inet wgate`. Clients are plain WireGuard.
 
 - Design: [docs/design.md](docs/design.md)
 - Implementation plan: [docs/plan.md](docs/plan.md)

@@ -1,6 +1,6 @@
 # wgate
 
-Multi-tenant WireGuard gateway. Read [design](../docs/design.md) for architecture and
+Multi-tenant WireGuard gateway (pool → tenants → networks → peers). Read [design](../docs/design.md) for architecture and
 decisions, [plan](../docs/plan.md) for the step you are on.
 
 ## Commands
@@ -39,9 +39,14 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   directions (replies with the tuple swapped) — no `ct state established` and no
   related-ICMP shortcut; revocation must not depend on conntrack. Conntrack only picks
   the chain via `ct direction`. Only hub-generated ICMP errors pass unchecked.
-- Nothing reaches a device without an inbound grant; no implicit trust for wg0 or the
-  master. Device → device across companies needs the opener's outbound right and the
-  target's inbound grant.
+- Model: global pool → tenant blocks → networks (`wg-<slug>`, own port) → peers (a
+  device's membership, own key + IP; may carry routed subnets). Default deny, even
+  inside a network (`mesh` flag). Cross-tenant only via global-admin federation;
+  sources outside the pool only via global-admin inbound grants. No implicit trust
+  for wg0 or the master.
+- All addresses (pool + routed subnets) are globally unique — the hub has one routing
+  table and nft keys sets by source address. Reject overlaps; never NAT around them
+  (NETMAP is a later phase).
 - Hub private keys never leave `/var/lib/wgate/keys`; device private keys are never
   stored or logged.
 - No raw DB errors to API clients; typed `ApiError`.
