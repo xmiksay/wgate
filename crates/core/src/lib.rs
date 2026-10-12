@@ -13,7 +13,7 @@ pub use net::{
 };
 pub use nft::{NftDevice, NftRender, NftState, render_nft};
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, effective};
-pub use rule::{PortRange, Proto, Rule, RuleError};
+pub use rule::{PortRange, Proto, Rule, RuleError, Service};
 
 #[cfg(test)]
 mod testing {

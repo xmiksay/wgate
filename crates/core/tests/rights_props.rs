@@ -98,9 +98,9 @@ proptest! {
             let hits = elements
                 .iter()
                 .filter(|e| {
-                    e.proto == p
+                    e.service.proto() == p
                         && e.dst.contains(addr)
-                        && e.ports.is_none_or(|r| (r.from()..=r.to()).contains(&port))
+                        && e.service.ports().is_none_or(|r| (r.from()..=r.to()).contains(&port))
                 })
                 .count();
             prop_assert!(hits <= 1, "overlapping elements at {p} {addr} {port}");

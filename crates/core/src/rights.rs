@@ -6,7 +6,7 @@ use std::net::Ipv4Addr;
 use ipnet::{Ipv4Net, Ipv4Subnets};
 
 use crate::interval::{IntervalMap, Op};
-use crate::rule::{PortRange, Proto, Rule};
+use crate::rule::{PortRange, Proto, Rule, Service, fmt_rule};
 
 type Line = IntervalMap<()>;
 /// Destination address → set of ports.
@@ -48,19 +48,13 @@ impl fmt::Display for AddrRange {
 /// what nft interval sets require: they reject overlapping elements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Element {
-    pub proto: Proto,
     pub dst: AddrRange,
-    /// `None` for icmp.
-    pub ports: Option<PortRange>,
+    pub service: Service,
 }
 
 impl fmt::Display for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.proto, self.dst)?;
-        match self.ports {
-            Some(p) => write!(f, " {p}"),
-            None => Ok(()),
-        }
+        fmt_rule(f, self.service, self.dst)
     }
 }
 
@@ -83,12 +77,10 @@ impl RuleSet {
         let plane =
             |p: PortRange| Plane::single(lo, hi, Line::single(p.from().into(), p.to().into(), ()));
         let mut set = Self::new();
-        match (rule.proto(), rule.ports()) {
-            (Proto::Icmp, _) => set.icmp = Line::single(lo, hi, ()),
-            (Proto::Tcp, Some(p)) => set.tcp = plane(p),
-            (Proto::Udp, Some(p)) => set.udp = plane(p),
-            // Rule::new rejects tcp/udp without ports.
-            (Proto::Tcp | Proto::Udp, None) => {}
+        match rule.service() {
+            Service::Tcp(p) => set.tcp = plane(p),
+            Service::Udp(p) => set.udp = plane(p),
+            Service::Icmp => set.icmp = Line::single(lo, hi, ()),
         }
         set
     }
@@ -140,21 +132,25 @@ impl RuleSet {
             hi: hi.into(),
         };
         let mut out = Vec::new();
-        for (proto, plane) in [(Proto::Tcp, &self.tcp), (Proto::Udp, &self.udp)] {
+        for (plane, tcp) in [(&self.tcp, true), (&self.udp, false)] {
             for dst in plane.spans() {
                 for p in dst.val.spans() {
+                    let ports = PortRange::from_span(p.lo, p.hi);
+                    let service = if tcp {
+                        Service::Tcp(ports)
+                    } else {
+                        Service::Udp(ports)
+                    };
                     out.push(Element {
-                        proto,
                         dst: range(dst.lo, dst.hi),
-                        ports: Some(PortRange::from_span(p.lo, p.hi)),
+                        service,
                     });
                 }
             }
         }
         out.extend(self.icmp.spans().iter().map(|s| Element {
-            proto: Proto::Icmp,
             dst: range(s.lo, s.hi),
-            ports: None,
+            service: Service::Icmp,
         }));
         out
     }

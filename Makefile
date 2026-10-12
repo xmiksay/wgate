@@ -55,12 +55,12 @@ test-unit: ## Rust unit tests
 test-int: ## Rust integration tests (tests/, netns ones are #[ignore]d)
 	cargo test --workspace --test '*'
 
-# Test binaries are built as the user and only executed under sudo, so target/
-# stays user-owned.
 .PHONY: golden
 golden: ## Rewrite core golden files from the current output (review the diff!)
 	UPDATE_GOLDEN=1 cargo test -p wgate-core --lib
 
+# Test binaries are built as the user and only executed under sudo, so target/
+# stays user-owned.
 .PHONY: test-netns
 test-netns: ## Root-only tests in network namespaces (sudo)
 	CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' \
