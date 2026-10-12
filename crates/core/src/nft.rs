@@ -5,8 +5,8 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::compile::{CompiledPeer, Id, overlapping};
-use crate::rights::{RuleSet, subtract_nets};
+use crate::compile::{CompiledPeer, Id, conflicting};
+use crate::rights::{AddrRange, RuleSet, subtract_nets};
 use crate::rule::Service;
 
 #[derive(Clone, Debug)]
@@ -15,7 +15,8 @@ pub struct NftState {
     pub snat_source: Ipv4Addr,
     /// Networks whose hosts have no route back to tenant space.
     pub node_cidrs: Vec<Ipv4Net>,
-    pub pool: Vec<Ipv4Net>,
+    /// [`crate::Compiled::tenant_space`]: the pool plus every declared routed LAN.
+    pub tenant_space: Vec<Ipv4Net>,
     /// From [`crate::compile`]; a missing peer has no access.
     pub peers: Vec<CompiledPeer>,
 }
@@ -24,8 +25,9 @@ pub struct NftState {
 #[derive(Clone, Debug)]
 pub struct NftRender {
     pub script: String,
-    /// Peers whose addresses overlap another's (compile already drops those; this
-    /// guards the transaction, which nft would reject whole, revocations included).
+    /// Peers whose addresses overlap an older peer's (compile already drops those;
+    /// this guards the transaction, which nft would reject whole, revocations
+    /// included).
     pub skipped: Vec<Id>,
 }
 
@@ -74,13 +76,13 @@ impl Sets {
     }
 }
 
-/// `a.b.c.d` for a /32, `lo-hi` otherwise (the form `RuleSet` elements use).
+/// In the same element syntax as `RuleSet` elements.
 fn range(net: Ipv4Net) -> String {
-    if net.prefix_len() == 32 {
-        net.addr().to_string()
-    } else {
-        format!("{}-{}", net.network(), net.broadcast())
+    AddrRange {
+        lo: net.network(),
+        hi: net.broadcast(),
     }
+    .to_string()
 }
 
 /// `saddr . daddr` plus `. proto . port` for tcp/udp, into the matching set.
@@ -99,15 +101,18 @@ fn push(quads: &mut Vec<String>, pairs: &mut Vec<String>, service: Service, [s, 
 pub fn render_nft(state: &NftState) -> NftRender {
     let mut peers: Vec<&CompiledPeer> = state.peers.iter().collect();
     peers.sort_by_key(|p| p.ip);
-    let skipped = overlapping(
+    let skipped = conflicting(
         &peers
             .iter()
             .map(|p| (p.id, p.addrs.clone()))
             .collect::<Vec<_>>(),
     );
     let mut sets = Sets::default();
-    let mut tenant_space = state.pool.clone();
-    for p in peers.iter().filter(|p| !skipped.contains(&p.id)) {
+    let mut tenant_space = state.tenant_space.clone();
+    for p in peers
+        .iter()
+        .filter(|p| skipped.binary_search(&p.id).is_err())
+    {
         sets.add(p);
         tenant_space.extend(p.addrs.iter().copied());
     }
@@ -146,7 +151,9 @@ pub fn render_nft(state: &NftState) -> NftRender {
     // Peer-to-peer is told apart by @peer_addrs, not by tenant space: a network's hub
     // address is tenant space but no peer. Tenant source addresses are only believed
     // on wg-* ingress (WireGuard checks them against the peer's AllowedIPs); anywhere
-    // else, or from a local socket posing as a peer, they are spoofed.
+    // else, or from a local socket posing as a peer, they are spoofed. The ingress
+    // check runs in prerouting, before forwarding can answer a spoofed packet with
+    // an ICMP error that conntrack would relate to the real peer's flow.
     // There is no related-ICMP shortcut (ICMP errors can carry payload and match
     // flows that outlive a revocation); only ICMP errors the hub itself generates
     // for a tracked flow pass unchecked. Untracked or invalid packets hit the drops.
@@ -157,7 +164,12 @@ pub fn render_nft(state: &NftState) -> NftRender {
 delete table inet wgate
 
 table inet wgate {{
-{sets}\tchain from_tenant {{
+{sets}\tchain prerouting {{
+\t\ttype filter hook prerouting priority raw; policy accept;
+\t\tiifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop
+\t}}
+
+\tchain from_tenant {{
 \t\tip daddr @peer_addrs jump tenant_to_tenant
 \t\t{fwd} @allow accept
 \t\tmeta l4proto icmp ip saddr . ip daddr @allow_icmp accept
@@ -197,7 +209,6 @@ table inet wgate {{
 
 \tchain input {{
 \t\ttype filter hook input priority filter - 5; policy accept;
-\t\tiifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop
 \t\tiifname \"wg-*\" ct direction original jump from_tenant
 \t\tiifname \"wg-*\" ct direction reply jump tenant_answers
 \t\tiifname \"wg-*\" counter drop
@@ -214,7 +225,6 @@ table inet wgate {{
 
 \tchain forward {{
 \t\ttype filter hook forward priority filter - 5; policy accept;
-\t\tiifname != \"wg-*\" ip saddr @tenant_space counter drop
 \t\tiifname \"wg-*\" ct direction original jump from_tenant
 \t\tiifname \"wg-*\" ct direction reply jump tenant_answers
 \t\tiifname \"wg-*\" counter drop

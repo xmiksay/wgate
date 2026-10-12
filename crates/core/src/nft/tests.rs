@@ -105,7 +105,7 @@ fn sample_state() -> NftState {
     NftState {
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![net("172.19.9.0/24")],
-        pool: state.pool,
+        tenant_space: compiled.tenant_space,
         peers: compiled.peers,
     }
 }
@@ -131,9 +131,9 @@ fn overlapping_peers_are_left_out() {
     twin.id = 99;
     state.peers.push(twin);
     let out = render_nft(&state);
-    let first = state.peers[0].id;
-    assert_eq!(out.skipped, [first, 99]);
-    assert!(!out.script.contains(&format!("{} . ", state.peers[0].ip)));
+    // The older peer keeps its address; only the twin is left out.
+    assert_eq!(out.skipped, [99]);
+    assert!(out.script.contains(&format!("{} . ", state.peers[0].ip)));
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn empty_state_has_no_elements_or_snat() {
     let script = render_nft(&NftState {
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![],
-        pool: vec![],
+        tenant_space: vec![],
         peers: vec![],
     })
     .script;

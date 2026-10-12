@@ -81,7 +81,7 @@ struct Lab {
     a: Netns,
     b: Netns,
     c: Netns,
-    node: Netns,
+    _node: Netns,
     pod: Netns,
     _servers: Vec<Background>,
 }
@@ -156,7 +156,7 @@ impl Lab {
             a,
             b,
             c,
-            node,
+            _node: node,
             pod,
             _servers: servers,
         }
@@ -168,7 +168,7 @@ impl Lab {
         let render = render_nft(&NftState {
             snat_source: "172.19.9.10".parse().expect("addr"),
             node_cidrs: vec![net("172.19.9.0/24")],
-            pool: state.pool.clone(),
+            tenant_space: compiled.tenant_space,
             peers: compiled.peers,
         });
         self.hub.exec(&["nft", "-f", "-"], Some(&render.script));
@@ -266,10 +266,12 @@ fn external_access_follows_rules_and_snat() {
         !lab.b.succeeds(&["ping", "-c1", "-W1", NODE]),
         "network 2 has no rule"
     );
+    // The pod has a route into the pool, so only the ruleset can stop these.
     assert!(
-        !lab.node.succeeds(&["ping", "-c1", "-W1", A]),
+        !lab.pod.succeeds(&["ping", "-c1", "-W1", A]),
         "nothing opens into a peer"
     );
+    assert!(!tcp_ok(&lab.pod, A, 7000), "nothing opens into a peer");
 }
 
 #[test]
@@ -294,12 +296,12 @@ fn spoofed_tenant_sources_are_dropped() {
     lab.pod
         .exec(&["ip", "addr", "add", "10.50.0.2/32", "dev", "p0"], None);
     lab.pod.exec(&["python3", "-c", SPOOF, A, B, "7000"], None);
-    let forward = lab
+    let chain = lab
         .hub
-        .output(&["nft", "list", "chain", "inet", "wgate", "forward"]);
-    let spoof = forward
+        .output(&["nft", "list", "chain", "inet", "wgate", "prerouting"]);
+    let spoof = chain
         .lines()
-        .find(|l| l.contains("iifname != \"wg-*\" ip saddr @tenant_space"))
+        .find(|l| l.contains("ip saddr @tenant_space counter"))
         .expect("spoof rule");
     assert!(spoof.contains("packets 1 "), "{spoof}");
 }

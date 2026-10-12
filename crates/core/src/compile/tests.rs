@@ -166,14 +166,10 @@ fn networks_outside_the_pool_or_overlapping_fail_closed() {
     let c = compile(&s);
     let mut skipped = c.skipped.clone();
     skipped.sort_by_key(|(id, _)| *id);
-    // Network 5 overlaps A, so A's own peer fails closed too.
+    // Network 5 overlaps the older A: only 5's peers fail closed.
     assert_eq!(
         skipped,
-        [
-            (11, Problem::InvalidNetwork),
-            (41, Problem::InvalidNetwork),
-            (51, Problem::InvalidNetwork),
-        ]
+        [(41, Problem::InvalidNetwork), (51, Problem::InvalidNetwork)]
     );
 }
 
@@ -183,13 +179,36 @@ fn lans_of_skipped_routers_stay_tenant_space() {
     s.tenants[0].ceiling = rule_set(&["tcp 192.168.0.0/16 80"]);
     s.networks[0].rules.push(external("tcp 192.168.0.0/16 80"));
     s.peers.push(peer(12, A, "10.50.0.3", &[]));
-    s.peers.push(peer(32, C, "10.50.1.3", &["192.168.1.0/24"]));
+    s.peers.push(peer(
+        32,
+        C,
+        "10.50.1.3",
+        &["192.168.3.0/24", "192.168.3.0/25"],
+    ));
     let c = compile(&s);
-    assert!(c.skipped.contains(&(11, Problem::Overlap)));
-    assert!(c.skipped.contains(&(32, Problem::Overlap)));
+    assert_eq!(c.skipped, [(32, Problem::Overlap)]);
     let a2 = get(&c, 12);
+    assert!(!a2.outbound.allows(Proto::Tcp, ip("192.168.3.5"), 80));
     assert!(!a2.outbound.allows(Proto::Tcp, ip("192.168.1.5"), 80));
     assert!(a2.outbound.allows(Proto::Tcp, ip("192.168.2.5"), 80));
+    assert!(c.tenant_space.contains(&net("192.168.3.0/24")));
+}
+
+#[test]
+fn inbound_grants_only_take_outside_sources_and_hub_addresses() {
+    let mut s = state();
+    s.networks[0].inbound = rule_set(&["tcp 10.50.0.0/16 22", "tcp 10.50.0.1/32 9100"]);
+    let c = compile(&s);
+    let a1 = get(&c, 11);
+    assert!(
+        !a1.inbound.allows(Proto::Tcp, ip("10.50.1.2"), 22),
+        "another tenant's peer"
+    );
+    assert!(
+        a1.inbound.allows(Proto::Tcp, ip("10.50.0.1"), 22),
+        "the hub address"
+    );
+    assert!(a1.inbound.allows(Proto::Tcp, ip("10.50.0.1"), 9100));
 }
 
 #[test]
@@ -218,20 +237,23 @@ fn invalid_peers_are_skipped_and_others_compile_without_them() {
     let c = compile(&s);
     let mut skipped = c.skipped.clone();
     skipped.sort_by_key(|(id, _)| *id);
+    // The older peer keeps a contested address; only the newcomer fails closed.
     assert_eq!(
         skipped,
         [
-            (11, Problem::Overlap),
             (40, Problem::InvalidIp),
             (41, Problem::UnknownNetwork),
             (42, Problem::RoutedInPool),
             (43, Problem::Overlap),
             (44, Problem::Overlap),
-            (45, Problem::Overlap),
             (46, Problem::Overlap),
-            (47, Problem::Overlap),
         ]
     );
-    // a1 is gone, so B no longer grants anything to its addresses.
-    assert!(!get(&c, 21).inbound.allows(Proto::Tcp, ip("10.50.0.2"), 22));
+    // a1 still works, and 47 (inside the rejected /24, clear of 45's /32) is in.
+    assert!(
+        get(&c, 21)
+            .inbound
+            .allows(Proto::Tcp, ip("192.168.1.9"), 22)
+    );
+    get(&c, 47);
 }
