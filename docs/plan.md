@@ -29,8 +29,9 @@ under sudo).
     51831–51839; 0 is reserved)
   - device IP = first free one in `.2–.254` (`.1` = hub)
 - Rendering:
-  - `render_nft(&NftState) -> NftRender { script, duplicate_ips }`: the whole
-    `table inet wgate` per design.md; devices sharing an IP are left out and reported
+  - `render_nft(&NftState) -> NftRender { script, skipped }`: the whole
+    `table inet wgate` per design.md; devices sharing an IP or outside 10.50/16 are
+    left out and reported
   - `render_client_config(&ClientConfig { address, private_key, hub_public_key,
     endpoint, rights }) -> String`
 - As built: `Rule { dst, service: Service::{Tcp(PortRange), Udp(PortRange), Icmp} }`;

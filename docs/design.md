@@ -114,7 +114,6 @@ table inet wgate {
 
   chain tenant {
     ip daddr 10.50.0.0/16 counter drop                      # never another tenant, whatever the rules
-    ct state related meta l4proto icmp accept               # ICMP errors (PMTU, unreachable)
     ip saddr . ip daddr . meta l4proto . th dport @allow accept
     meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
     counter drop
@@ -122,12 +121,14 @@ table inet wgate {
   chain tenant_reply {                                     # replies, tuple swapped
     ip daddr . ip saddr . meta l4proto . th sport @allow accept
     meta l4proto icmp ip daddr . ip saddr @allow_icmp accept
-    ct state related meta l4proto icmp accept
     counter drop
   }
   chain input   { type filter hook input   priority filter - 5;
     iifname "wg-*" ct direction reply ct state established accept  # replies to the hub
     iifname "wg-*" jump tenant
+  }
+  chain output  { type filter hook output  priority filter - 5;
+    oifname "wg-*" ct direction reply jump tenant_reply      # hub-local replies (e.g. 6443)
   }
   chain forward { type filter hook forward priority filter - 5;
     iifname "wg-*" oifname "wg0" ct direction reply ct state established accept  # replies to the admin
@@ -152,7 +153,10 @@ table inet wgate {
   established` shortcut**. On vpsFree LXC the host owns conntrack (`conntrack -D` may
   not work), so revocation must not depend on clearing it. The only exemptions are
   `ct direction reply` + `established` (replies to connections the hub or the admin
-  on wg0 opened) and related ICMP errors, which carry no data.
+  on wg0 opened). There is no related-ICMP shortcut: ICMP errors can carry payload
+  and match flows that outlive a revocation, so they pass only where `@allow_icmp`
+  allows the host pair. Trade-off: PMTU/unreachable errors from hosts a device has
+  no icmp right to are dropped; keep tenant MTUs at the WireGuard default.
 - The exact ruleset is the golden file `crates/core/tests/golden/ruleset.nft`; the
   snippet above is a sketch.
 - Replies to tenants go through `tenant_reply`, the same @allow check with the tuple
@@ -162,8 +166,9 @@ table inet wgate {
   `tcp 172.16.16.1/32 6443` reaches the k8s API. A broad rule (e.g. `0.0.0.0/0`)
   therefore also opens the hub's own services on those ports. Keep company rules
   specific.
-- Two devices with the same IP are both left out of the sets (fail closed) and
-  reported; the DB unique constraint should make this impossible.
+- Two devices with the same IP, or a device outside 10.50.0.0/16, are left out of
+  the sets (fail closed) and reported; the DB unique constraint should make this
+  impossible.
 - `ip saddr` is trustworthy: WireGuard drops packets whose source is outside the
   sending peer's `AllowedIPs` (the device's /32), so a device cannot spoof another
   device's or another company's IP.

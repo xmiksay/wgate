@@ -16,7 +16,8 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
 - Golden files live in `crates/core/tests/golden/`; `make golden` rewrites
   them (review the diff). `ruleset.nft` is also loaded into a kernel by `make test-netns`.
 
-Done = `make lint` + `make test` green (+ `make test-netns` when agent code changed).
+Done = `make lint` + `make test` green, plus `make test-netns` when agent code, nft
+rendering (`crates/core/src/nft.rs`) or the goldens changed.
 
 ## Layout
 
@@ -36,7 +37,9 @@ Done = `make lint` + `make test` green (+ `make test-netns` when agent code chan
   disjoint) before rendering — never emit raw rules into a set.
 - The tenant chain filters every packet a tenant originates — no `ct state
   established` shortcut (revocation must not depend on conntrack). The only
-  exemption is `ct direction reply` for connections the hub or wg0 opened.
+  exemption is `ct direction reply` + `established` for connections the hub or wg0
+  opened. No related-ICMP shortcut either; replies to tenants (forward and output)
+  go through `tenant_reply`, the swapped @allow check.
 - Hub private keys never leave `/var/lib/wgate/keys`; device private keys are never
   stored or logged.
 - No raw DB errors to API clients; typed `ApiError`.
