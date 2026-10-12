@@ -113,19 +113,21 @@ table inet wgate {
   set allow_icmp{ type ipv4_addr . ipv4_addr; flags interval; }   # saddr . daddr
 
   chain tenant {
+    ip daddr 10.50.0.0/16 counter drop                      # never another tenant, whatever the rules
     ip saddr . ip daddr . meta l4proto . th dport @allow accept
     meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
     counter drop
   }
   chain input   { type filter hook input   priority filter - 5; iifname "wg-*" jump tenant; }
   chain forward { type filter hook forward priority filter - 5;
+    iifname "wg-*" oifname "wg0" ct state established,related accept   # replies to the admin
     iifname "wg-*" jump tenant
     oifname "wg-*" iifname "wg0" accept                     # admin sees the tenants
     oifname "wg-*" ct state established,related accept      # replies to tenants
     oifname "wg-*" drop                                     # nobody else, not even across tenants
   }
   chain postrouting { type nat hook postrouting priority srcnat;
-    ip saddr 10.50.0.0/16 ip daddr { 172.19.9.0/24 } snat to 172.19.9.10   # workers have no route back
+    ip saddr 10.50.0.0/16 ip daddr { 172.19.9.0/24 } snat ip to 172.19.9.10   # workers have no route back
   }
 }
 ```

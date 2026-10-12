@@ -56,9 +56,19 @@ pub fn render_nft(state: &NftState) -> String {
         &allow,
     );
     set(&mut out, "allow_icmp", "ipv4_addr . ipv4_addr", &allow_icmp);
+    // Tenant space is dropped before @allow: a broad rule (e.g. 0.0.0.0/0) must not
+    // reach other companies or the hub's tenant addresses, and the accept below
+    // would otherwise end the forward chain before its cross-tenant drop. Tenant
+    // replies to connections the admin opened from wg0 skip the tenant chain; a
+    // tenant can never open such a connection itself.
+    let _ = write!(
+        out,
+        "\tchain tenant {{
+\t\tip daddr {TENANT_CIDR} counter drop
+\t\tip saddr . ip daddr . meta l4proto . th dport @allow accept"
+    );
     out.push_str(
-        "\tchain tenant {
-\t\tip saddr . ip daddr . meta l4proto . th dport @allow accept
+        "
 \t\tmeta l4proto icmp ip saddr . ip daddr @allow_icmp accept
 \t\tcounter drop
 \t}
@@ -70,6 +80,7 @@ pub fn render_nft(state: &NftState) -> String {
 
 \tchain forward {
 \t\ttype filter hook forward priority filter - 5; policy accept;
+\t\tiifname \"wg-*\" oifname \"wg0\" ct state established,related accept
 \t\tiifname \"wg-*\" jump tenant
 \t\toifname \"wg-*\" iifname \"wg0\" accept
 \t\toifname \"wg-*\" ct state established,related accept
@@ -110,13 +121,7 @@ fn set(out: &mut String, name: &str, ty: &str, elements: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::golden::assert_golden;
-    use crate::rule::Rule;
-
-    fn rights(rules: &[&str]) -> RuleSet {
-        let rules: Vec<Rule> = rules.iter().map(|r| r.parse().unwrap()).collect();
-        RuleSet::from_rules(&rules)
-    }
+    use crate::testing::{assert_golden, rule_set as rights};
 
     /// Two companies; overlapping rules on one device must render as disjoint
     /// elements. The netns tests load this exact file into a kernel.

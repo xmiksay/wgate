@@ -33,7 +33,7 @@ impl FromStr for Proto {
     type Err = RuleError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_ascii_lowercase().as_str() {
             "tcp" => Ok(Self::Tcp),
             "udp" => Ok(Self::Udp),
             "icmp" => Ok(Self::Icmp),
@@ -51,6 +51,9 @@ pub struct PortRange {
 
 impl PortRange {
     pub fn new(from: u16, to: u16) -> Result<Self, RuleError> {
+        if from == 0 {
+            return Err(RuleError::PortZero);
+        }
         if from > to {
             return Err(RuleError::InvertedPorts { from, to });
         }
@@ -61,6 +64,16 @@ impl PortRange {
         Self {
             from: port,
             to: port,
+        }
+    }
+
+    /// From a port span of a `RuleSet`, which only ever holds spans built from valid
+    /// ranges, so the casts cannot truncate.
+    pub(crate) fn from_span(lo: u32, hi: u32) -> Self {
+        debug_assert!(0 < lo && lo <= hi && hi <= u32::from(u16::MAX));
+        Self {
+            from: lo as u16,
+            to: hi as u16,
         }
     }
 
@@ -104,6 +117,8 @@ pub enum RuleError {
     PortsOnIcmp,
     #[error("{0} rules need a port range")]
     MissingPorts(Proto),
+    #[error("port 0 is not a service port")]
+    PortZero,
     #[error("port range {from}-{to} is inverted")]
     InvertedPorts { from: u16, to: u16 },
     #[error("{0} has host bits set; did you mean {1}?")]
@@ -200,6 +215,14 @@ mod tests {
     }
 
     #[test]
+    fn protocol_is_case_insensitive() {
+        assert_eq!(
+            "TCP 10.0.0.0/8 80".parse::<Rule>().map(|r| r.proto()),
+            Ok(Proto::Tcp)
+        );
+    }
+
+    #[test]
     fn bare_address_is_host_route() {
         let r: Rule = "icmp 172.19.9.10".parse().unwrap();
         assert_eq!(r.dst().prefix_len(), 32);
@@ -215,6 +238,7 @@ mod tests {
             RuleError::InvertedPorts { from: 90, to: 80 }
         );
         assert!(matches!(err("tcp 10.0.0.5/8 80"), RuleError::HostBits(..)));
+        assert_eq!(err("tcp 10.0.0.0/8 0-80"), RuleError::PortZero);
         assert!(matches!(err("sctp 10.0.0.0/8 80"), RuleError::Parse(_)));
         assert!(matches!(
             err("tcp 10.0.0.0/8 80 extra"),

@@ -7,20 +7,38 @@ use ipnet::Ipv4Net;
 use proptest::prelude::*;
 use wgate_core::{PortRange, Proto, Rule, RuleSet, covers, effective};
 
-// A small universe (10.0.0.0/22, ports 0–99) so random rules actually overlap.
+// A small universe (10.0.0.0/22, ports 1–99) so random rules actually overlap, plus
+// the domain edges (/0, 255.255.255.255, port 65535) where overflow would show.
 const BASE: u32 = 0x0a00_0000;
 
 fn proto() -> impl Strategy<Value = Proto> {
     prop_oneof![Just(Proto::Tcp), Just(Proto::Udp), Just(Proto::Icmp)]
 }
 
+fn dst() -> impl Strategy<Value = Ipv4Net> {
+    prop_oneof![
+        8 => (0u32..1024, 22u8..=32).prop_map(|(host, len)| {
+            Ipv4Net::new(Ipv4Addr::from(BASE + host), len)
+                .expect("prefix <= 32")
+                .trunc()
+        }),
+        1 => Just(Ipv4Net::default()),
+        1 => Just(Ipv4Net::from(Ipv4Addr::BROADCAST)),
+    ]
+}
+
+fn ports() -> impl Strategy<Value = PortRange> {
+    prop_oneof![
+        8 => (1u16..100, 1u16..100).prop_map(|(a, b)| (a.min(b), a.max(b))),
+        1 => Just((1, u16::MAX)),
+        1 => (60000u16..=u16::MAX).prop_map(|a| (a, u16::MAX)),
+    ]
+    .prop_map(|(a, b)| PortRange::new(a, b).expect("ordered, non-zero"))
+}
+
 fn rule() -> impl Strategy<Value = Rule> {
-    (proto(), 0u32..1024, 22u8..=32, 0u16..100, 0u16..100).prop_map(|(proto, host, len, a, b)| {
-        let dst = Ipv4Net::new(Ipv4Addr::from(BASE + host), len)
-            .expect("prefix <= 32")
-            .trunc();
-        let ports =
-            (proto != Proto::Icmp).then(|| PortRange::new(a.min(b), a.max(b)).expect("ordered"));
+    (proto(), dst(), ports()).prop_map(|(proto, dst, ports)| {
+        let ports = (proto != Proto::Icmp).then_some(ports);
         Rule::new(proto, dst, ports).expect("valid by construction")
     })
 }
@@ -29,9 +47,15 @@ fn rule_set() -> impl Strategy<Value = RuleSet> {
     prop::collection::vec(rule(), 0..6).prop_map(|rules| RuleSet::from_rules(&rules))
 }
 
-/// Points slightly outside the universe too, to catch edge leaks.
+/// Points slightly outside the universe and at the edges, to catch leaks.
 fn point() -> impl Strategy<Value = (Proto, Ipv4Addr, u16)> {
-    (proto(), 0u32..1100, 0u16..110).prop_map(|(p, h, port)| (p, Ipv4Addr::from(BASE + h), port))
+    let addr = prop_oneof![
+        8 => (0u32..1100).prop_map(|h| Ipv4Addr::from(BASE + h)),
+        1 => any::<u32>().prop_map(Ipv4Addr::from),
+        1 => Just(Ipv4Addr::BROADCAST),
+    ];
+    let port = prop_oneof![8 => 0u16..110, 1 => Just(u16::MAX), 1 => any::<u16>()];
+    (proto(), addr, port)
 }
 
 fn points() -> impl Strategy<Value = Vec<(Proto, Ipv4Addr, u16)>> {
@@ -103,15 +127,20 @@ proptest! {
     }
 
     #[test]
-    fn destinations_cover_every_allowed_address(s in rule_set(), pts in points()) {
+    fn destinations_are_exactly_the_element_addresses(s in rule_set(), pts in points()) {
         let dsts = s.destinations();
-        for (p, addr, port) in pts {
-            if s.allows(p, addr, port) {
-                prop_assert!(dsts.iter().any(|n| n.contains(&addr)));
-            }
+        let elements = s.elements();
+        for (_, addr, _) in pts {
+            prop_assert_eq!(
+                dsts.iter().any(|n| n.contains(&addr)),
+                elements.iter().any(|e| e.dst.contains(addr)),
+                "{}", addr
+            );
         }
         for net in &dsts {
-            prop_assert!(s.elements().iter().any(|e| e.dst.contains(net.network())));
+            for edge in [net.network(), net.broadcast()] {
+                prop_assert!(elements.iter().any(|e| e.dst.contains(edge)));
+            }
         }
     }
 }

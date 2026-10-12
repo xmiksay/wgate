@@ -55,31 +55,61 @@ impl fmt::Display for Slug {
     }
 }
 
-/// `10.50.n.0/24`.
-pub fn company_subnet(n: u8) -> Ipv4Net {
-    Ipv4Net::new_assert(Ipv4Addr::new(10, 50, n, 0), 24)
+/// A company's network number `n`, within [`NET_INDEX_RANGE`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NetIndex(u8);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("net_index {0} is outside 1..=9")]
+pub struct InvalidNetIndex(pub i32);
+
+impl TryFrom<i32> for NetIndex {
+    type Error = InvalidNetIndex;
+
+    fn try_from(n: i32) -> Result<Self, Self::Error> {
+        u8::try_from(n)
+            .ok()
+            .filter(|n| NET_INDEX_RANGE.contains(n))
+            .map(Self)
+            .ok_or(InvalidNetIndex(n))
+    }
 }
 
-/// `10.50.n.1`, the hub's address on `wg-<slug>`.
-pub fn hub_ip(n: u8) -> Ipv4Addr {
-    Ipv4Addr::new(10, 50, n, 1)
-}
+impl NetIndex {
+    pub fn get(self) -> u8 {
+        self.0
+    }
 
-/// `51830 + n`.
-pub fn listen_port(n: u8) -> u16 {
-    PORT_BASE + u16::from(n)
+    /// `10.50.n.0/24`.
+    pub fn subnet(self) -> Ipv4Net {
+        Ipv4Net::new_assert(Ipv4Addr::new(10, 50, self.0, 0), 24)
+    }
+
+    /// `10.50.n.1`, the hub's address on `wg-<slug>`.
+    pub fn hub_ip(self) -> Ipv4Addr {
+        Ipv4Addr::new(10, 50, self.0, 1)
+    }
+
+    /// `51830 + n`.
+    pub fn listen_port(self) -> u16 {
+        PORT_BASE + u16::from(self.0)
+    }
+
+    /// Lowest free device address in `10.50.n.2–254`, or `None` when the subnet is
+    /// full.
+    pub fn next_device_ip(self, used: &[Ipv4Addr]) -> Option<Ipv4Addr> {
+        DEVICE_HOSTS
+            .map(|h| Ipv4Addr::new(10, 50, self.0, h))
+            .find(|ip| !used.contains(ip))
+    }
 }
 
 /// Lowest free `net_index`, or `None` when all are taken.
-pub fn next_net_index(used: &[u8]) -> Option<u8> {
-    NET_INDEX_RANGE.clone().find(|n| !used.contains(n))
-}
-
-/// Lowest free device address in `10.50.n.2–254`, or `None` when the subnet is full.
-pub fn next_device_ip(n: u8, used: &[Ipv4Addr]) -> Option<Ipv4Addr> {
-    DEVICE_HOSTS
-        .map(|h| Ipv4Addr::new(10, 50, n, h))
-        .find(|ip| !used.contains(ip))
+pub fn next_net_index(used: &[NetIndex]) -> Option<NetIndex> {
+    NET_INDEX_RANGE
+        .clone()
+        .map(NetIndex)
+        .find(|n| !used.contains(n))
 }
 
 #[cfg(test)]
@@ -97,34 +127,46 @@ mod tests {
         }
     }
 
+    fn n(i: i32) -> NetIndex {
+        NetIndex::try_from(i).unwrap()
+    }
+
+    #[test]
+    fn net_index_range_is_enforced() {
+        for bad in [-1, 0, 10, 256] {
+            assert_eq!(NetIndex::try_from(bad), Err(InvalidNetIndex(bad)));
+        }
+        assert_eq!(n(9).get(), 9);
+    }
+
     #[test]
     fn addressing() {
-        assert_eq!(company_subnet(1).to_string(), "10.50.1.0/24");
-        assert_eq!(hub_ip(2), Ipv4Addr::new(10, 50, 2, 1));
-        assert_eq!(listen_port(1), 51831);
-        assert_eq!(listen_port(9), 51839);
-        assert!(TENANT_CIDR.contains(&company_subnet(9)));
+        assert_eq!(n(1).subnet().to_string(), "10.50.1.0/24");
+        assert_eq!(n(2).hub_ip(), Ipv4Addr::new(10, 50, 2, 1));
+        assert_eq!(n(1).listen_port(), 51831);
+        assert_eq!(n(9).listen_port(), 51839);
+        assert!(TENANT_CIDR.contains(&n(9).subnet()));
     }
 
     #[test]
     fn net_index_allocation() {
-        assert_eq!(next_net_index(&[]), Some(1));
-        assert_eq!(next_net_index(&[1, 2, 4]), Some(3));
-        assert_eq!(next_net_index(&[0]), Some(1));
-        assert_eq!(next_net_index(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), None);
+        assert_eq!(next_net_index(&[]), Some(n(1)));
+        assert_eq!(next_net_index(&[n(1), n(2), n(4)]), Some(n(3)));
+        let all: Vec<_> = (1..=9).map(n).collect();
+        assert_eq!(next_net_index(&all), None);
     }
 
     #[test]
     fn device_ip_allocation() {
         let ip = |h| Ipv4Addr::new(10, 50, 3, h);
-        assert_eq!(next_device_ip(3, &[]), Some(ip(2)));
-        assert_eq!(next_device_ip(3, &[ip(2), ip(4)]), Some(ip(3)));
+        assert_eq!(n(3).next_device_ip(&[]), Some(ip(2)));
+        assert_eq!(n(3).next_device_ip(&[ip(2), ip(4)]), Some(ip(3)));
         // Addresses of other companies do not count.
         assert_eq!(
-            next_device_ip(3, &[Ipv4Addr::new(10, 50, 1, 2)]),
+            n(3).next_device_ip(&[Ipv4Addr::new(10, 50, 1, 2)]),
             Some(ip(2))
         );
         let full: Vec<_> = (2..=254).map(ip).collect();
-        assert_eq!(next_device_ip(3, &full), None);
+        assert_eq!(n(3).next_device_ip(&full), None);
     }
 }

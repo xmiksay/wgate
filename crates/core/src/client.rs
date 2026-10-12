@@ -46,22 +46,17 @@ pub fn render_client_config(c: &ClientConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::golden::assert_golden;
-    use crate::rule::Rule;
+    use crate::testing::{assert_golden, rule_set};
 
     const HUB_PK: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
 
     fn rights() -> RuleSet {
-        let rules: Vec<Rule> = [
+        rule_set(&[
             "tcp 172.16.16.1/32 6443",
             "icmp 172.19.9.10/32",
             "icmp 172.19.9.11/32",
             "icmp 172.19.9.12/32",
-        ]
-        .iter()
-        .map(|r| r.parse().unwrap())
-        .collect();
-        RuleSet::from_rules(&rules)
+        ])
     }
 
     fn config<'a>(rights: &'a RuleSet, private_key: Option<&'a str>) -> ClientConfig<'a> {
