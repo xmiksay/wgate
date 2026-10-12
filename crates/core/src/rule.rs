@@ -120,48 +120,91 @@ pub enum RuleError {
     Parse(String),
 }
 
-/// Valid by construction: tcp/udp carry ports, icmp does not, and `dst` is a network
-/// address (no host bits).
+/// What a rule allows on its destination. Ports exist exactly for tcp and udp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Service {
+    Tcp(PortRange),
+    Udp(PortRange),
+    Icmp,
+}
+
+impl Service {
+    pub fn new(proto: Proto, ports: Option<PortRange>) -> Result<Self, RuleError> {
+        match (proto, ports) {
+            (Proto::Tcp, Some(p)) => Ok(Self::Tcp(p)),
+            (Proto::Udp, Some(p)) => Ok(Self::Udp(p)),
+            (Proto::Icmp, None) => Ok(Self::Icmp),
+            (Proto::Icmp, Some(_)) => Err(RuleError::PortsOnIcmp),
+            (Proto::Tcp | Proto::Udp, None) => Err(RuleError::MissingPorts(proto)),
+        }
+    }
+
+    pub fn proto(self) -> Proto {
+        match self {
+            Self::Tcp(_) => Proto::Tcp,
+            Self::Udp(_) => Proto::Udp,
+            Self::Icmp => Proto::Icmp,
+        }
+    }
+
+    pub fn ports(self) -> Option<PortRange> {
+        match self {
+            Self::Tcp(p) | Self::Udp(p) => Some(p),
+            Self::Icmp => None,
+        }
+    }
+}
+
+/// `proto dst [ports]`, shared by rules (CIDR) and rule-set elements (ranges).
+pub(crate) fn fmt_rule(
+    f: &mut fmt::Formatter<'_>,
+    service: Service,
+    dst: impl fmt::Display,
+) -> fmt::Result {
+    write!(f, "{} {dst}", service.proto())?;
+    match service.ports() {
+        Some(p) => write!(f, " {p}"),
+        None => Ok(()),
+    }
+}
+
+/// Valid by construction: `dst` is a network address (no host bits) and the
+/// service carries ports exactly when it is tcp/udp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rule {
-    proto: Proto,
     dst: Ipv4Net,
-    ports: Option<PortRange>,
+    service: Service,
 }
 
 impl Rule {
     pub fn new(proto: Proto, dst: Ipv4Net, ports: Option<PortRange>) -> Result<Self, RuleError> {
-        match (proto, ports) {
-            (Proto::Icmp, Some(_)) => return Err(RuleError::PortsOnIcmp),
-            (Proto::Tcp | Proto::Udp, None) => return Err(RuleError::MissingPorts(proto)),
-            _ => {}
-        }
+        let service = Service::new(proto, ports)?;
         if dst != dst.trunc() {
             return Err(RuleError::HostBits(dst, dst.trunc()));
         }
-        Ok(Self { proto, dst, ports })
-    }
-
-    pub fn proto(&self) -> Proto {
-        self.proto
+        Ok(Self { dst, service })
     }
 
     pub fn dst(&self) -> Ipv4Net {
         self.dst
     }
 
+    pub fn service(&self) -> Service {
+        self.service
+    }
+
+    pub fn proto(&self) -> Proto {
+        self.service.proto()
+    }
+
     pub fn ports(&self) -> Option<PortRange> {
-        self.ports
+        self.service.ports()
     }
 }
 
 impl fmt::Display for Rule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.proto, self.dst)?;
-        match self.ports {
-            Some(p) => write!(f, " {p}"),
-            None => Ok(()),
-        }
+        fmt_rule(f, self.service, self.dst)
     }
 }
 

@@ -17,23 +17,18 @@ impl Netns {
         Self(name)
     }
 
-    fn exec(&self, argv: &[&str], stdin: Option<&str>) {
-        run(
-            Command::new("ip")
-                .args(["netns", "exec", &self.0])
-                .args(argv),
-            stdin,
-        );
+    fn cmd(&self, argv: &[&str]) -> Command {
+        let mut cmd = Command::new("ip");
+        cmd.args(["netns", "exec", &self.0]).args(argv);
+        cmd
     }
-}
 
-impl Netns {
+    fn exec(&self, argv: &[&str], stdin: Option<&str>) {
+        run(&mut self.cmd(argv), stdin);
+    }
+
     fn output(&self, argv: &[&str]) -> String {
-        let out = Command::new("ip")
-            .args(["netns", "exec", &self.0])
-            .args(argv)
-            .output()
-            .expect("spawn");
+        let out = self.cmd(argv).output().expect("spawn");
         assert!(
             out.status.success(),
             "{argv:?}: {}",

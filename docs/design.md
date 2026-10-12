@@ -113,6 +113,7 @@ table inet wgate {
   set allow_icmp{ type ipv4_addr . ipv4_addr; flags interval; }   # saddr . daddr
 
   chain tenant {
+    ct state related meta l4proto icmp accept               # ICMP errors (PMTU, unreachable)
     ip daddr 10.50.0.0/16 counter drop                      # never another tenant, whatever the rules
     ip saddr . ip daddr . meta l4proto . th dport @allow accept
     meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
@@ -125,11 +126,11 @@ table inet wgate {
     counter drop
   }
   chain input   { type filter hook input   priority filter - 5;
-    iifname "wg-*" ct direction reply ct state established,related accept  # replies to the hub
+    iifname "wg-*" ct direction reply ct state established accept  # replies to the hub
     iifname "wg-*" jump tenant
   }
   chain forward { type filter hook forward priority filter - 5;
-    iifname "wg-*" oifname "wg0" ct direction reply ct state established,related accept  # replies to the admin
+    iifname "wg-*" oifname "wg0" ct direction reply ct state established accept  # replies to the admin
     iifname "wg-*" jump tenant
     oifname "wg-*" iifname "wg0" accept                     # admin sees the tenants
     oifname "wg-*" ct direction reply ct state established,related jump tenant_reply
@@ -149,8 +150,11 @@ table inet wgate {
   The inet family needs `snat ip to`.
 - The tenant chain filters **every packet a tenant originates, with no `ct state
   established` shortcut**. On vpsFree LXC the host owns conntrack (`conntrack -D` may
-  not work), so revocation must not depend on clearing it. The only exemption is
-  `ct direction reply`: replies to connections the hub or the admin (wg0) opened.
+  not work), so revocation must not depend on clearing it. The only exemptions are
+  `ct direction reply` + `established` (replies to connections the hub or the admin
+  on wg0 opened) and related ICMP errors, which carry no data.
+- The exact ruleset is the golden file `crates/core/tests/golden/ruleset.nft`; the
+  snippet above is a sketch.
 - Replies to tenants go through `tenant_reply`, the same @allow check with the tuple
   swapped, so revoking a rule also stops the return direction of open flows (e.g. a
   node still streaming UDP). Conntrack only picks which check applies.

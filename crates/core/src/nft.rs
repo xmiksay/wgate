@@ -8,7 +8,7 @@ use ipnet::Ipv4Net;
 
 use crate::net::TENANT_CIDR;
 use crate::rights::RuleSet;
-use crate::rule::Proto;
+use crate::rule::Service;
 
 /// A device's address and its effective rights.
 #[derive(Clone, Debug)]
@@ -45,6 +45,8 @@ pub fn render_nft(state: &NftState) -> NftRender {
     for d in &state.devices {
         by_ip.entry(d.ip).or_default().push(&d.rights);
     }
+    // Merged so overlapping or repeated CIDRs cannot make nft reject the set.
+    let node_cidrs = Ipv4Net::aggregate(&state.node_cidrs);
 
     let mut allow = Vec::new();
     let mut allow_icmp = Vec::new();
@@ -55,12 +57,12 @@ pub fn render_nft(state: &NftState) -> NftRender {
             continue;
         };
         for e in rights.elements() {
-            match (e.proto, e.ports) {
-                (Proto::Icmp, _) => allow_icmp.push(format!("{ip} . {}", e.dst)),
-                (proto, Some(ports)) => {
+            match e.service {
+                Service::Icmp => allow_icmp.push(format!("{ip} . {}", e.dst)),
+                Service::Tcp(ports) | Service::Udp(ports) => {
+                    let proto = e.service.proto();
                     allow.push(format!("{ip} . {} . {proto} . {ports}", e.dst));
                 }
-                (_, None) => {}
             }
         }
     }
@@ -82,10 +84,13 @@ pub fn render_nft(state: &NftState) -> NftRender {
     // in both directions: `tenant` for what a tenant sends, `tenant_reply` (tuple
     // swapped) for replies coming back to it. Conntrack only decides *which* check
     // applies. Replies a tenant sends to connections the hub or the admin (wg0)
-    // opened skip the check; a tenant cannot open those itself.
+    // opened skip the check; a tenant cannot open those itself. ICMP errors related
+    // to a tracked flow pass both ways: they carry no data and PMTU discovery and
+    // port-unreachable depend on them.
     let _ = write!(
         out,
         "\tchain tenant {{
+\t\tct state related meta l4proto icmp accept
 \t\tip daddr {TENANT_CIDR} counter drop
 \t\tip saddr . ip daddr . meta l4proto . th dport @allow accept"
     );
@@ -104,13 +109,13 @@ pub fn render_nft(state: &NftState) -> NftRender {
 
 \tchain input {
 \t\ttype filter hook input priority filter - 5; policy accept;
-\t\tiifname \"wg-*\" ct direction reply ct state established,related accept
+\t\tiifname \"wg-*\" ct direction reply ct state established accept
 \t\tiifname \"wg-*\" jump tenant
 \t}
 
 \tchain forward {
 \t\ttype filter hook forward priority filter - 5; policy accept;
-\t\tiifname \"wg-*\" oifname \"wg0\" ct direction reply ct state established,related accept
+\t\tiifname \"wg-*\" oifname \"wg0\" ct direction reply ct state established accept
 \t\tiifname \"wg-*\" jump tenant
 \t\toifname \"wg-*\" iifname \"wg0\" accept
 \t\toifname \"wg-*\" ct direction reply ct state established,related jump tenant_reply
@@ -121,8 +126,8 @@ pub fn render_nft(state: &NftState) -> NftRender {
 \t\ttype nat hook postrouting priority srcnat; policy accept;
 ",
     );
-    if !state.node_cidrs.is_empty() {
-        let nodes: Vec<String> = state.node_cidrs.iter().map(Ipv4Net::to_string).collect();
+    if !node_cidrs.is_empty() {
+        let nodes: Vec<String> = node_cidrs.iter().map(Ipv4Net::to_string).collect();
         let _ = writeln!(
             out,
             "\t\tip saddr {TENANT_CIDR} ip daddr {{ {} }} snat ip to {}",
@@ -218,6 +223,27 @@ mod tests {
         assert_eq!(out.duplicate_ips, [ip]);
         assert!(!out.script.contains("10.50.1.2 . "));
         assert!(out.script.contains("10.50.1.3 . "));
+    }
+
+    #[test]
+    fn node_cidrs_are_merged() {
+        let out = render_nft(&NftState {
+            snat_source: Ipv4Addr::new(172, 19, 9, 10),
+            node_cidrs: [
+                "172.19.9.0/24",
+                "172.19.0.0/16",
+                "172.19.9.0/24",
+                "10.0.0.0/8",
+            ]
+            .iter()
+            .map(|n| n.parse().unwrap())
+            .collect(),
+            devices: vec![],
+        });
+        assert!(
+            out.script
+                .contains("ip daddr { 10.0.0.0/8, 172.19.0.0/16 } snat")
+        );
     }
 
     #[test]
