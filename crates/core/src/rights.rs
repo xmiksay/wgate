@@ -143,12 +143,10 @@ impl RuleSet {
         for (proto, plane) in [(Proto::Tcp, &self.tcp), (Proto::Udp, &self.udp)] {
             for dst in plane.spans() {
                 for p in dst.val.spans() {
-                    // Port spans come from u16 rules, so they fit back into u16.
-                    let ports = PortRange::new(p.lo as u16, p.hi as u16).ok();
                     out.push(Element {
                         proto,
                         dst: range(dst.lo, dst.hi),
-                        ports,
+                        ports: Some(PortRange::from_span(p.lo, p.hi)),
                     });
                 }
             }
@@ -181,6 +179,10 @@ impl RuleSet {
 
 /// `effective(user) = company ∩ (user rules if any, else the union of the user's
 /// groups' rules if they are in any group, else company)`.
+///
+/// `groups` holds one entry per group the user is a member of, including groups
+/// without rules: membership alone switches the user from the company default to
+/// their groups' rules, so a member of rule-less groups gets nothing.
 pub fn effective(company: &RuleSet, groups: &[RuleSet], user: &RuleSet) -> RuleSet {
     if !user.is_empty() {
         company.intersect(user)
@@ -219,10 +221,7 @@ pub fn covers(ceiling: &RuleSet, rule: &Rule) -> Result<(), Uncovered> {
 mod tests {
     use super::*;
 
-    fn set(rules: &[&str]) -> RuleSet {
-        let rules: Vec<Rule> = rules.iter().map(|r| r.parse().unwrap()).collect();
-        RuleSet::from_rules(&rules)
-    }
+    use crate::testing::rule_set as set;
 
     fn shown(s: &RuleSet) -> Vec<String> {
         s.elements().iter().map(Element::to_string).collect()
@@ -248,7 +247,7 @@ mod tests {
         assert!(!s.allows(Proto::Tcp, "10.9.9.9".parse().unwrap(), 54));
         assert!(s.allows(Proto::Icmp, "10.0.0.1".parse().unwrap(), 0));
         assert!(!s.allows(Proto::Icmp, "10.0.0.2".parse().unwrap(), 0));
-        assert!(s.intersect(&set(&["udp 0.0.0.0/0 0-65535"])) == set(&["udp 10.0.0.0/8 53"]));
+        assert!(s.intersect(&set(&["udp 0.0.0.0/0 1-65535"])) == set(&["udp 10.0.0.0/8 53"]));
     }
 
     #[test]

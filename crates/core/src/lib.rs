@@ -9,16 +9,22 @@ mod rule;
 
 pub use client::{ClientConfig, render_client_config};
 pub use net::{
-    InvalidSlug, NET_INDEX_RANGE, Slug, TENANT_CIDR, company_subnet, hub_ip, listen_port,
-    next_device_ip, next_net_index,
+    InvalidNetIndex, InvalidSlug, NET_INDEX_RANGE, NetIndex, Slug, TENANT_CIDR, next_net_index,
 };
 pub use nft::{NftDevice, NftState, render_nft};
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, effective};
 pub use rule::{PortRange, Proto, Rule, RuleError};
 
 #[cfg(test)]
-mod golden {
+mod testing {
     use std::path::PathBuf;
+
+    use crate::{Rule, RuleSet};
+
+    pub(crate) fn rule_set(rules: &[&str]) -> RuleSet {
+        let rules: Vec<Rule> = rules.iter().map(|r| r.parse().unwrap()).collect();
+        RuleSet::from_rules(&rules)
+    }
 
     /// Compares against `tests/golden/<name>`; `UPDATE_GOLDEN=1` rewrites the file.
     pub(crate) fn assert_golden(name: &str, actual: &str) {
