@@ -13,8 +13,8 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
 - `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns.rs`;
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
-- Golden files live in `crates/core/tests/golden/`; `UPDATE_GOLDEN=1 cargo test -p wgate-core`
-  rewrites them. `ruleset.nft` is also loaded into a kernel by `make test-netns`.
+- Golden files live in `crates/core/tests/golden/`; `make golden` rewrites
+  them (review the diff). `ruleset.nft` is also loaded into a kernel by `make test-netns`.
 
 Done = `make lint` + `make test` green (+ `make test-netns` when agent code changed).
 

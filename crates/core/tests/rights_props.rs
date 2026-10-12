@@ -128,7 +128,7 @@ proptest! {
 
     #[test]
     fn destinations_are_exactly_the_element_addresses(s in rule_set(), pts in points()) {
-        let dsts = s.destinations(None);
+        let dsts = s.destinations(&[]);
         let elements = s.elements();
         for (_, addr, _) in pts {
             prop_assert_eq!(

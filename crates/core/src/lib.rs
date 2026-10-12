@@ -11,7 +11,7 @@ pub use client::{ClientConfig, render_client_config};
 pub use net::{
     InvalidNetIndex, InvalidSlug, NET_INDEX_RANGE, NetIndex, Slug, TENANT_CIDR, next_net_index,
 };
-pub use nft::{NftDevice, NftState, render_nft};
+pub use nft::{NftDevice, NftRender, NftState, render_nft};
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, effective};
 pub use rule::{PortRange, Proto, Rule, RuleError};
 
