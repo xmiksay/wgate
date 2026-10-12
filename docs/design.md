@@ -130,6 +130,12 @@ table inet wgate {
 }
 ```
 
+- **Elements must be disjoint.** nft rejects an interval element that overlaps an
+  existing one ("File exists"), even when one contains the other. `core` therefore
+  keeps rights in a canonical disjoint form (`RuleSet`) and renders each device's
+  rights as non-overlapping `saddr . dst-range . proto . port-range` boxes, e.g.
+  `tcp 10.0.0.0/8 80-90` + `tcp 10.1.0.0/16 85-100` become three elements.
+  The inet family needs `snat ip to`.
 - The tenant chain filters **every packet, with no `ct state established` shortcut**.
   On vpsFree LXC the host owns conntrack (`conntrack -D` may not work), so revocation
   must not depend on clearing it.

@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ipnet = "2.12"
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
 
 [lints]
 workspace = true
