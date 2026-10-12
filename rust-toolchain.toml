@@ -1,0 +1,7 @@
+# CI reads `channel` from this file, so `make lint` locally runs the same clippy
+# as CI. Bump deliberately, then re-run `make lint`.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-unknown-linux-musl"]
+profile = "minimal"
