@@ -27,14 +27,21 @@ pub struct NftState {
     pub devices: Vec<NftDevice>,
 }
 
-/// The rendered script plus the device addresses left out of it.
+/// Why a device was left out of the ruleset (fail closed; the caller reports it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Skip {
+    /// Claimed by more than one device. WireGuard routes a /32 to one peer only, so
+    /// either device could end up with the other's rights.
+    DuplicateIp,
+    /// Outside 10.50.0.0/16: not SNATed and not covered by tenant isolation.
+    OutsideTenantSpace,
+}
+
+/// The rendered script plus the devices left out of it.
 #[derive(Clone, Debug)]
 pub struct NftRender {
     pub script: String,
-    /// Addresses claimed by more than one device. WireGuard routes a /32 to one peer
-    /// only, so either device could end up with the other's rights: both are left
-    /// out (fail closed) and the caller reports them.
-    pub duplicate_ips: Vec<Ipv4Addr>,
+    pub skipped: Vec<(Ipv4Addr, Skip)>,
 }
 
 /// A complete `nft -f` script. It creates the table if missing, then deletes and
@@ -50,12 +57,16 @@ pub fn render_nft(state: &NftState) -> NftRender {
 
     let mut allow = Vec::new();
     let mut allow_icmp = Vec::new();
-    let mut duplicate_ips = Vec::new();
+    let mut skipped = Vec::new();
     for (ip, rights) in &by_ip {
         let [rights] = rights.as_slice() else {
-            duplicate_ips.push(*ip);
+            skipped.push((*ip, Skip::DuplicateIp));
             continue;
         };
+        if !TENANT_CIDR.contains(ip) {
+            skipped.push((*ip, Skip::OutsideTenantSpace));
+            continue;
+        }
         for e in rights.elements() {
             match e.service {
                 Service::Icmp => allow_icmp.push(format!("{ip} . {}", e.dst)),
@@ -93,8 +104,9 @@ pub fn render_nft(state: &NftState) -> NftRender {
     // swapped) for replies coming back to it, whichever interface they come from.
     // Conntrack only decides *which* check applies. Replies a tenant sends to
     // connections the hub or the admin (wg0) opened skip the check; a tenant cannot
-    // open those itself. ICMP errors related to a tracked flow pass: they carry no
-    // data, and PMTU discovery and port-unreachable depend on them.
+    // open those itself. There is deliberately no related-ICMP shortcut: ICMP
+    // errors can carry payload and match flows that outlive a revocation, so they
+    // pass only where @allow_icmp allows that host pair.
     let script = format!(
         "table inet wgate {{}}
 delete table inet wgate
@@ -102,7 +114,6 @@ delete table inet wgate
 table inet wgate {{
 {allow}{allow_icmp}\tchain tenant {{
 \t\tip daddr {TENANT_CIDR} counter drop
-\t\tct state related meta l4proto icmp accept
 \t\tip saddr . ip daddr . meta l4proto . th dport @allow accept
 \t\tmeta l4proto icmp ip saddr . ip daddr @allow_icmp accept
 \t\tcounter drop
@@ -111,7 +122,6 @@ table inet wgate {{
 \tchain tenant_reply {{
 \t\tip daddr . ip saddr . meta l4proto . th sport @allow accept
 \t\tmeta l4proto icmp ip daddr . ip saddr @allow_icmp accept
-\t\tct state related meta l4proto icmp accept
 \t\tcounter drop
 \t}}
 
@@ -119,6 +129,11 @@ table inet wgate {{
 \t\ttype filter hook input priority filter - 5; policy accept;
 \t\tiifname \"wg-*\" ct direction reply ct state established accept
 \t\tiifname \"wg-*\" jump tenant
+\t}}
+
+\tchain output {{
+\t\ttype filter hook output priority filter - 5; policy accept;
+\t\toifname \"wg-*\" ct direction reply jump tenant_reply
 \t}}
 
 \tchain forward {{
@@ -136,10 +151,7 @@ table inet wgate {{
 }}
 "
     );
-    NftRender {
-        script,
-        duplicate_ips,
-    }
+    NftRender { script, skipped }
 }
 
 fn set(name: &str, ty: &str, elements: &[String]) -> String {
@@ -195,7 +207,7 @@ mod tests {
     #[test]
     fn ruleset_golden() {
         let out = render_nft(&sample());
-        assert!(out.duplicate_ips.is_empty());
+        assert!(out.skipped.is_empty());
         assert_golden("ruleset.nft", &out.script);
     }
 
@@ -220,9 +232,24 @@ mod tests {
                 },
             ],
         });
-        assert_eq!(out.duplicate_ips, [ip]);
+        assert_eq!(out.skipped, [(ip, Skip::DuplicateIp)]);
         assert!(!out.script.contains("10.50.1.2 . "));
         assert!(out.script.contains("10.50.1.3 . "));
+    }
+
+    #[test]
+    fn devices_outside_tenant_space_are_left_out() {
+        let ip = Ipv4Addr::new(10, 49, 0, 2);
+        let out = render_nft(&NftState {
+            snat_source: Ipv4Addr::new(172, 19, 9, 10),
+            node_cidrs: vec![],
+            devices: vec![NftDevice {
+                ip,
+                rights: rights(&["tcp 10.0.0.0/8 22"]),
+            }],
+        });
+        assert_eq!(out.skipped, [(ip, Skip::OutsideTenantSpace)]);
+        assert!(!out.script.contains("10.49.0.2"));
     }
 
     #[test]

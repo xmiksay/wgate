@@ -25,7 +25,6 @@ table inet wgate {
 
 	chain tenant {
 		ip daddr 10.50.0.0/16 counter drop
-		ct state related meta l4proto icmp accept
 		ip saddr . ip daddr . meta l4proto . th dport @allow accept
 		meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
 		counter drop
@@ -34,7 +33,6 @@ table inet wgate {
 	chain tenant_reply {
 		ip daddr . ip saddr . meta l4proto . th sport @allow accept
 		meta l4proto icmp ip daddr . ip saddr @allow_icmp accept
-		ct state related meta l4proto icmp accept
 		counter drop
 	}
 
@@ -42,6 +40,11 @@ table inet wgate {
 		type filter hook input priority filter - 5; policy accept;
 		iifname "wg-*" ct direction reply ct state established accept
 		iifname "wg-*" jump tenant
+	}
+
+	chain output {
+		type filter hook output priority filter - 5; policy accept;
+		oifname "wg-*" ct direction reply jump tenant_reply
 	}
 
 	chain forward {
