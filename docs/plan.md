@@ -29,8 +29,12 @@ under sudo).
     51831–51839; 0 is reserved)
   - device IP = first free one in `.2–.254` (`.1` = hub)
 - Rendering:
-  - `render_nft(state) -> String`: the whole `table inet wgate` per design.md
-  - `render_client_config(device, hub, rules, private_key: Option<_>) -> String`
+  - `render_nft(&NftState) -> NftRender { script, duplicate_ips }`: the whole
+    `table inet wgate` per design.md; devices sharing an IP are left out and reported
+  - `render_client_config(&ClientConfig { address, private_key, hub_public_key,
+    endpoint, rights }) -> String`
+- As built: `Rule { dst, service: Service::{Tcp(PortRange), Udp(PortRange), Icmp} }`;
+  `RuleSet` is canonical and disjoint (nft rejects overlapping set elements).
 - Tests: unit tests for every function, proptest (`intersect` is commutative and
   `⊆` both inputs; `effective ⊆ company`), golden files for nft and the client config.
 

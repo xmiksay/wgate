@@ -6,6 +6,8 @@ use std::str::FromStr;
 
 use ipnet::Ipv4Net;
 
+use crate::net::TENANT_CIDR;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Proto {
     Tcp,
@@ -93,9 +95,13 @@ impl FromStr for PortRange {
     type Err = RuleError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // u16::from_str also takes `+80`; only plain digits round-trip through Display.
         let port = |p: &str| {
-            p.parse::<u16>()
-                .map_err(|_| RuleError::Parse(format!("invalid port `{p}`")))
+            p.bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| p.parse::<u16>().ok())
+                .flatten()
+                .ok_or_else(|| RuleError::Parse(format!("invalid port `{p}`")))
         };
         match s.split_once('-') {
             Some((from, to)) => Self::new(port(from)?, port(to)?),
@@ -116,6 +122,8 @@ pub enum RuleError {
     InvertedPorts { from: u16, to: u16 },
     #[error("{0} has host bits set; did you mean {1}?")]
     HostBits(Ipv4Net, Ipv4Net),
+    #[error("{0} is tenant space, which the hub never forwards to")]
+    TenantSpace(Ipv4Net),
     #[error("{0}")]
     Parse(String),
 }
@@ -181,6 +189,9 @@ impl Rule {
         let service = Service::new(proto, ports)?;
         if dst != dst.trunc() {
             return Err(RuleError::HostBits(dst, dst.trunc()));
+        }
+        if TENANT_CIDR.contains(&dst) {
+            return Err(RuleError::TenantSpace(dst));
         }
         Ok(Self { dst, service })
     }
@@ -276,6 +287,11 @@ mod tests {
         assert!(matches!(err("tcp 10.0.0.5/8 80"), RuleError::HostBits(..)));
         assert_eq!(err("tcp 10.0.0.0/8 0-80"), RuleError::PortZero);
         assert_eq!(err("tcp 10.0.0.0/8 0"), RuleError::PortZero);
+        assert!(matches!(
+            err("tcp 10.50.1.0/24 22"),
+            RuleError::TenantSpace(_)
+        ));
+        assert!(matches!(err("tcp 10.0.0.0/8 +80"), RuleError::Parse(_)));
         assert!(matches!(err("sctp 10.0.0.0/8 80"), RuleError::Parse(_)));
         assert!(matches!(
             err("tcp 10.0.0.0/8 80 extra"),

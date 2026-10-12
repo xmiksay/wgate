@@ -125,25 +125,24 @@ impl RuleSet {
             .is_some_and(|ports| ports.get(port.into()).is_some())
     }
 
-    /// Disjoint boxes covering exactly this set, sorted.
+    /// Disjoint boxes covering exactly this set: tcp, udp, then icmp, each by address.
     pub fn elements(&self) -> Vec<Element> {
         let range = |lo: u32, hi: u32| AddrRange {
             lo: lo.into(),
             hi: hi.into(),
         };
         let mut out = Vec::new();
-        for (plane, tcp) in [(&self.tcp, true), (&self.udp, false)] {
+        let planes = [
+            (&self.tcp, Service::Tcp as fn(PortRange) -> Service),
+            (&self.udp, Service::Udp),
+        ];
+        for (plane, service) in planes {
             for dst in plane.spans() {
                 for p in dst.val.spans() {
                     let ports = PortRange::from_span(p.lo, p.hi);
-                    let service = if tcp {
-                        Service::Tcp(ports)
-                    } else {
-                        Service::Udp(ports)
-                    };
                     out.push(Element {
                         dst: range(dst.lo, dst.hi),
-                        service,
+                        service: service(ports),
                     });
                 }
             }
