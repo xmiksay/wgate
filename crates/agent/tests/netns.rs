@@ -74,3 +74,14 @@ fn kernel_supports_wg_and_concat_interval_sets() {
         ),
     );
 }
+
+/// The rendered ruleset golden (core) must be accepted by the kernel — overlapping
+/// interval elements are rejected — and re-applying it must replace the table.
+#[test]
+#[ignore = "needs root: make test-netns"]
+fn rendered_ruleset_loads_and_reapplies() {
+    let ruleset = include_str!("../../core/tests/golden/ruleset.nft");
+    let ns = Netns::new("ruleset");
+    ns.exec(&["nft", "-f", "-"], Some(ruleset));
+    ns.exec(&["nft", "-f", "-"], Some(ruleset));
+}

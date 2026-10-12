@@ -13,6 +13,8 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
 - `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns.rs`;
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
+- Golden files live in `crates/core/tests/golden/`; `UPDATE_GOLDEN=1 cargo test -p wgate-core`
+  rewrites them. `ruleset.nft` is also loaded into a kernel by `make test-netns`.
 
 Done = `make lint` + `make test` green (+ `make test-netns` when agent code changed).
 
@@ -30,6 +32,8 @@ Done = `make lint` + `make test` green (+ `make test-netns` when agent code chan
   deliberately.
 - The agent owns `table inet wgate` (replaced atomically) and only `wg-*` interfaces it
   has in its state. Never touch `wg0` or other nft tables.
+- nft interval sets reject overlapping elements: rights go through `RuleSet` (canonical,
+  disjoint) before rendering — never emit raw rules into a set.
 - The tenant chain filters every packet — no `ct state established` shortcut
   (revocation must not depend on conntrack).
 - Hub private keys never leave `/var/lib/wgate/keys`; device private keys are never
