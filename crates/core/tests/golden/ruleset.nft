@@ -32,12 +32,13 @@ table inet wgate {
 
 	chain input {
 		type filter hook input priority filter - 5; policy accept;
+		iifname "wg-*" ct direction reply ct state established,related accept
 		iifname "wg-*" jump tenant
 	}
 
 	chain forward {
 		type filter hook forward priority filter - 5; policy accept;
-		iifname "wg-*" oifname "wg0" ct state established,related accept
+		iifname "wg-*" oifname "wg0" ct direction reply ct state established,related accept
 		iifname "wg-*" jump tenant
 		oifname "wg-*" iifname "wg0" accept
 		oifname "wg-*" ct state established,related accept

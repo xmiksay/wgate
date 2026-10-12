@@ -1,5 +1,6 @@
 //! Rendering of `table inet wgate` (design.md → Enforcement on the hub).
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::net::Ipv4Addr;
 
@@ -30,17 +31,22 @@ pub struct NftState {
 /// redefines it, so applying it is one atomic transaction that replaces the whole
 /// table whether or not it existed.
 pub fn render_nft(state: &NftState) -> String {
-    let mut devices: Vec<&NftDevice> = state.devices.iter().collect();
-    devices.sort_by_key(|d| d.ip);
+    // Merged per address: two entries for one IP would render overlapping elements,
+    // and nft would then reject the whole transaction, revocations included.
+    let mut by_ip: BTreeMap<Ipv4Addr, RuleSet> = BTreeMap::new();
+    for d in &state.devices {
+        let rights = by_ip.entry(d.ip).or_default();
+        *rights = rights.union(&d.rights);
+    }
 
     let mut allow = Vec::new();
     let mut allow_icmp = Vec::new();
-    for d in devices {
-        for e in d.rights.elements() {
+    for (ip, rights) in &by_ip {
+        for e in rights.elements() {
             match (e.proto, e.ports) {
-                (Proto::Icmp, _) => allow_icmp.push(format!("{} . {}", d.ip, e.dst)),
+                (Proto::Icmp, _) => allow_icmp.push(format!("{ip} . {}", e.dst)),
                 (proto, Some(ports)) => {
-                    allow.push(format!("{} . {} . {proto} . {ports}", d.ip, e.dst));
+                    allow.push(format!("{ip} . {} . {proto} . {ports}", e.dst));
                 }
                 (_, None) => {}
             }
@@ -58,9 +64,11 @@ pub fn render_nft(state: &NftState) -> String {
     set(&mut out, "allow_icmp", "ipv4_addr . ipv4_addr", &allow_icmp);
     // Tenant space is dropped before @allow: a broad rule (e.g. 0.0.0.0/0) must not
     // reach other companies or the hub's tenant addresses, and the accept below
-    // would otherwise end the forward chain before its cross-tenant drop. Tenant
-    // replies to connections the admin opened from wg0 skip the tenant chain; a
-    // tenant can never open such a connection itself.
+    // would otherwise end the forward chain before its cross-tenant drop.
+    //
+    // The only conntrack exemptions are reply-direction packets of connections the
+    // hub itself or the admin (from wg0) opened towards a tenant. Everything a tenant
+    // originates is still filtered per packet, so revoking a rule cuts its open flows.
     let _ = write!(
         out,
         "\tchain tenant {{
@@ -75,12 +83,13 @@ pub fn render_nft(state: &NftState) -> String {
 
 \tchain input {
 \t\ttype filter hook input priority filter - 5; policy accept;
+\t\tiifname \"wg-*\" ct direction reply ct state established,related accept
 \t\tiifname \"wg-*\" jump tenant
 \t}
 
 \tchain forward {
 \t\ttype filter hook forward priority filter - 5; policy accept;
-\t\tiifname \"wg-*\" oifname \"wg0\" ct state established,related accept
+\t\tiifname \"wg-*\" oifname \"wg0\" ct direction reply ct state established,related accept
 \t\tiifname \"wg-*\" jump tenant
 \t\toifname \"wg-*\" iifname \"wg0\" accept
 \t\toifname \"wg-*\" ct state established,related accept
@@ -157,6 +166,26 @@ mod tests {
     #[test]
     fn ruleset_golden() {
         assert_golden("ruleset.nft", &render_nft(&sample()));
+    }
+
+    #[test]
+    fn devices_sharing_an_ip_are_merged() {
+        let ip = Ipv4Addr::new(10, 50, 1, 2);
+        let out = render_nft(&NftState {
+            snat_source: Ipv4Addr::new(172, 19, 9, 10),
+            node_cidrs: vec![],
+            devices: vec![
+                NftDevice {
+                    ip,
+                    rights: rights(&["tcp 10.0.0.0/8 80-90"]),
+                },
+                NftDevice {
+                    ip,
+                    rights: rights(&["tcp 10.1.0.0/16 85-100"]),
+                },
+            ],
+        });
+        assert_eq!(out.matches("10.50.1.2 . ").count(), 3);
     }
 
     #[test]

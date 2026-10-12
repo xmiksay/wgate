@@ -16,12 +16,14 @@ const PORT_BASE: u16 = 51830;
 /// `.1` is the hub, `.255` broadcast.
 const DEVICE_HOSTS: RangeInclusive<u8> = 2..=254;
 
-/// Company slug, `[a-z0-9-]{1,11}`, so `wg-<slug>` fits the 15-byte IFNAMSIZ limit.
+/// Company slug, `[a-z0-9-]{1,11}` starting and ending alphanumeric, so `wg-<slug>` fits the 15-byte IFNAMSIZ limit.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Slug(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("slug must be 1–11 characters of a-z, 0-9 and -: `{0}`")]
+#[error(
+    "slug must be 1–11 characters of a-z, 0-9 and -, starting and ending with a letter or digit: `{0}`"
+)]
 pub struct InvalidSlug(pub String);
 
 impl Slug {
@@ -38,9 +40,12 @@ impl FromStr for Slug {
     type Err = InvalidSlug;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let ok = (1..=11).contains(&s.len())
-            && s.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        let alnum = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+        let b = s.as_bytes();
+        let ok = (1..=11).contains(&b.len())
+            && b.iter().all(|&c| alnum(c) || c == b'-')
+            && b.first().is_some_and(|&c| alnum(c))
+            && b.last().is_some_and(|&c| alnum(c));
         if ok {
             Ok(Self(s.to_owned()))
         } else {
@@ -122,7 +127,17 @@ mod tests {
         assert_eq!("a-1".parse::<Slug>().unwrap().as_str(), "a-1");
         let longest: Slug = "abcdefghijk".parse().unwrap();
         assert_eq!(longest.iface().len(), 14);
-        for bad in ["", "abcdefghijkl", "Nexial", "a_b", "a.b", "čau"] {
+        for bad in [
+            "",
+            "abcdefghijkl",
+            "Nexial",
+            "a_b",
+            "a.b",
+            "čau",
+            "-",
+            "-a",
+            "a-",
+        ] {
             assert!(bad.parse::<Slug>().is_err(), "{bad}");
         }
     }

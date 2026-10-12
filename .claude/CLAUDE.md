@@ -34,11 +34,13 @@ Done = `make lint` + `make test` green (+ `make test-netns` when agent code chan
   has in its state. Never touch `wg0` or other nft tables.
 - nft interval sets reject overlapping elements: rights go through `RuleSet` (canonical,
   disjoint) before rendering — never emit raw rules into a set.
-- The tenant chain filters every packet — no `ct state established` shortcut
-  (revocation must not depend on conntrack).
+- The tenant chain filters every packet a tenant originates — no `ct state
+  established` shortcut (revocation must not depend on conntrack). The only
+  exemption is `ct direction reply` for connections the hub or wg0 opened.
 - Hub private keys never leave `/var/lib/wgate/keys`; device private keys are never
   stored or logged.
 - No raw DB errors to API clients; typed `ApiError`.
-- Workspace clippy lints deny `unwrap`/`expect`/`panic`/`todo` outside tests;
-  integration test files `#![allow]` them explicitly.
+- Workspace clippy lints deny `unwrap`/`expect`/`panic`/`todo`. `clippy.toml` allows
+  them inside `#[test]`/`#[cfg(test)]`; integration-test helpers and proptest
+  strategies outside a `#[test]` fn need a file-level `#![allow]`.
 - Workflow: one branch + PR per plan step, rebase-merge (no merge commits).

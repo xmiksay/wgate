@@ -60,13 +60,6 @@ impl PortRange {
         Ok(Self { from, to })
     }
 
-    pub fn single(port: u16) -> Self {
-        Self {
-            from: port,
-            to: port,
-        }
-    }
-
     /// From a port span of a `RuleSet`, which only ever holds spans built from valid
     /// ranges, so the casts cannot truncate.
     pub(crate) fn from_span(lo: u32, hi: u32) -> Self {
@@ -106,7 +99,7 @@ impl FromStr for PortRange {
         };
         match s.split_once('-') {
             Some((from, to)) => Self::new(port(from)?, port(to)?),
-            None => Ok(Self::single(port(s)?)),
+            None => port(s).and_then(|p| Self::new(p, p)),
         }
     }
 }
@@ -239,6 +232,7 @@ mod tests {
         );
         assert!(matches!(err("tcp 10.0.0.5/8 80"), RuleError::HostBits(..)));
         assert_eq!(err("tcp 10.0.0.0/8 0-80"), RuleError::PortZero);
+        assert_eq!(err("tcp 10.0.0.0/8 0"), RuleError::PortZero);
         assert!(matches!(err("sctp 10.0.0.0/8 80"), RuleError::Parse(_)));
         assert!(matches!(
             err("tcp 10.0.0.0/8 80 extra"),

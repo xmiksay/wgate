@@ -159,9 +159,9 @@ impl RuleSet {
         out
     }
 
-    /// Minimal CIDRs covering every destination of any protocol: a client's
-    /// `AllowedIPs`.
-    pub fn destinations(&self) -> Vec<Ipv4Net> {
+    /// Minimal CIDRs covering every destination of any protocol, minus `except`:
+    /// a client's `AllowedIPs`, which must never contain the hub endpoint.
+    pub fn destinations(&self, except: Option<Ipv4Addr>) -> Vec<Ipv4Net> {
         let addrs = |plane: &Plane| {
             plane.spans().iter().fold(Line::default(), |acc, s| {
                 acc.op(&Line::single(s.lo, s.hi, ()), Op::Union)
@@ -170,6 +170,10 @@ impl RuleSet {
         let all = addrs(&self.tcp)
             .op(&addrs(&self.udp), Op::Union)
             .op(&self.icmp, Op::Union);
+        let all = match except {
+            Some(a) => all.op(&Line::single(a.into(), a.into(), ()), Op::Difference),
+            None => all,
+        };
         all.spans()
             .iter()
             .flat_map(|s| Ipv4Subnets::new(s.lo.into(), s.hi.into(), 0))
@@ -293,6 +297,17 @@ mod tests {
     }
 
     #[test]
+    fn destinations_leave_out_the_endpoint() {
+        let s = set(&["tcp 10.0.0.0/30 443"]);
+        let shown: Vec<String> = s
+            .destinations(Some("10.0.0.1".parse().unwrap()))
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(shown, ["10.0.0.0/32", "10.0.0.2/31"]);
+    }
+
+    #[test]
     fn destinations_aggregate_across_protocols() {
         let s = set(&[
             "tcp 172.16.16.1/32 6443",
@@ -300,7 +315,7 @@ mod tests {
             "icmp 172.19.9.11/32",
             "udp 172.19.9.12/32 53",
         ]);
-        let shown: Vec<String> = s.destinations().iter().map(|n| n.to_string()).collect();
+        let shown: Vec<String> = s.destinations(None).iter().map(|n| n.to_string()).collect();
         assert_eq!(
             shown,
             ["172.16.16.1/32", "172.19.9.10/31", "172.19.9.12/32"]
