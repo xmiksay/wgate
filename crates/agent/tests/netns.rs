@@ -1,69 +1,13 @@
-//! Root-only tests in throwaway network namespaces. Run with `make test-netns`.
+//! Root-only tests in throwaway network namespaces: the kernel accepts what core
+//! renders. Run with `make test-netns`.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use std::io::Write;
+mod common;
+
 use std::net::Ipv4Addr;
-use std::process::{Command, Stdio};
 
+use common::Netns;
 use wgate_core::{NftState, render_nft};
-
-/// A network namespace deleted on drop, so a failed assertion leaves nothing behind.
-struct Netns(String);
-
-impl Netns {
-    fn new(tag: &str) -> Self {
-        let name = format!("wgate-{tag}-{}", std::process::id());
-        run(Command::new("ip").args(["netns", "add", &name]), None);
-        Self(name)
-    }
-
-    fn cmd(&self, argv: &[&str]) -> Command {
-        let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.0]).args(argv);
-        cmd
-    }
-
-    fn exec(&self, argv: &[&str], stdin: Option<&str>) {
-        run(&mut self.cmd(argv), stdin);
-    }
-
-    fn output(&self, argv: &[&str]) -> String {
-        let out = self.cmd(argv).output().expect("spawn");
-        assert!(
-            out.status.success(),
-            "{argv:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).expect("utf-8")
-    }
-}
-
-impl Drop for Netns {
-    fn drop(&mut self) {
-        let _ = Command::new("ip").args(["netns", "del", &self.0]).status();
-    }
-}
-
-fn run(cmd: &mut Command, stdin: Option<&str>) {
-    let mut child = cmd
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .spawn()
-        .expect("spawn");
-    if let Some(input) = stdin {
-        child
-            .stdin
-            .take()
-            .expect("piped stdin")
-            .write_all(input.as_bytes())
-            .expect("write stdin");
-    }
-    let status = child.wait().expect("wait");
-    assert!(status.success(), "{cmd:?} failed: {status}");
-}
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
 /// with concatenated interval keys (design.md → Risks).
@@ -107,7 +51,8 @@ fn rendered_ruleset_loads_and_replaces() {
     let empty = render_nft(&NftState {
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![],
-        devices: vec![],
+        pool: vec![],
+        peers: vec![],
     });
     ns.exec(&["nft", "-f", "-"], Some(&empty.script));
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);

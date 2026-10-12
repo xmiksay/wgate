@@ -6,9 +6,12 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use ipnet::Ipv4Net;
 
 use crate::rights::RuleSet;
+use crate::rule::Service;
 
 pub struct ClientConfig<'a> {
     pub address: Ipv4Addr,
+    /// The network's hub address, source of the hub's ICMP errors.
+    pub hub_address: Ipv4Addr,
     /// `None` when the user brought their own key pair.
     pub private_key: Option<&'a str>,
     pub hub_public_key: &'a str,
@@ -20,8 +23,12 @@ pub struct ClientConfig<'a> {
 }
 
 /// `AllowedIPs` is the union of the outbound destinations and the inbound sources,
-/// so the client only routes what the hub would let through anyway. The endpoint is
+/// so the client only routes what the hub would let through anyway, plus the hub
+/// address (else the client would drop the hub's ICMP errors). The endpoint is
 /// left out: routing it into the tunnel would loop the handshake. No DNS is pushed.
+///
+/// Inbound sources are routed into the tunnel so replies reach them; a broad source
+/// (e.g. `0.0.0.0/0`) therefore makes the tunnel a full tunnel.
 pub fn render_client_config(c: &ClientConfig) -> String {
     let mut out = String::from("[Interface]\n");
     match c.private_key {
@@ -35,17 +42,16 @@ pub fn render_client_config(c: &ClientConfig) -> String {
         "Address = {}/32\n\n[Peer]\nPublicKey = {}\nEndpoint = {}\n",
         c.address, c.hub_public_key, c.endpoint
     );
+    let hub = RuleSet::for_nets(&[Ipv4Net::from(c.hub_address)], Service::Icmp);
     let allowed: Vec<String> = c
         .outbound
         .union(c.inbound)
+        .union(&hub)
         .addresses(&[Ipv4Net::from(*c.endpoint.ip())])
         .iter()
         .map(|n| n.to_string())
         .collect();
-    // An empty `AllowedIPs =` does not parse everywhere; no line means no routes.
-    if !allowed.is_empty() {
-        let _ = writeln!(out, "AllowedIPs = {}", allowed.join(", "));
-    }
+    let _ = writeln!(out, "AllowedIPs = {}", allowed.join(", "));
     out.push_str("PersistentKeepalive = 25\n");
     out
 }
@@ -71,6 +77,7 @@ mod tests {
     fn config<'a>(outbound: &'a RuleSet, private_key: Option<&'a str>) -> ClientConfig<'a> {
         ClientConfig {
             address: Ipv4Addr::new(10, 50, 1, 2),
+            hub_address: Ipv4Addr::new(10, 50, 1, 1),
             private_key,
             hub_public_key: HUB_PK,
             endpoint: "37.205.11.119:51831".parse().unwrap(),
@@ -102,7 +109,10 @@ mod tests {
     fn endpoint_is_never_routed_into_the_tunnel() {
         let r = rule_set(&["tcp 37.205.11.118/31 443"]);
         let out = render_client_config(&config(&r, None));
-        assert!(out.contains("AllowedIPs = 37.205.11.118/32\n"), "{out}");
+        assert!(
+            out.contains("AllowedIPs = 10.50.1.1/32, 37.205.11.118/32\n"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -115,14 +125,15 @@ mod tests {
         };
         let out = render_client_config(&c);
         assert!(
-            out.contains("AllowedIPs = 10.50.2.0/24, 10.244.0.0/16\n"),
+            out.contains("AllowedIPs = 10.50.1.1/32, 10.50.2.0/24, 10.244.0.0/16\n"),
             "{out}"
         );
     }
 
     #[test]
-    fn no_rights_means_no_allowed_ips() {
+    fn no_rights_route_only_the_hub_address() {
         let r = RuleSet::new();
-        assert!(!render_client_config(&config(&r, None)).contains("AllowedIPs"));
+        let out = render_client_config(&config(&r, None));
+        assert!(out.contains("AllowedIPs = 10.50.1.1/32\n"), "{out}");
     }
 }

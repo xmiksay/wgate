@@ -10,7 +10,9 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
 - `make lint` — clippy `--all-targets -D warnings`, `cargo fmt --check`, eslint
   (`--max-warnings=0`), vue-tsc
 - `make test` — `test-unit` (lib/bin tests) + `test-int` (`tests/*.rs`)
-- `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns.rs`;
+- `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns*.rs`
+  (kernel accepts the golden ruleset; real packets vs. the rendered ruleset over veth
+  links named `wg-*`, python3 endpoints);
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
 - Golden files live in `crates/core/tests/golden/`; `make golden` rewrites

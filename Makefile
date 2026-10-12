@@ -62,9 +62,9 @@ golden: ## Rewrite core golden files from the current output (review the diff!)
 # Test binaries are built as the user and only executed under sudo, so target/
 # stays user-owned.
 .PHONY: test-netns
-test-netns: ## Root-only tests in network namespaces (sudo)
+test-netns: ## Root-only tests in network namespaces (sudo, nft, wireguard, python3)
 	CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' \
-		cargo test -p wgate-agent --test netns -- --ignored --test-threads=1
+		cargo test -p wgate-agent --test 'netns*' -- --ignored --test-threads=1
 
 .PHONY: release
 release: web ## Static musl release binary + sha256 in dist/

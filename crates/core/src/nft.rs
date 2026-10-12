@@ -1,59 +1,41 @@
 //! Rendering of `table inet wgate` (design.md → Enforcement on the hub).
 
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{TENANT_CIDR, is_device_ip};
-use crate::rights::{RuleSet, subtract_nets};
+use crate::compile::{CompiledPeer, Id, overlapping};
+use crate::rights::subtract_nets;
 use crate::rule::Service;
-
-/// A device's address and its effective access.
-#[derive(Clone, Debug)]
-pub struct NftDevice {
-    pub ip: Ipv4Addr,
-    /// What the device may open (addresses = destinations).
-    pub outbound: RuleSet,
-    /// Who may open connections to the device (addresses = sources, ports = the
-    /// device's ports).
-    pub inbound: RuleSet,
-}
 
 #[derive(Clone, Debug)]
 pub struct NftState {
-    /// Hub address the tenants are SNATed to towards `node_cidrs`.
+    /// Hub address peers are SNATed to towards `node_cidrs`.
     pub snat_source: Ipv4Addr,
-    /// Networks whose hosts have no route back to the tenant subnets.
+    /// Networks whose hosts have no route back to tenant space.
     pub node_cidrs: Vec<Ipv4Net>,
-    /// Active devices only; a missing device has no access.
-    pub devices: Vec<NftDevice>,
+    pub pool: Vec<Ipv4Net>,
+    /// From [`crate::compile`]; a missing peer has no access.
+    pub peers: Vec<CompiledPeer>,
 }
 
-/// Why a device was left out of the ruleset (fail closed; the caller reports it).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Skip {
-    /// Not a `10.50.n.2–254` address of a valid `n`: not SNATed, and it could
-    /// shadow a hub address.
-    InvalidIp,
-    /// Claimed by more than one device. WireGuard routes a /32 to one peer only, so
-    /// either device could end up with the other's rights.
-    DuplicateIp,
-}
-
-/// The rendered script plus the devices left out of it.
+/// The rendered script plus the peers left out of it.
 #[derive(Clone, Debug)]
 pub struct NftRender {
     pub script: String,
-    pub skipped: Vec<(Ipv4Addr, Skip)>,
+    /// Peers whose addresses overlap another's (compile already drops those; this
+    /// guards the transaction, which nft would reject whole, revocations included).
+    pub skipped: Vec<Id>,
 }
 
-/// Set elements, keyed `device . addr . proto . port` (outbound) and
-/// `addr . device . proto . port` (inbound), so a packet's
-/// `saddr . daddr . proto . dport` looks up either set the same way.
+/// Set elements, keyed `peer . addr . proto . port` (outbound) and
+/// `addr . peer . proto . port` (inbound), so a packet's
+/// `saddr . daddr . proto . dport` looks up either set the same way. A router's LAN
+/// ranges are keyed like its own address.
 #[derive(Default)]
 struct Sets {
+    peer_addrs: Vec<String>,
     allow: Vec<String>,
     allow_icmp: Vec<String>,
     inbound: Vec<String>,
@@ -61,26 +43,49 @@ struct Sets {
 }
 
 impl Sets {
-    fn add(&mut self, ip: Ipv4Addr, d: &NftDevice) {
-        for e in d.outbound.elements() {
-            match e.service {
-                Service::Icmp => self.allow_icmp.push(format!("{ip} . {}", e.addrs)),
-                Service::Tcp(p) | Service::Udp(p) => {
-                    let proto = e.service.proto();
-                    self.allow
-                        .push(format!("{ip} . {} . {proto} . {p}", e.addrs));
-                }
+    fn add(&mut self, p: &CompiledPeer) {
+        let outbound = p.outbound.elements();
+        let inbound = p.inbound.elements();
+        for own in &p.addrs {
+            let own = range(*own);
+            self.peer_addrs.push(own.clone());
+            for e in &outbound {
+                let addrs = e.addrs.to_string();
+                push(
+                    &mut self.allow,
+                    &mut self.allow_icmp,
+                    e.service,
+                    [&own, &addrs],
+                );
+            }
+            for e in &inbound {
+                let addrs = e.addrs.to_string();
+                push(
+                    &mut self.inbound,
+                    &mut self.inbound_icmp,
+                    e.service,
+                    [&addrs, &own],
+                );
             }
         }
-        for e in d.inbound.elements() {
-            match e.service {
-                Service::Icmp => self.inbound_icmp.push(format!("{} . {ip}", e.addrs)),
-                Service::Tcp(p) | Service::Udp(p) => {
-                    let proto = e.service.proto();
-                    self.inbound
-                        .push(format!("{} . {ip} . {proto} . {p}", e.addrs));
-                }
-            }
+    }
+}
+
+/// `a.b.c.d` for a /32, `lo-hi` otherwise (the form `RuleSet` elements use).
+fn range(net: Ipv4Net) -> String {
+    if net.prefix_len() == 32 {
+        net.addr().to_string()
+    } else {
+        format!("{}-{}", net.network(), net.broadcast())
+    }
+}
+
+/// `saddr . daddr` plus `. proto . port` for tcp/udp, into the matching set.
+fn push(quads: &mut Vec<String>, pairs: &mut Vec<String>, service: Service, [s, d]: [&str; 2]) {
+    match service {
+        Service::Icmp => pairs.push(format!("{s} . {d}")),
+        Service::Tcp(p) | Service::Udp(p) => {
+            quads.push(format!("{s} . {d} . {} . {p}", service.proto()));
         }
     }
 }
@@ -89,38 +94,40 @@ impl Sets {
 /// redefines it, so applying it is one atomic transaction that replaces the whole
 /// table whether or not it existed.
 pub fn render_nft(state: &NftState) -> NftRender {
-    let mut by_ip: BTreeMap<Ipv4Addr, Vec<&NftDevice>> = BTreeMap::new();
-    for d in &state.devices {
-        by_ip.entry(d.ip).or_default().push(d);
-    }
-
+    let mut peers: Vec<&CompiledPeer> = state.peers.iter().collect();
+    peers.sort_by_key(|p| p.ip);
+    let skipped = overlapping(
+        &peers
+            .iter()
+            .map(|p| (p.id, p.addrs.clone()))
+            .collect::<Vec<_>>(),
+    );
     let mut sets = Sets::default();
-    let mut skipped = Vec::new();
-    for (&ip, devices) in &by_ip {
-        if !is_device_ip(ip) {
-            skipped.push((ip, Skip::InvalidIp));
-        } else if let [d] = devices.as_slice() {
-            sets.add(ip, d);
-        } else {
-            skipped.push((ip, Skip::DuplicateIp));
-        }
+    let mut tenant_space = state.pool.clone();
+    for p in peers.iter().filter(|p| !skipped.contains(&p.id)) {
+        sets.add(p);
+        tenant_space.extend(p.addrs.iter().skip(1));
     }
+    let tenant_space = subtract_nets(&tenant_space, &[]);
 
-    // Tenant space never needs SNAT, and SNATing hub→tenant traffic would break it.
-    let node_cidrs = subtract_nets(&state.node_cidrs, &[TENANT_CIDR]);
+    // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
+    let node_cidrs = subtract_nets(&state.node_cidrs, &tenant_space);
     let snat = if node_cidrs.is_empty() {
         String::new()
     } else {
         let nodes: Vec<String> = node_cidrs.iter().map(Ipv4Net::to_string).collect();
         format!(
-            "\t\tip saddr {TENANT_CIDR} ip daddr {{ {} }} snat ip to {}\n",
+            "\t\tip saddr @peer_addrs ip daddr {{ {} }} snat ip to {}\n",
             nodes.join(", "),
             state.snat_source
         )
     };
     let quad = "ipv4_addr . ipv4_addr . inet_proto . inet_service";
     let pair = "ipv4_addr . ipv4_addr";
+    let tenant_space: Vec<String> = tenant_space.into_iter().map(range).collect();
     let sets = [
+        set("tenant_space", "ipv4_addr", &tenant_space),
+        set("peer_addrs", "ipv4_addr", &sets.peer_addrs),
         set("allow", quad, &sets.allow),
         set("allow_icmp", pair, &sets.allow_icmp),
         set("inbound", quad, &sets.inbound),
@@ -128,15 +135,18 @@ pub fn render_nft(state: &NftState) -> NftRender {
     ]
     .concat();
 
-    // Revocation must not depend on conntrack, so every packet to or from a tenant
-    // is checked against the current sets; conntrack only picks *which* check:
-    // - from_tenant / to_tenant: whoever opens the connection. A tenant opening
-    //   into another tenant needs both its outbound right and the target's inbound
-    //   grant.
+    // Revocation must not depend on conntrack, so every packet to or from a peer is
+    // checked against the current sets; conntrack only picks *which* check:
+    // - from_tenant / to_tenant: whoever opens the connection. A peer opening to
+    //   another peer needs both its outbound right and the target's inbound right.
     // - tenant_answers / to_tenant_reply: the same lookups with the tuple swapped.
+    // Peer-to-peer is told apart by @peer_addrs, not by tenant space: a network's hub
+    // address is tenant space but no peer. Tenant source addresses are only believed
+    // on wg-* ingress (WireGuard checks them against the peer's AllowedIPs); anywhere
+    // else, or from a local socket posing as a peer, they are spoofed.
     // There is no related-ICMP shortcut (ICMP errors can carry payload and match
     // flows that outlive a revocation); only ICMP errors the hub itself generates
-    // pass unchecked. Untracked or invalid packets fall through to the drops.
+    // for a tracked flow pass unchecked. Untracked or invalid packets hit the drops.
     let fwd = "ip saddr . ip daddr . meta l4proto . th dport";
     let rev = "ip daddr . ip saddr . meta l4proto . th sport";
     let script = format!(
@@ -145,7 +155,7 @@ delete table inet wgate
 
 table inet wgate {{
 {sets}\tchain from_tenant {{
-\t\tip daddr {TENANT_CIDR} jump tenant_to_tenant
+\t\tip daddr @peer_addrs jump tenant_to_tenant
 \t\t{fwd} @allow accept
 \t\tmeta l4proto icmp ip saddr . ip daddr @allow_icmp accept
 \t\tcounter drop
@@ -158,7 +168,7 @@ table inet wgate {{
 \t}}
 
 \tchain tenant_answers {{
-\t\tip daddr {TENANT_CIDR} jump tenant_answers_tenant
+\t\tip daddr @peer_addrs jump tenant_answers_tenant
 \t\t{rev} @inbound accept
 \t\tmeta l4proto icmp ip daddr . ip saddr @inbound_icmp accept
 \t\tcounter drop
@@ -184,6 +194,7 @@ table inet wgate {{
 
 \tchain input {{
 \t\ttype filter hook input priority filter - 5; policy accept;
+\t\tiifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop
 \t\tiifname \"wg-*\" ct direction original jump from_tenant
 \t\tiifname \"wg-*\" ct direction reply jump tenant_answers
 \t\tiifname \"wg-*\" counter drop
@@ -191,7 +202,8 @@ table inet wgate {{
 
 \tchain output {{
 \t\ttype filter hook output priority filter - 5; policy accept;
-\t\toifname \"wg-*\" icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept
+\t\toifname \"wg-*\" ip saddr @peer_addrs counter drop
+\t\toifname \"wg-*\" ct state related icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept
 \t\toifname \"wg-*\" ct direction original jump to_tenant
 \t\toifname \"wg-*\" ct direction reply jump to_tenant_reply
 \t\toifname \"wg-*\" counter drop
@@ -199,6 +211,7 @@ table inet wgate {{
 
 \tchain forward {{
 \t\ttype filter hook forward priority filter - 5; policy accept;
+\t\tiifname != \"wg-*\" ip saddr @tenant_space counter drop
 \t\tiifname \"wg-*\" ct direction original jump from_tenant
 \t\tiifname \"wg-*\" ct direction reply jump tenant_answers
 \t\tiifname \"wg-*\" counter drop
@@ -231,114 +244,4 @@ fn set(name: &str, ty: &str, elements: &[String]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::testing::{assert_golden, rule_set as rights};
-
-    fn device(ip: [u8; 4], outbound: &[&str], inbound: &[&str]) -> NftDevice {
-        NftDevice {
-            ip: ip.into(),
-            outbound: rights(outbound),
-            inbound: rights(inbound),
-        }
-    }
-
-    fn state(devices: Vec<NftDevice>, node_cidrs: &[&str]) -> NftState {
-        NftState {
-            snat_source: Ipv4Addr::new(172, 19, 9, 10),
-            node_cidrs: node_cidrs.iter().map(|n| n.parse().unwrap()).collect(),
-            devices,
-        }
-    }
-
-    /// Two companies; overlapping rules on one device must render as disjoint
-    /// elements; 10.50.1.2 may SSH into 10.50.2.2 (both sides consent) and a k8s
-    /// pod network may reach it on 8080. The netns tests load this exact file.
-    fn sample() -> NftState {
-        state(
-            vec![
-                device(
-                    [10, 50, 2, 2],
-                    &["tcp 172.16.16.1/32 6443"],
-                    &["tcp 10.50.1.2/32 22", "tcp 10.244.0.0/16 8080"],
-                ),
-                device(
-                    [10, 50, 1, 2],
-                    &[
-                        "tcp 172.16.16.1/32 6443",
-                        "icmp 172.19.9.10/32",
-                        "icmp 172.19.9.11/32",
-                        "icmp 172.19.9.12/32",
-                        "tcp 10.0.0.0/8 80-90",
-                        "tcp 10.1.0.0/16 85-100",
-                        "udp 172.19.9.0/24 53",
-                        "tcp 10.50.2.0/24 22",
-                    ],
-                    &[],
-                ),
-                device([10, 50, 1, 3], &[], &[]),
-            ],
-            &["172.19.9.0/24"],
-        )
-    }
-
-    #[test]
-    fn ruleset_golden() {
-        let out = render_nft(&sample());
-        assert!(out.skipped.is_empty());
-        assert_golden("ruleset.nft", &out.script);
-    }
-
-    #[test]
-    fn invalid_and_duplicate_ips_are_left_out() {
-        let ssh = &["tcp 10.0.0.0/8 22"][..];
-        let out = render_nft(&state(
-            vec![
-                device([10, 50, 1, 2], ssh, &[]),
-                device([10, 50, 1, 2], &["icmp 172.19.9.10/32"], &[]),
-                device([10, 50, 1, 3], &["icmp 172.19.9.10/32"], &[]),
-                device([10, 49, 0, 2], ssh, &[]),
-                device([10, 49, 0, 2], ssh, &[]),
-                device([10, 50, 1, 1], ssh, &[]),
-            ],
-            &[],
-        ));
-        assert_eq!(
-            out.skipped,
-            [
-                ([10, 49, 0, 2].into(), Skip::InvalidIp),
-                ([10, 50, 1, 1].into(), Skip::InvalidIp),
-                ([10, 50, 1, 2].into(), Skip::DuplicateIp),
-            ]
-        );
-        for gone in ["10.50.1.2 . ", "10.49.0.2", "10.50.1.1 . "] {
-            assert!(!out.script.contains(gone), "{gone}");
-        }
-        assert!(out.script.contains("10.50.1.3 . "));
-    }
-
-    #[test]
-    fn node_cidrs_are_merged_without_tenant_space() {
-        let out = render_nft(&state(
-            vec![],
-            &[
-                "172.19.9.0/24",
-                "172.19.0.0/16",
-                "172.19.9.0/24",
-                "10.48.0.0/14",
-            ],
-        ));
-        assert!(
-            out.script
-                .contains("ip daddr { 10.48.0.0/15, 10.51.0.0/16, 172.19.0.0/16 } snat")
-        );
-    }
-
-    #[test]
-    fn empty_state_has_no_elements_or_snat() {
-        let out = render_nft(&state(vec![], &[])).script;
-        assert!(!out.contains("elements"));
-        assert!(!out.contains("snat"));
-        assert!(out.contains("counter drop"));
-    }
-}
+mod tests;

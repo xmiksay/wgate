@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 use proptest::prelude::*;
-use wgate_core::{PortRange, Proto, Rule, RuleSet, covers, effective};
+use wgate_core::{PortRange, Proto, Rule, RuleSet, covers};
 
 // A small universe (10.0.0.0/22, ports 1–99) so random rules actually overlap, plus
 // the domain edges (/0, 255.255.255.255, port 65535) where overflow would show.
@@ -80,15 +80,6 @@ proptest! {
         prop_assert_eq!(&i, &b.intersect(&a));
         prop_assert!(i.difference(&a).is_empty());
         prop_assert!(i.difference(&b).is_empty());
-    }
-
-    #[test]
-    fn effective_never_exceeds_company(
-        company in rule_set(),
-        groups in prop::collection::vec(rule_set(), 0..3),
-        user in rule_set(),
-    ) {
-        prop_assert!(effective(&company, &groups, &user).difference(&company).is_empty());
     }
 
     #[test]
