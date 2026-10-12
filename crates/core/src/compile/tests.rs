@@ -155,6 +155,44 @@ fn inbound_mirrors_rules_mesh_federation_and_grants() {
 }
 
 #[test]
+fn networks_outside_the_pool_or_overlapping_fail_closed() {
+    let mut s = state();
+    s.networks
+        .push(network(4, 10, "192.168.50.0/24", true, vec![]));
+    s.networks
+        .push(network(5, 10, "10.50.0.0/29", true, vec![]));
+    s.peers.push(peer(41, 4, "192.168.50.2", &[]));
+    s.peers.push(peer(51, 5, "10.50.0.5", &[]));
+    let c = compile(&s);
+    let mut skipped = c.skipped.clone();
+    skipped.sort_by_key(|(id, _)| *id);
+    // Network 5 overlaps A, so A's own peer fails closed too.
+    assert_eq!(
+        skipped,
+        [
+            (11, Problem::InvalidNetwork),
+            (41, Problem::InvalidNetwork),
+            (51, Problem::InvalidNetwork),
+        ]
+    );
+}
+
+#[test]
+fn lans_of_skipped_routers_stay_tenant_space() {
+    let mut s = state();
+    s.tenants[0].ceiling = rule_set(&["tcp 192.168.0.0/16 80"]);
+    s.networks[0].rules.push(external("tcp 192.168.0.0/16 80"));
+    s.peers.push(peer(12, A, "10.50.0.3", &[]));
+    s.peers.push(peer(32, C, "10.50.1.3", &["192.168.1.0/24"]));
+    let c = compile(&s);
+    assert!(c.skipped.contains(&(11, Problem::Overlap)));
+    assert!(c.skipped.contains(&(32, Problem::Overlap)));
+    let a2 = get(&c, 12);
+    assert!(!a2.outbound.allows(Proto::Tcp, ip("192.168.1.5"), 80));
+    assert!(a2.outbound.allows(Proto::Tcp, ip("192.168.2.5"), 80));
+}
+
+#[test]
 fn mesh_off_means_no_access_between_members() {
     let mut s = state();
     s.peers.push(peer(12, A, "10.50.0.3", &[]));
@@ -172,6 +210,10 @@ fn invalid_peers_are_skipped_and_others_compile_without_them() {
         peer(42, A, "10.50.0.4", &["10.50.7.0/24"]),
         peer(43, C, "10.50.1.3", &["192.168.1.128/25"]),
         peer(44, B, "10.50.0.20", &["10.60.0.0/24", "10.60.0.0/16"]),
+        // Nested in a CIDR that is itself nested at the same start (/32 then /24).
+        peer(45, B, "10.50.0.21", &["10.70.0.0/32"]),
+        peer(46, B, "10.50.0.22", &["10.70.0.0/24"]),
+        peer(47, B, "10.50.0.23", &["10.70.0.128/25"]),
     ]);
     let c = compile(&s);
     let mut skipped = c.skipped.clone();
@@ -185,6 +227,9 @@ fn invalid_peers_are_skipped_and_others_compile_without_them() {
             (42, Problem::RoutedInPool),
             (43, Problem::Overlap),
             (44, Problem::Overlap),
+            (45, Problem::Overlap),
+            (46, Problem::Overlap),
+            (47, Problem::Overlap),
         ]
     );
     // a1 is gone, so B no longer grants anything to its addresses.

@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{first_overlap, is_peer_ip};
+use crate::net::{first_overlap, is_inside, is_peer_ip};
 use crate::rights::RuleSet;
 use crate::rule::{Rule, Service};
 
@@ -84,6 +84,8 @@ pub struct CompiledPeer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
     UnknownNetwork,
+    /// Its network lies outside the pool or overlaps another network.
+    InvalidNetwork,
     /// Not a peer address of its network (outside it, the hub address, network or
     /// broadcast).
     InvalidIp,
@@ -100,12 +102,26 @@ pub struct Compiled {
 }
 
 pub fn compile(state: &DesiredState) -> Compiled {
-    let networks: HashMap<Id, &Network> = state.networks.iter().map(|n| (n.id, n)).collect();
+    // A network outside the pool or overlapping another would put its peers outside
+    // tenant space (no subtraction, no spoof guard): its peers fail closed.
+    let ranges: Vec<(Id, Vec<Ipv4Net>)> = state
+        .networks
+        .iter()
+        .map(|n| (n.id, vec![n.cidr]))
+        .collect();
+    let clashing = overlapping(&ranges);
+    let (networks, invalid): (Vec<&Network>, Vec<&Network>) = state
+        .networks
+        .iter()
+        .partition(|n| is_inside(n.cidr, &state.pool) && !clashing.contains(&n.id));
+    let invalid: Vec<Id> = invalid.iter().map(|n| n.id).collect();
+    let networks: HashMap<Id, &Network> = networks.into_iter().map(|n| (n.id, n)).collect();
     let mut skipped = Vec::new();
 
     let mut candidates = Vec::new();
     for p in &state.peers {
         let problem = match networks.get(&p.network) {
+            None if invalid.contains(&p.network) => Some(Problem::InvalidNetwork),
             None => Some(Problem::UnknownNetwork),
             Some(n) if !is_peer_ip(n.cidr, p.ip) => Some(Problem::InvalidIp),
             Some(_)
@@ -142,11 +158,13 @@ pub fn compile(state: &DesiredState) -> Compiled {
     }
     let empty = Vec::new();
     let members_of = |id: Id| members.get(&id).unwrap_or(&empty);
+    // Every declared LAN, also of skipped routers: a conflict must not turn a LAN
+    // into an external destination or drop it from the spoof guard.
     let tenant_space: Vec<Ipv4Net> = state
         .pool
         .iter()
         .copied()
-        .chain(valid.iter().flat_map(|p| p.routed.iter().copied()))
+        .chain(state.peers.iter().flat_map(|p| p.routed.iter().copied()))
         .collect();
     let tenant_space = RuleSet::everything(&tenant_space);
     let ceilings: HashMap<Id, &RuleSet> =
@@ -154,7 +172,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
 
     // Per network first; every member then only loses its own addresses.
     let mut per_network: HashMap<Id, (RuleSet, RuleSet)> = HashMap::new();
-    for n in &state.networks {
+    for n in networks.values() {
         let same_tenant = |id: Id| networks.get(&id).is_some_and(|m| m.tenant == n.tenant);
         let mut outbound = RuleSet::new();
         let mut external = Vec::new();
@@ -176,7 +194,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
         outbound = outbound.union(&external);
 
         let mut inbound = n.inbound.clone();
-        for m in &state.networks {
+        for m in networks.values() {
             if m.tenant != n.tenant {
                 continue;
             }
@@ -234,7 +252,8 @@ pub(crate) fn overlapping(items: &[(Id, Vec<Ipv4Net>)]) -> Vec<Id> {
         .iter()
         .flat_map(|(id, addrs)| addrs.iter().map(move |a| (*a, *id)))
         .collect();
-    all.sort_by_key(|(a, _)| (a.network(), std::cmp::Reverse(a.prefix_len())));
+    // Shorter prefix = wider: widest first among equal starts.
+    all.sort_by_key(|(a, _)| (a.network(), a.prefix_len()));
     let mut bad = Vec::new();
     // CIDRs either nest or are disjoint. Sorted by start, widest first, every overlap
     // is a CIDR nested in the last one that was not nested itself.

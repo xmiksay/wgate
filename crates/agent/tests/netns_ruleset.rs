@@ -5,7 +5,7 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -326,7 +326,7 @@ fn revocation_cuts_live_streams() {
         let (tx, rx) = mpsc::channel();
         let out = stream.take_stdout();
         std::thread::spawn(move || {
-            for _ in BufReader::new(out).lines() {
+            for _ in out.lines() {
                 let _ = tx.send(Instant::now());
             }
         });

@@ -75,40 +75,43 @@ impl Netns {
 
     /// A background process, killed on drop, with its stdout piped.
     pub fn spawn(&self, argv: &[&str]) -> Background {
-        let child = self
+        let mut child = self
             .cmd(argv)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn");
-        Background(child)
+        let out = child.stdout.take().map(BufReader::new);
+        Background { child, out }
     }
 }
 
-pub struct Background(pub Child);
+/// Keeps one `BufReader` for the process's stdout, so nothing read ahead is lost.
+pub struct Background {
+    child: Child,
+    out: Option<BufReader<ChildStdout>>,
+}
 
 impl Background {
     /// Blocks until the process prints a line (e.g. a server's "ready").
     pub fn wait_line(&mut self) -> String {
         let mut line = String::new();
-        BufReader::new(self.stdout())
+        self.out
+            .as_mut()
+            .expect("stdout not taken")
             .read_line(&mut line)
             .expect("read");
         line
     }
 
-    pub fn stdout(&mut self) -> &mut ChildStdout {
-        self.0.stdout.as_mut().expect("piped stdout")
-    }
-
-    pub fn take_stdout(&mut self) -> ChildStdout {
-        self.0.stdout.take().expect("piped stdout")
+    pub fn take_stdout(&mut self) -> BufReader<ChildStdout> {
+        self.out.take().expect("stdout not taken")
     }
 }
 
 impl Drop for Background {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
