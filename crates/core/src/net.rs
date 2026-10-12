@@ -1,6 +1,7 @@
 //! Addressing: slugs, the global pool, blocks, network ranges, peer IPs and ports
 //! (design.md → Decisions).
 
+use std::collections::HashSet;
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::ops::RangeInclusive;
@@ -89,7 +90,9 @@ pub fn next_free_net(within: &[Ipv4Net], taken: &[Ipv4Net], prefix: u8) -> Optio
 
 /// The hub's address in a network: its first host.
 pub fn hub_address(net: Ipv4Net) -> Ipv4Addr {
-    Ipv4Addr::from(u32::from(net.network()) + 1)
+    // Saturating only matters for /32 at the top of the space, which no valid
+    // network is (`MAX_NETWORK_PREFIX`).
+    Ipv4Addr::from(u32::from(net.network()).saturating_add(1))
 }
 
 /// Whether `ip` is assignable to a peer of `net`: a host other than the hub address.
@@ -103,10 +106,13 @@ pub fn is_peer_ip(net: Ipv4Net, ip: Ipv4Addr) -> bool {
 
 /// Lowest free peer address in `net`, or `None` when it is full.
 pub fn next_peer_ip(net: Ipv4Net, used: &[Ipv4Addr]) -> Option<Ipv4Addr> {
+    if net.prefix_len() > MAX_NETWORK_PREFIX {
+        return None;
+    }
+    let used: HashSet<&Ipv4Addr> = used.iter().collect();
+    // prefix <= 30, so network + 2 < broadcast and nothing overflows.
     let (lo, hi) = (u32::from(net.network()) + 2, u32::from(net.broadcast()));
-    (lo..hi)
-        .map(Ipv4Addr::from)
-        .find(|ip| is_peer_ip(net, *ip) && !used.contains(ip))
+    (lo..hi).map(Ipv4Addr::from).find(|ip| !used.contains(ip))
 }
 
 /// Lowest free listen port, or `None` when all 99 are taken.
@@ -197,6 +203,13 @@ mod tests {
             net("10.50.4.0/31"),
             Ipv4Addr::new(10, 50, 4, 1)
         ));
+        assert_eq!(next_peer_ip(net("255.255.255.254/31"), &[]), None);
+        assert_eq!(next_peer_ip(net("255.255.255.255/32"), &[]), None);
+        let top = net("255.255.255.252/30");
+        assert_eq!(
+            next_peer_ip(top, &[]),
+            Some(Ipv4Addr::new(255, 255, 255, 254))
+        );
         let tiny = net("10.50.4.0/30");
         assert_eq!(next_peer_ip(tiny, &[]), Some(Ipv4Addr::new(10, 50, 4, 2)));
     }

@@ -6,7 +6,7 @@ use std::net::Ipv4Addr;
 use ipnet::Ipv4Net;
 
 use crate::compile::{CompiledPeer, Id, overlapping};
-use crate::rights::subtract_nets;
+use crate::rights::{RuleSet, subtract_nets};
 use crate::rule::Service;
 
 #[derive(Clone, Debug)]
@@ -44,27 +44,30 @@ struct Sets {
 
 impl Sets {
     fn add(&mut self, p: &CompiledPeer) {
-        let outbound = p.outbound.elements();
-        let inbound = p.inbound.elements();
+        let shown = |s: &RuleSet| -> Vec<(Service, String)> {
+            s.elements()
+                .iter()
+                .map(|e| (e.service, e.addrs.to_string()))
+                .collect()
+        };
+        let (outbound, inbound) = (shown(&p.outbound), shown(&p.inbound));
         for own in &p.addrs {
             let own = range(*own);
             self.peer_addrs.push(own.clone());
-            for e in &outbound {
-                let addrs = e.addrs.to_string();
+            for (service, addrs) in &outbound {
                 push(
                     &mut self.allow,
                     &mut self.allow_icmp,
-                    e.service,
-                    [&own, &addrs],
+                    *service,
+                    [&own, addrs],
                 );
             }
-            for e in &inbound {
-                let addrs = e.addrs.to_string();
+            for (service, addrs) in &inbound {
                 push(
                     &mut self.inbound,
                     &mut self.inbound_icmp,
-                    e.service,
-                    [&addrs, &own],
+                    *service,
+                    [addrs, &own],
                 );
             }
         }
@@ -106,7 +109,7 @@ pub fn render_nft(state: &NftState) -> NftRender {
     let mut tenant_space = state.pool.clone();
     for p in peers.iter().filter(|p| !skipped.contains(&p.id)) {
         sets.add(p);
-        tenant_space.extend(p.addrs.iter().skip(1));
+        tenant_space.extend(p.addrs.iter().copied());
     }
     let tenant_space = subtract_nets(&tenant_space, &[]);
 
