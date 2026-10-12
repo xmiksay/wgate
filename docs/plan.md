@@ -20,8 +20,10 @@ under sudo).
 - `README.md`, `.claude/CLAUDE.md` (commands, layout, rules from design.md).
 
 ### 1.2 `core` — pure logic, no I/O
-- Types: `Proto`, `Rule {proto, dst: Ipv4Net, ports: Option<RangeInclusive<u16>>}`,
-  `RuleSet`.
+- Types: `Proto`, `Rule { net: Ipv4Net, service: Service::{Tcp(PortRange),
+  Udp(PortRange), Icmp} }`, `RuleSet` (canonical, disjoint: nft rejects overlapping set
+  elements). The same types carry outbound rights (net = destination) and inbound
+  grants (net = source).
 - `intersect(a, b) -> RuleSet`, `covers(ceiling, rule) -> Result<(), Uncovered>`,
   `effective(company, groups, user) -> RuleSet` exactly per design.md → Rights.
 - Allocators:
@@ -30,17 +32,16 @@ under sudo).
   - device IP = first free one in `.2–.254` (`.1` = hub)
 - Rendering:
   - `render_nft(&NftState) -> NftRender { script, skipped }`: the whole
-    `table inet wgate` per design.md; devices sharing an IP or outside 10.50/16 are
-    left out and reported
+    `table inet wgate` per design.md, from each device's `outbound` and `inbound`
+    sets; devices with an invalid or shared IP are left out and reported
   - `render_client_config(&ClientConfig { address, private_key, hub_public_key,
-    endpoint, rights }) -> String`
-- As built: `Rule { dst, service: Service::{Tcp(PortRange), Udp(PortRange), Icmp} }`;
-  `RuleSet` is canonical and disjoint (nft rejects overlapping set elements).
+    endpoint, outbound, inbound }) -> String`
 - Tests: unit tests for every function, proptest (`intersect` is commutative and
   `⊆` both inputs; `effective ⊆ company`), golden files for nft and the client config.
 
 ### 1.3 Database + migrations (`server`)
-- SeaORM entities + migrations for the tables in design.md → Data model. Unique:
+- SeaORM entities + migrations for the tables in design.md → Data model (incl.
+  `inbound`, with a CHECK for exactly one source kind). Unique:
   `company.slug`, `company.net_index`, `device.public_key`, `(company, device.ip)`,
   `(issuer, oidc_sub)`.
 - Trigger-free NOTIFY: every write transaction ends with
@@ -56,13 +57,14 @@ under sudo).
   (172.19.9.10), `node_cidrs` (172.19.9.0/24), `keys_dir`, `reconcile_interval = 60s`.
 - Loop:
   1. `LISTEN wgate_changed` or a tick
-  2. load the state
+  2. load the state; per device: effective outbound (tiered) and inbound (union of
+     grants on its company/groups/user, source scopes expanded to device IPs)
   3. per company: key in `keys_dir` (generate if missing, write `hub_key`)
   4. interface via `defguard_wireguard_rs` (create / address `10.50.n.1/24` /
      listen-port / delete a disabled one)
   5. diff peers → `remove` first, then `add`/`update`
   6. `nft -f -` with the rendered table (atomic)
-  7. `agent_status`
+  7. `agent_status` (incl. `NftRender.skipped` devices as an error)
 - Only manages interfaces with the `wg-` prefix it has in its state; it never touches
   `wg0`. An unknown `wg-*` interface → warn, do not delete.
 - An error in one company does not block the others; the error goes to `agent_status`
@@ -79,7 +81,8 @@ under sudo).
 - OIDC login (PKCE) for the admin only; sessions in Postgres, cookie
   `HttpOnly; Secure; SameSite=Lax`, CSRF token on writes.
 - REST `/api/v1`: CRUD companies, groups, users (+ group membership), rules (422 with
-  the uncovered part when not covered), devices (create with a server or pasted key,
+  the uncovered part when not covered), inbound grants (admin-only), devices (create
+  with a server or pasted key,
   revoke), `GET /status` (revision vs. applied).
 - Device create with a server key: the response contains the config + a QR (SVG). The
   private key is never stored or logged (`tracing` field skip, a test greps the log).
@@ -88,7 +91,8 @@ under sudo).
   coverage, revoke → NOTIFY arrives.
 
 ### 1.6 UI (admin)
-- Pages: Companies → detail (rules, groups, users, devices), Users → detail, Audit
+- Pages: Companies → detail (rules, inbound grants, groups, users, devices), Users →
+  detail, Audit
   (simple list), status bar "applied / pending".
 - Device creation dialog: config shown once + QR + download `.conf`.
 
@@ -100,7 +104,11 @@ under sudo).
 - Scenarios:
   - A pings `node` (allowed) and gets a reply through SNAT
   - A → TCP 6443 on the hub allowed, TCP 22 on the hub denied
-  - A → B denied; B → A denied
+  - A → B denied by default; with A's outbound right alone still denied; with B's
+    inbound grant alone still denied; with both allowed, and B's replies get through
+  - a source outside tenant space (namespace standing in for a pod / wg0 host) reaches
+    a device only with an inbound grant; revoking the grant kills a live stream
+  - hub-opened connection to a device (from 10.50.n.1) only with an inbound grant
   - revoking A's device during a live TCP stream kills it within 1 s
   - disabling company B deletes its interface while A's stream keeps running
   - a user rule narrower than the group/company is applied as the intersection
@@ -114,13 +122,15 @@ under sudo).
   - `wgate migrate`, start both units
 - `site.yml`: role `wgate` on the `wireguard_ui` host (tag `wgate`), after `firewall`.
 - Role `firewall`:
-  - `iifname "wg-*" accept` in input (delegation to `inet wgate`)
+  - `iifname "wg-*" accept` in input, `iifname/oifname "wg-*" accept` in forward
+    (delegation to `inet wgate`)
   - `firewall_public_udp` + range `51831-51839` on the wireguard_ui host
   - tests in `tests/` for the template
 - `manifests/infra/services`: `service-wgate.yaml`, `endpointslice-wgate-manual-0.yaml`
   (172.19.9.10:8470), `ingress-wgate.yaml` (vpn.mmik.cz, letsencrypt-prod).
-- wireguard-ui: `WGUI_DEFAULT_CLIENT_ALLOWED_IPS` + `10.50.0.0/16`. Add it by hand to
-  the admin's existing clients.
+- wireguard-ui: nothing by default (no implicit wg0 → tenant access). A wg0 client
+  named as the source of an inbound grant needs the target's address in its
+  `AllowedIPs`, added by hand.
 - DNS (web4u): `vpn.mmik.cz` A → 37.205.11.119.
 - Docs:
   - README: a VPN / wgate section, the `make wgate` target

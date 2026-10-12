@@ -99,7 +99,7 @@ proptest! {
                 .iter()
                 .filter(|e| {
                     e.service.proto() == p
-                        && e.dst.contains(addr)
+                        && e.addrs.contains(addr)
                         && e.service.ports().is_none_or(|r| (r.from()..=r.to()).contains(&port))
                 })
                 .count();
@@ -127,19 +127,19 @@ proptest! {
     }
 
     #[test]
-    fn destinations_are_exactly_the_element_addresses(s in rule_set(), pts in points()) {
-        let dsts = s.destinations(&[]);
+    fn addresses_are_exactly_the_element_addresses(s in rule_set(), pts in points()) {
+        let dsts = s.addresses(&[]);
         let elements = s.elements();
         for (_, addr, _) in pts {
             prop_assert_eq!(
                 dsts.iter().any(|n| n.contains(&addr)),
-                elements.iter().any(|e| e.dst.contains(addr)),
+                elements.iter().any(|e| e.addrs.contains(addr)),
                 "{}", addr
             );
         }
         for net in &dsts {
             for edge in [net.network(), net.broadcast()] {
-                prop_assert!(elements.iter().any(|e| e.dst.contains(edge)));
+                prop_assert!(elements.iter().any(|e| e.addrs.contains(edge)));
             }
         }
     }

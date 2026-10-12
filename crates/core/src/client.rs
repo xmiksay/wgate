@@ -5,7 +5,6 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use ipnet::Ipv4Net;
 
-use crate::net::TENANT_CIDR;
 use crate::rights::RuleSet;
 
 pub struct ClientConfig<'a> {
@@ -14,13 +13,15 @@ pub struct ClientConfig<'a> {
     pub private_key: Option<&'a str>,
     pub hub_public_key: &'a str,
     pub endpoint: SocketAddrV4,
-    pub rights: &'a RuleSet,
+    /// What the device may open.
+    pub outbound: &'a RuleSet,
+    /// Who may open connections to the device; their replies must route back.
+    pub inbound: &'a RuleSet,
 }
 
-/// `AllowedIPs` is the union of the rights' destinations, so the client only routes
-/// what the hub would let through anyway: the endpoint is left out (routing it into
-/// the tunnel would loop the handshake) and so is tenant space, which the hub always
-/// drops. No DNS is pushed.
+/// `AllowedIPs` is the union of the outbound destinations and the inbound sources,
+/// so the client only routes what the hub would let through anyway. The endpoint is
+/// left out: routing it into the tunnel would loop the handshake. No DNS is pushed.
 pub fn render_client_config(c: &ClientConfig) -> String {
     let mut out = String::from("[Interface]\n");
     match c.private_key {
@@ -35,8 +36,9 @@ pub fn render_client_config(c: &ClientConfig) -> String {
         c.address, c.hub_public_key, c.endpoint
     );
     let allowed: Vec<String> = c
-        .rights
-        .destinations(&[Ipv4Net::from(*c.endpoint.ip()), TENANT_CIDR])
+        .outbound
+        .union(c.inbound)
+        .addresses(&[Ipv4Net::from(*c.endpoint.ip())])
         .iter()
         .map(|n| n.to_string())
         .collect();
@@ -64,13 +66,16 @@ mod tests {
         ])
     }
 
-    fn config<'a>(rights: &'a RuleSet, private_key: Option<&'a str>) -> ClientConfig<'a> {
+    const NONE: &RuleSet = &RuleSet::new();
+
+    fn config<'a>(outbound: &'a RuleSet, private_key: Option<&'a str>) -> ClientConfig<'a> {
         ClientConfig {
             address: Ipv4Addr::new(10, 50, 1, 2),
             private_key,
             hub_public_key: HUB_PK,
             endpoint: "37.205.11.119:51831".parse().unwrap(),
-            rights,
+            outbound,
+            inbound: NONE,
         }
     }
 
@@ -101,11 +106,16 @@ mod tests {
     }
 
     #[test]
-    fn tenant_space_is_never_routed_into_the_tunnel() {
-        let r = rule_set(&["tcp 10.48.0.0/12 80"]);
-        let out = render_client_config(&config(&r, None));
+    fn inbound_sources_are_routed_back() {
+        let out_rights = rule_set(&["tcp 10.50.2.0/24 22"]);
+        let inbound = rule_set(&["tcp 10.244.0.0/16 8080"]);
+        let c = ClientConfig {
+            inbound: &inbound,
+            ..config(&out_rights, None)
+        };
+        let out = render_client_config(&c);
         assert!(
-            out.contains("AllowedIPs = 10.48.0.0/15, 10.51.0.0/16, 10.52.0.0/14, 10.56.0.0/13\n"),
+            out.contains("AllowedIPs = 10.50.2.0/24, 10.244.0.0/16\n"),
             "{out}"
         );
     }

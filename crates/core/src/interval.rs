@@ -15,9 +15,15 @@ pub(crate) struct IntervalMap<V> {
     spans: Vec<Span<V>>,
 }
 
+impl<V> IntervalMap<V> {
+    pub const fn empty() -> Self {
+        Self { spans: Vec::new() }
+    }
+}
+
 impl<V> Default for IntervalMap<V> {
     fn default() -> Self {
-        Self { spans: Vec::new() }
+        Self::empty()
     }
 }
 
@@ -101,7 +107,7 @@ impl<V: SetValue> IntervalMap<V> {
     }
 
     /// Appends a span right of all existing ones, merging when it touches an equal value.
-    fn push(&mut self, lo: u32, hi: u32, val: V) {
+    pub(crate) fn push(&mut self, lo: u32, hi: u32, val: V) {
         if let Some(last) = self.spans.last_mut()
             && u64::from(last.hi) + 1 == u64::from(lo)
             && last.val == val

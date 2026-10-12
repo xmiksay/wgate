@@ -1,12 +1,11 @@
-//! A single allow rule: `proto + dst CIDR + port range`.
+//! A single allow rule: `proto + CIDR + port range`. The CIDR is the destination for
+//! outbound rights and the source for inbound grants.
 
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
 use ipnet::Ipv4Net;
-
-use crate::net::TENANT_CIDR;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Proto {
@@ -122,8 +121,6 @@ pub enum RuleError {
     InvertedPorts { from: u16, to: u16 },
     #[error("{0} has host bits set; did you mean {1}?")]
     HostBits(Ipv4Net, Ipv4Net),
-    #[error("{0} is tenant space, which the hub never forwards to")]
-    TenantSpace(Ipv4Net),
     #[error("{0}")]
     Parse(String),
 }
@@ -163,41 +160,38 @@ impl Service {
     }
 }
 
-/// `proto dst [ports]`, shared by rules (CIDR) and rule-set elements (ranges).
+/// `proto net [ports]`, shared by rules (CIDR) and rule-set elements (ranges).
 pub(crate) fn fmt_rule(
     f: &mut fmt::Formatter<'_>,
     service: Service,
-    dst: impl fmt::Display,
+    net: impl fmt::Display,
 ) -> fmt::Result {
-    write!(f, "{} {dst}", service.proto())?;
+    write!(f, "{} {net}", service.proto())?;
     match service.ports() {
         Some(p) => write!(f, " {p}"),
         None => Ok(()),
     }
 }
 
-/// Valid by construction: `dst` is a network address (no host bits) and the
+/// Valid by construction: `net` is a network address (no host bits) and the
 /// service carries ports exactly when it is tcp/udp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rule {
-    dst: Ipv4Net,
+    net: Ipv4Net,
     service: Service,
 }
 
 impl Rule {
-    pub fn new(proto: Proto, dst: Ipv4Net, ports: Option<PortRange>) -> Result<Self, RuleError> {
+    pub fn new(proto: Proto, net: Ipv4Net, ports: Option<PortRange>) -> Result<Self, RuleError> {
         let service = Service::new(proto, ports)?;
-        if dst != dst.trunc() {
-            return Err(RuleError::HostBits(dst, dst.trunc()));
+        if net != net.trunc() {
+            return Err(RuleError::HostBits(net, net.trunc()));
         }
-        if TENANT_CIDR.contains(&dst) {
-            return Err(RuleError::TenantSpace(dst));
-        }
-        Ok(Self { dst, service })
+        Ok(Self { net, service })
     }
 
-    pub fn dst(&self) -> Ipv4Net {
-        self.dst
+    pub fn net(&self) -> Ipv4Net {
+        self.net
     }
 
     pub fn service(&self) -> Service {
@@ -215,7 +209,7 @@ impl Rule {
 
 impl fmt::Display for Rule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_rule(f, self.service, self.dst)
+        fmt_rule(f, self.service, self.net)
     }
 }
 
@@ -226,23 +220,23 @@ impl FromStr for Rule {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts = s.split_whitespace();
-        let (Some(proto), Some(dst)) = (parts.next(), parts.next()) else {
+        let (Some(proto), Some(net)) = (parts.next(), parts.next()) else {
             return Err(RuleError::Parse(format!(
-                "expected `proto dst [ports]`, got `{s}`"
+                "expected `proto net [ports]`, got `{s}`"
             )));
         };
-        let dst = match dst.parse::<Ipv4Net>() {
+        let net = match net.parse::<Ipv4Net>() {
             Ok(net) => net,
-            Err(_) => dst
+            Err(_) => net
                 .parse::<Ipv4Addr>()
                 .map(Ipv4Net::from)
-                .map_err(|_| RuleError::Parse(format!("invalid destination `{dst}`")))?,
+                .map_err(|_| RuleError::Parse(format!("invalid network `{net}`")))?,
         };
         let ports = parts.next().map(str::parse).transpose()?;
         if let Some(extra) = parts.next() {
             return Err(RuleError::Parse(format!("unexpected `{extra}`")));
         }
-        Self::new(proto.parse()?, dst, ports)
+        Self::new(proto.parse()?, net, ports)
     }
 }
 
@@ -272,7 +266,7 @@ mod tests {
     #[test]
     fn bare_address_is_host_route() {
         let r: Rule = "icmp 172.19.9.10".parse().unwrap();
-        assert_eq!(r.dst().prefix_len(), 32);
+        assert_eq!(r.net().prefix_len(), 32);
     }
 
     #[test]
@@ -287,10 +281,6 @@ mod tests {
         assert!(matches!(err("tcp 10.0.0.5/8 80"), RuleError::HostBits(..)));
         assert_eq!(err("tcp 10.0.0.0/8 0-80"), RuleError::PortZero);
         assert_eq!(err("tcp 10.0.0.0/8 0"), RuleError::PortZero);
-        assert!(matches!(
-            err("tcp 10.50.1.0/24 22"),
-            RuleError::TenantSpace(_)
-        ));
         assert!(matches!(err("tcp 10.0.0.0/8 +80"), RuleError::Parse(_)));
         assert!(matches!(err("sctp 10.0.0.0/8 80"), RuleError::Parse(_)));
         assert!(matches!(
