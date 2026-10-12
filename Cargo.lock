@@ -792,6 +792,9 @@ dependencies = [
 [[package]]
 name = "wgate-agent"
 version = "0.1.0"
+dependencies = [
+ "wgate-core",
+]
 
 [[package]]
 name = "wgate-core"

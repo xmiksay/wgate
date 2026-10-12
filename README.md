@@ -27,6 +27,7 @@ from `web/.nvmrc`.
 make deps        # npm ci in web/
 make lint        # clippy -D warnings, rustfmt, eslint, vue-tsc
 make test        # unit + integration
+make golden      # rewrite core golden files (nft ruleset, client configs)
 make test-netns  # root-only tests in network namespaces (sudo, nft, wireguard module)
 make release     # static x86_64 musl binary + sha256 in dist/
 make help        # all targets

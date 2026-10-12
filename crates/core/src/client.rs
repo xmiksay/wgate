@@ -3,6 +3,9 @@
 use std::fmt::Write;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
+use ipnet::Ipv4Net;
+
+use crate::net::TENANT_CIDR;
 use crate::rights::RuleSet;
 
 pub struct ClientConfig<'a> {
@@ -15,8 +18,9 @@ pub struct ClientConfig<'a> {
 }
 
 /// `AllowedIPs` is the union of the rights' destinations, so the client only routes
-/// what the hub would let through anyway. The endpoint itself is left out: routing
-/// it into the tunnel would loop the handshake. No DNS is pushed.
+/// what the hub would let through anyway: the endpoint is left out (routing it into
+/// the tunnel would loop the handshake) and so is tenant space, which the hub always
+/// drops. No DNS is pushed.
 pub fn render_client_config(c: &ClientConfig) -> String {
     let mut out = String::from("[Interface]\n");
     match c.private_key {
@@ -32,7 +36,7 @@ pub fn render_client_config(c: &ClientConfig) -> String {
     );
     let allowed: Vec<String> = c
         .rights
-        .destinations(Some(*c.endpoint.ip()))
+        .destinations(&[Ipv4Net::from(*c.endpoint.ip()), TENANT_CIDR])
         .iter()
         .map(|n| n.to_string())
         .collect();
@@ -94,6 +98,16 @@ mod tests {
         let r = rule_set(&["tcp 37.205.11.118/31 443"]);
         let out = render_client_config(&config(&r, None));
         assert!(out.contains("AllowedIPs = 37.205.11.118/32\n"), "{out}");
+    }
+
+    #[test]
+    fn tenant_space_is_never_routed_into_the_tunnel() {
+        let r = rule_set(&["tcp 10.48.0.0/12 80"]);
+        let out = render_client_config(&config(&r, None));
+        assert!(
+            out.contains("AllowedIPs = 10.48.0.0/15, 10.51.0.0/16, 10.52.0.0/14, 10.56.0.0/13\n"),
+            "{out}"
+        );
     }
 
     #[test]

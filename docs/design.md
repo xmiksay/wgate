@@ -16,7 +16,7 @@ devices after logging in through their company's OIDC provider.
 ## Decisions
 
 - Clients: plain WireGuard (Tailscale is out of scope)
-- Scale: up to 10 companies, a few dozen users, several devices per user
+- Scale: up to 9 companies (net_index 1–9 ↔ UDP 51831–51839), a few dozen users, several devices per user
 - Admin creates companies, groups and users and sets their rights; users add their own devices
 - Rights: company = ceiling, then group, then user (finest); never more than the company has
 - Login: OIDC, **one IdP per company**; the admin logs in through their own provider
@@ -80,7 +80,7 @@ audit        id, at, actor_user_id, action, target, detail jsonb
 ```
 
 OIDC client secrets stay out of the DB. They live in `/etc/wgate/server.toml`, which
-Ansible renders from the vault: there are at most 10 companies, so a new one means one
+Ansible renders from the vault: there are at most 9 companies, so a new one means one
 vault entry plus `make wgate`. The provider also gets a row in the DB through the UI.
 
 ## Rights
@@ -118,6 +118,12 @@ table inet wgate {
     meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
     counter drop
   }
+  chain tenant_reply {                                     # replies, tuple swapped
+    ip daddr . ip saddr . meta l4proto . th sport @allow accept
+    meta l4proto icmp ip daddr . ip saddr @allow_icmp accept
+    ct state related meta l4proto icmp accept
+    counter drop
+  }
   chain input   { type filter hook input   priority filter - 5;
     iifname "wg-*" ct direction reply ct state established,related accept  # replies to the hub
     iifname "wg-*" jump tenant
@@ -126,7 +132,7 @@ table inet wgate {
     iifname "wg-*" oifname "wg0" ct direction reply ct state established,related accept  # replies to the admin
     iifname "wg-*" jump tenant
     oifname "wg-*" iifname "wg0" accept                     # admin sees the tenants
-    oifname "wg-*" ct state established,related accept      # replies to tenants
+    oifname "wg-*" ct direction reply ct state established,related jump tenant_reply
     oifname "wg-*" drop                                     # nobody else, not even across tenants
   }
   chain postrouting { type nat hook postrouting priority srcnat;
@@ -145,6 +151,15 @@ table inet wgate {
   established` shortcut**. On vpsFree LXC the host owns conntrack (`conntrack -D` may
   not work), so revocation must not depend on clearing it. The only exemption is
   `ct direction reply`: replies to connections the hub or the admin (wg0) opened.
+- Replies to tenants go through `tenant_reply`, the same @allow check with the tuple
+  swapped, so revoking a rule also stops the return direction of open flows (e.g. a
+  node still streaming UDP). Conntrack only picks which check applies.
+- Rules apply to hub-local addresses too, through the input hook; that is how
+  `tcp 172.16.16.1/32 6443` reaches the k8s API. A broad rule (e.g. `0.0.0.0/0`)
+  therefore also opens the hub's own services on those ports. Keep company rules
+  specific.
+- Two devices with the same IP are both left out of the sets (fail closed) and
+  reported; the DB unique constraint should make this impossible.
 - `ip saddr` is trustworthy: WireGuard drops packets whose source is outside the
   sending peer's `AllowedIPs` (the device's /32), so a device cannot spoof another
   device's or another company's IP.

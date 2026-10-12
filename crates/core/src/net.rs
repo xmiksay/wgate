@@ -65,7 +65,7 @@ impl fmt::Display for Slug {
 pub struct NetIndex(u8);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("net_index {0} is outside 1..=9")]
+#[error("net_index {0} is outside {lo}..={hi}", lo = NET_INDEX_RANGE.start(), hi = NET_INDEX_RANGE.end())]
 pub struct InvalidNetIndex(pub i32);
 
 impl TryFrom<i32> for NetIndex {
