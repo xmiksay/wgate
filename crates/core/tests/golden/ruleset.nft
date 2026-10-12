@@ -8,7 +8,10 @@ table inet wgate {
 		elements = {
 			10.50.1.2 . 10.0.0.0-10.0.255.255 . tcp . 80-90,
 			10.50.1.2 . 10.1.0.0-10.1.255.255 . tcp . 80-100,
-			10.50.1.2 . 10.2.0.0-10.255.255.255 . tcp . 80-90,
+			10.50.1.2 . 10.2.0.0-10.50.1.255 . tcp . 80-90,
+			10.50.1.2 . 10.50.2.0-10.50.2.255 . tcp . 22,
+			10.50.1.2 . 10.50.2.0-10.50.2.255 . tcp . 80-90,
+			10.50.1.2 . 10.50.3.0-10.255.255.255 . tcp . 80-90,
 			10.50.1.2 . 172.16.16.1 . tcp . 6443,
 			10.50.1.2 . 172.19.9.0-172.19.9.255 . udp . 53,
 			10.50.2.2 . 172.16.16.1 . tcp . 6443
@@ -23,14 +26,53 @@ table inet wgate {
 		}
 	}
 
-	chain tenant {
-		ip daddr 10.50.0.0/16 counter drop
+	set inbound {
+		type ipv4_addr . ipv4_addr . inet_proto . inet_service
+		flags interval
+		elements = {
+			10.50.1.2 . 10.50.2.2 . tcp . 22,
+			10.244.0.0-10.244.255.255 . 10.50.2.2 . tcp . 8080
+		}
+	}
+
+	set inbound_icmp {
+		type ipv4_addr . ipv4_addr
+		flags interval
+	}
+
+	chain from_tenant {
+		ip daddr 10.50.0.0/16 jump tenant_to_tenant
 		ip saddr . ip daddr . meta l4proto . th dport @allow accept
 		meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
 		counter drop
 	}
 
-	chain tenant_reply {
+	chain tenant_to_tenant {
+		ip saddr . ip daddr . meta l4proto . th dport @allow ip saddr . ip daddr . meta l4proto . th dport @inbound accept
+		meta l4proto icmp ip saddr . ip daddr @allow_icmp ip saddr . ip daddr @inbound_icmp accept
+		counter drop
+	}
+
+	chain tenant_answers {
+		ip daddr 10.50.0.0/16 jump tenant_answers_tenant
+		ip daddr . ip saddr . meta l4proto . th sport @inbound accept
+		meta l4proto icmp ip daddr . ip saddr @inbound_icmp accept
+		counter drop
+	}
+
+	chain tenant_answers_tenant {
+		ip daddr . ip saddr . meta l4proto . th sport @allow ip daddr . ip saddr . meta l4proto . th sport @inbound accept
+		meta l4proto icmp ip daddr . ip saddr @allow_icmp ip daddr . ip saddr @inbound_icmp accept
+		counter drop
+	}
+
+	chain to_tenant {
+		ip saddr . ip daddr . meta l4proto . th dport @inbound accept
+		meta l4proto icmp ip saddr . ip daddr @inbound_icmp accept
+		counter drop
+	}
+
+	chain to_tenant_reply {
 		ip daddr . ip saddr . meta l4proto . th sport @allow accept
 		meta l4proto icmp ip daddr . ip saddr @allow_icmp accept
 		counter drop
@@ -38,22 +80,27 @@ table inet wgate {
 
 	chain input {
 		type filter hook input priority filter - 5; policy accept;
-		iifname "wg-*" ct direction reply ct state established accept
-		iifname "wg-*" jump tenant
+		iifname "wg-*" ct direction original jump from_tenant
+		iifname "wg-*" ct direction reply jump tenant_answers
+		iifname "wg-*" counter drop
 	}
 
 	chain output {
 		type filter hook output priority filter - 5; policy accept;
-		oifname "wg-*" ct direction reply jump tenant_reply
+		oifname "wg-*" icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+		oifname "wg-*" ct direction original jump to_tenant
+		oifname "wg-*" ct direction reply jump to_tenant_reply
+		oifname "wg-*" counter drop
 	}
 
 	chain forward {
 		type filter hook forward priority filter - 5; policy accept;
-		iifname "wg-*" oifname "wg0" ct direction reply ct state established accept
-		iifname "wg-*" jump tenant
-		oifname "wg-*" iifname "wg0" ct direction original accept
-		oifname "wg-*" ct direction reply ct state established,related jump tenant_reply
-		oifname "wg-*" drop
+		iifname "wg-*" ct direction original jump from_tenant
+		iifname "wg-*" ct direction reply jump tenant_answers
+		iifname "wg-*" counter drop
+		oifname "wg-*" ct direction original jump to_tenant
+		oifname "wg-*" ct direction reply jump to_tenant_reply
+		oifname "wg-*" counter drop
 	}
 
 	chain postrouting {

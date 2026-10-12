@@ -12,8 +12,10 @@ type Line = IntervalMap<()>;
 /// Destination address → set of ports.
 type Plane = IntervalMap<Line>;
 
-/// A set of allowed `(proto, dst, port)` points in canonical form, so `==` compares
-/// what is allowed rather than how it was written.
+/// A set of allowed `(proto, addr, port)` points in canonical form, so `==` compares
+/// what is allowed rather than how it was written. `addr` is the destination for
+/// outbound rights and the source for inbound grants; `port` is always the
+/// destination port.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuleSet {
     tcp: Plane,
@@ -48,19 +50,23 @@ impl fmt::Display for AddrRange {
 /// what nft interval sets require: they reject overlapping elements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Element {
-    pub dst: AddrRange,
+    pub addrs: AddrRange,
     pub service: Service,
 }
 
 impl fmt::Display for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_rule(f, self.service, self.dst)
+        fmt_rule(f, self.service, self.addrs)
     }
 }
 
 impl RuleSet {
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            tcp: Plane::empty(),
+            udp: Plane::empty(),
+            icmp: Line::empty(),
+        }
     }
 
     pub fn from_rules<'a>(rules: impl IntoIterator<Item = &'a Rule>) -> Self {
@@ -70,10 +76,7 @@ impl RuleSet {
     }
 
     fn from_rule(rule: &Rule) -> Self {
-        let (lo, hi) = (
-            u32::from(rule.dst().network()),
-            u32::from(rule.dst().broadcast()),
-        );
+        let (lo, hi) = span(rule.net());
         let plane =
             |p: PortRange| Plane::single(lo, hi, Line::single(p.from().into(), p.to().into(), ()));
         let mut set = Self::new();
@@ -137,42 +140,62 @@ impl RuleSet {
             (&self.udp, Service::Udp),
         ];
         for (plane, service) in planes {
-            for dst in plane.spans() {
-                for p in dst.val.spans() {
+            for a in plane.spans() {
+                for p in a.val.spans() {
                     let ports = PortRange::from_span(p.lo, p.hi);
                     out.push(Element {
-                        dst: range(dst.lo, dst.hi),
+                        addrs: range(a.lo, a.hi),
                         service: service(ports),
                     });
                 }
             }
         }
         out.extend(self.icmp.spans().iter().map(|s| Element {
-            dst: range(s.lo, s.hi),
+            addrs: range(s.lo, s.hi),
             service: Service::Icmp,
         }));
         out
     }
 
-    /// Minimal CIDRs covering every destination of any protocol, minus `except`.
-    pub fn destinations(&self, except: &[Ipv4Net]) -> Vec<Ipv4Net> {
+    /// Minimal CIDRs covering every address of any protocol, minus `except`.
+    pub fn addresses(&self, except: &[Ipv4Net]) -> Vec<Ipv4Net> {
+        // Plane spans are sorted and disjoint, so pushing them in order is enough.
         let addrs = |plane: &Plane| {
-            plane.spans().iter().fold(Line::default(), |acc, s| {
-                acc.op(&Line::single(s.lo, s.hi, ()), Op::Union)
-            })
+            let mut line = Line::default();
+            for s in plane.spans() {
+                line.push(s.lo, s.hi, ());
+            }
+            line
         };
         let all = addrs(&self.tcp)
             .op(&addrs(&self.udp), Op::Union)
             .op(&self.icmp, Op::Union);
-        let all = except.iter().fold(all, |acc, n| {
-            let n = Line::single(n.network().into(), n.broadcast().into(), ());
-            acc.op(&n, Op::Difference)
-        });
-        all.spans()
-            .iter()
-            .flat_map(|s| Ipv4Subnets::new(s.lo.into(), s.hi.into(), 0))
-            .collect()
+        minus(all, except)
     }
+}
+
+/// `nets` minus `except`, as minimal CIDRs.
+pub fn subtract_nets(nets: &[Ipv4Net], except: &[Ipv4Net]) -> Vec<Ipv4Net> {
+    let all = nets.iter().fold(Line::default(), |acc, &n| {
+        let (lo, hi) = span(n);
+        acc.op(&Line::single(lo, hi, ()), Op::Union)
+    });
+    minus(all, except)
+}
+
+fn minus(line: Line, except: &[Ipv4Net]) -> Vec<Ipv4Net> {
+    let line = except.iter().fold(line, |acc, &n| {
+        let (lo, hi) = span(n);
+        acc.op(&Line::single(lo, hi, ()), Op::Difference)
+    });
+    line.spans()
+        .iter()
+        .flat_map(|s| Ipv4Subnets::new(s.lo.into(), s.hi.into(), 0))
+        .collect()
+}
+
+fn span(net: Ipv4Net) -> (u32, u32) {
+    (net.network().into(), net.broadcast().into())
 }
 
 /// `effective(user) = company ∩ (user rules if any, else the union of the user's
@@ -291,10 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn destinations_leave_out_the_endpoint() {
+    fn addresses_leave_out_the_endpoint() {
         let s = set(&["tcp 10.0.0.0/30 443"]);
         let shown: Vec<String> = s
-            .destinations(&["10.0.0.1/32".parse().unwrap()])
+            .addresses(&["10.0.0.1/32".parse().unwrap()])
             .iter()
             .map(|n| n.to_string())
             .collect();
@@ -302,14 +325,14 @@ mod tests {
     }
 
     #[test]
-    fn destinations_aggregate_across_protocols() {
+    fn addresses_aggregate_across_protocols() {
         let s = set(&[
             "tcp 172.16.16.1/32 6443",
             "icmp 172.19.9.10/32",
             "icmp 172.19.9.11/32",
             "udp 172.19.9.12/32 53",
         ]);
-        let shown: Vec<String> = s.destinations(&[]).iter().map(|n| n.to_string()).collect();
+        let shown: Vec<String> = s.addresses(&[]).iter().map(|n| n.to_string()).collect();
         assert_eq!(
             shown,
             ["172.16.16.1/32", "172.19.9.10/31", "172.19.9.12/32"]

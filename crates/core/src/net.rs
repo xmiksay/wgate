@@ -109,6 +109,12 @@ impl NetIndex {
     }
 }
 
+/// Whether `ip` is an assignable device address: `10.50.n.2–254` of a valid `n`.
+pub fn is_device_ip(ip: Ipv4Addr) -> bool {
+    let [a, b, n, h] = ip.octets();
+    (a, b) == (10, 50) && NET_INDEX_RANGE.contains(&n) && DEVICE_HOSTS.contains(&h)
+}
+
 /// Lowest free `net_index`, or `None` when all are taken.
 pub fn next_net_index(used: &[NetIndex]) -> Option<NetIndex> {
     NET_INDEX_RANGE
@@ -169,6 +175,23 @@ mod tests {
         assert_eq!(next_net_index(&[n(1), n(2), n(4)]), Some(n(3)));
         let all: Vec<_> = (1..=9).map(n).collect();
         assert_eq!(next_net_index(&all), None);
+    }
+
+    #[test]
+    fn device_ip_validity() {
+        for ok in ["10.50.1.2", "10.50.9.254"] {
+            assert!(is_device_ip(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in [
+            "10.50.1.1",
+            "10.50.1.0",
+            "10.50.1.255",
+            "10.50.0.5",
+            "10.50.10.5",
+            "10.49.1.2",
+        ] {
+            assert!(!is_device_ip(bad.parse().unwrap()), "{bad}");
+        }
     }
 
     #[test]

@@ -35,11 +35,13 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   has in its state. Never touch `wg0` or other nft tables.
 - nft interval sets reject overlapping elements: rights go through `RuleSet` (canonical,
   disjoint) before rendering — never emit raw rules into a set.
-- The tenant chain filters every packet a tenant originates — no `ct state
-  established` shortcut (revocation must not depend on conntrack). The only
-  exemption is `ct direction reply` + `established` for connections the hub or wg0
-  opened. No related-ICMP shortcut either; replies to tenants (forward and output)
-  go through `tenant_reply`, the swapped @allow check.
+- Every packet to or from a tenant is checked against the current sets in both
+  directions (replies with the tuple swapped) — no `ct state established` and no
+  related-ICMP shortcut; revocation must not depend on conntrack. Conntrack only picks
+  the chain via `ct direction`. Only hub-generated ICMP errors pass unchecked.
+- Nothing reaches a device without an inbound grant; no implicit trust for wg0 or the
+  master. Device → device across companies needs the opener's outbound right and the
+  target's inbound grant.
 - Hub private keys never leave `/var/lib/wgate/keys`; device private keys are never
   stored or logged.
 - No raw DB errors to API clients; typed `ApiError`.

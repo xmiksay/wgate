@@ -9,10 +9,11 @@ mod rule;
 
 pub use client::{ClientConfig, render_client_config};
 pub use net::{
-    InvalidNetIndex, InvalidSlug, NET_INDEX_RANGE, NetIndex, Slug, TENANT_CIDR, next_net_index,
+    InvalidNetIndex, InvalidSlug, NET_INDEX_RANGE, NetIndex, Slug, TENANT_CIDR, is_device_ip,
+    next_net_index,
 };
 pub use nft::{NftDevice, NftRender, NftState, Skip, render_nft};
-pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, effective};
+pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, effective, subtract_nets};
 pub use rule::{PortRange, Proto, Rule, RuleError, Service};
 
 #[cfg(test)]
