@@ -118,9 +118,12 @@ table inet wgate {
     meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
     counter drop
   }
-  chain input   { type filter hook input   priority filter - 5; iifname "wg-*" jump tenant; }
+  chain input   { type filter hook input   priority filter - 5;
+    iifname "wg-*" ct direction reply ct state established,related accept  # replies to the hub
+    iifname "wg-*" jump tenant
+  }
   chain forward { type filter hook forward priority filter - 5;
-    iifname "wg-*" oifname "wg0" ct state established,related accept   # replies to the admin
+    iifname "wg-*" oifname "wg0" ct direction reply ct state established,related accept  # replies to the admin
     iifname "wg-*" jump tenant
     oifname "wg-*" iifname "wg0" accept                     # admin sees the tenants
     oifname "wg-*" ct state established,related accept      # replies to tenants
@@ -138,9 +141,10 @@ table inet wgate {
   rights as non-overlapping `saddr . dst-range . proto . port-range` boxes, e.g.
   `tcp 10.0.0.0/8 80-90` + `tcp 10.1.0.0/16 85-100` become three elements.
   The inet family needs `snat ip to`.
-- The tenant chain filters **every packet, with no `ct state established` shortcut**.
-  On vpsFree LXC the host owns conntrack (`conntrack -D` may not work), so revocation
-  must not depend on clearing it.
+- The tenant chain filters **every packet a tenant originates, with no `ct state
+  established` shortcut**. On vpsFree LXC the host owns conntrack (`conntrack -D` may
+  not work), so revocation must not depend on clearing it. The only exemption is
+  `ct direction reply`: replies to connections the hub or the admin (wg0) opened.
 - `ip saddr` is trustworthy: WireGuard drops packets whose source is outside the
   sending peer's `AllowedIPs` (the device's /32), so a device cannot spoof another
   device's or another company's IP.
