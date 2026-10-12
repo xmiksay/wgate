@@ -1,12 +1,12 @@
 //! Desired state → per-peer access sets (design.md → Rights).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{first_overlap, is_inside, is_peer_ip};
-use crate::rights::RuleSet;
+use crate::net::{first_overlap, hub_address, is_inside, is_peer_ip};
+use crate::rights::{RuleSet, subtract_nets};
 use crate::rule::{Rule, Service};
 
 pub type Id = i64;
@@ -99,22 +99,25 @@ pub enum Problem {
 pub struct Compiled {
     pub peers: Vec<CompiledPeer>,
     pub skipped: Vec<(Id, Problem)>,
+    /// The pool plus every declared routed LAN (also of skipped routers), merged:
+    /// what nft treats as tenant space.
+    pub tenant_space: Vec<Ipv4Net>,
 }
 
 pub fn compile(state: &DesiredState) -> Compiled {
-    // A network outside the pool or overlapping another would put its peers outside
-    // tenant space (no subtraction, no spoof guard): its peers fail closed.
+    // A network outside the pool or overlapping an older one would put its peers
+    // outside tenant space (no subtraction, no spoof guard): its peers fail closed.
     let ranges: Vec<(Id, Vec<Ipv4Net>)> = state
         .networks
         .iter()
         .map(|n| (n.id, vec![n.cidr]))
         .collect();
-    let clashing = overlapping(&ranges);
+    let clashing = conflicting(&ranges);
     let (networks, invalid): (Vec<&Network>, Vec<&Network>) = state
         .networks
         .iter()
-        .partition(|n| is_inside(n.cidr, &state.pool) && !clashing.contains(&n.id));
-    let invalid: Vec<Id> = invalid.iter().map(|n| n.id).collect();
+        .partition(|n| is_inside(n.cidr, &state.pool) && clashing.binary_search(&n.id).is_err());
+    let invalid: HashSet<Id> = invalid.iter().map(|n| n.id).collect();
     let networks: HashMap<Id, &Network> = networks.into_iter().map(|n| (n.id, n)).collect();
     let mut skipped = Vec::new();
 
@@ -140,11 +143,11 @@ pub fn compile(state: &DesiredState) -> Compiled {
     }
     let candidate_addrs: Vec<(Id, Vec<Ipv4Net>)> =
         candidates.iter().map(|p| (p.id, addrs(p))).collect();
-    let overlapping = overlapping(&candidate_addrs);
+    let conflicts = conflicting(&candidate_addrs);
     let valid: Vec<&Peer> = candidates
         .into_iter()
         .filter(|p| {
-            let bad = overlapping.contains(&p.id);
+            let bad = conflicts.binary_search(&p.id).is_ok();
             if bad {
                 skipped.push((p.id, Problem::Overlap));
             }
@@ -160,13 +163,21 @@ pub fn compile(state: &DesiredState) -> Compiled {
     let members_of = |id: Id| members.get(&id).unwrap_or(&empty);
     // Every declared LAN, also of skipped routers: a conflict must not turn a LAN
     // into an external destination or drop it from the spoof guard.
-    let tenant_space: Vec<Ipv4Net> = state
+    let tenant_nets: Vec<Ipv4Net> = state
         .pool
         .iter()
         .copied()
         .chain(state.peers.iter().flat_map(|p| p.routed.iter().copied()))
         .collect();
-    let tenant_space = RuleSet::everything(&tenant_space);
+    let tenant_nets = subtract_nets(&tenant_nets, &[]);
+    let tenant_space = RuleSet::everything(&tenant_nets);
+    // Inbound grants are for sources outside tenant space; the only in-pool source
+    // that is no peer is a hub address (hub-opened connections).
+    let hubs: Vec<Ipv4Net> = networks
+        .values()
+        .map(|n| Ipv4Net::from(hub_address(n.cidr)))
+        .collect();
+    let not_grantable = RuleSet::everything(&subtract_nets(&tenant_nets, &hubs));
     let ceilings: HashMap<Id, &RuleSet> =
         state.tenants.iter().map(|t| (t.id, &t.ceiling)).collect();
 
@@ -193,7 +204,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
             .difference(&tenant_space);
         outbound = outbound.union(&external);
 
-        let mut inbound = n.inbound.clone();
+        let mut inbound = n.inbound.difference(&not_grantable);
         for m in networks.values() {
             if m.tenant != n.tenant {
                 continue;
@@ -237,7 +248,11 @@ pub fn compile(state: &DesiredState) -> Compiled {
             })
         })
         .collect();
-    Compiled { peers, skipped }
+    Compiled {
+        peers,
+        skipped,
+        tenant_space: tenant_nets,
+    }
 }
 
 fn addrs(p: &Peer) -> Vec<Ipv4Net> {
@@ -246,26 +261,25 @@ fn addrs(p: &Peer) -> Vec<Ipv4Net> {
         .collect()
 }
 
-/// Ids whose addresses overlap another id's (or each other's).
-pub(crate) fn overlapping(items: &[(Id, Vec<Ipv4Net>)]) -> Vec<Id> {
-    let mut all: Vec<(Ipv4Net, Id)> = items
-        .iter()
-        .flat_map(|(id, addrs)| addrs.iter().map(move |a| (*a, *id)))
-        .collect();
-    // Shorter prefix = wider: widest first among equal starts.
-    all.sort_by_key(|(a, _)| (a.network(), a.prefix_len()));
+/// Sorted ids that lose an address conflict. The lowest id keeps its addresses, so
+/// a newcomer that overlaps (e.g. another tenant's router claiming the same LAN)
+/// fails closed alone instead of knocking out what already works. An item whose own
+/// addresses overlap each other always loses.
+pub(crate) fn conflicting(items: &[(Id, Vec<Ipv4Net>)]) -> Vec<Id> {
+    let mut items: Vec<&(Id, Vec<Ipv4Net>)> = items.iter().collect();
+    items.sort_by_key(|(id, _)| *id);
+    let mut taken: Vec<Ipv4Net> = Vec::new();
     let mut bad = Vec::new();
-    // CIDRs either nest or are disjoint. Sorted by start, widest first, every overlap
-    // is a CIDR nested in the last one that was not nested itself.
-    let mut outer: Option<(Ipv4Net, Id)> = None;
-    for (a, id) in all {
-        match outer {
-            Some((o, oid)) if o.contains(&a.network()) => bad.extend([oid, id]),
-            _ => outer = Some((a, id)),
+    for (id, addrs) in items {
+        let clash = addrs.iter().enumerate().any(|(i, a)| {
+            first_overlap(*a, &taken).is_some() || first_overlap(*a, &addrs[i + 1..]).is_some()
+        });
+        if clash {
+            bad.push(*id);
+        } else {
+            taken.extend(addrs);
         }
     }
-    bad.sort_unstable();
-    bad.dedup();
     bad
 }
 

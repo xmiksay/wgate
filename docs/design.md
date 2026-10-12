@@ -170,6 +170,7 @@ The exact ruleset is the golden file `crates/core/tests/golden/ruleset.nft`; in 
 
 ```nft
 table inet wgate {
+  set tenant_space { pool + routed LANs }
   set peer_addrs   { peer addrs }                      # all addrs(peer), interval
   set allow        { peer . dst . proto . dport }      # outbound
   set allow_icmp   { peer . dst }
@@ -186,10 +187,10 @@ table inet wgate {
   chain to_tenant_reply       { rev @allow accept; drop }
   # (each chain has the same pair of rules for icmp against the *_icmp sets)
 
-  input:   non-wg ingress claiming a tenant source → drop;
-           iifname wg-*  original → from_tenant, reply → tenant_answers, else drop
-  forward: non-wg ingress claiming a tenant source → drop; same for iifname wg-*,
-           then oifname wg-*: original → to_tenant, reply → to_tenant_reply, else drop
+  prerouting (raw): non-wg ingress claiming a tenant source → drop
+  input:   iifname wg-*  original → from_tenant, reply → tenant_answers, else drop
+  forward: same for iifname wg-*, then oifname wg-*: original → to_tenant,
+           reply → to_tenant_reply, else drop
   output:  oifname wg-*: a local socket posing as a peer → drop; hub ICMP errors for
            a tracked flow accept; original → to_tenant, reply → to_tenant_reply, else drop
   postrouting: ip saddr @peer_addrs ip daddr { node_cidrs − tenant space } snat ip to 172.19.9.10
@@ -223,9 +224,12 @@ table inet wgate {
 - Rules apply to hub-local addresses too (input/output hooks); that is how
   `tcp 172.16.16.1/32 6443` reaches the k8s API. A broad ceiling (e.g. `0.0.0.0/0`)
   therefore also opens the hub's own services on those ports. Keep ceilings specific.
-- A peer whose address is outside its network or the pool, or shared with another
-  peer, is left out of the sets (fail closed) and reported; the DB constraints should
-  make this impossible.
+- A peer whose network is outside the pool or overlaps an older network, whose
+  address is not a peer address of its network, or that claims an address an older
+  peer already holds, is left out of the sets (fail closed) and reported; the older
+  holder keeps working. The DB constraints should make this impossible.
+- Inbound grants take sources outside tenant space only, plus hub addresses; an
+  in-pool source is clipped away.
 - A drop in any base chain is final, so iptables' `-i wg0 -j ACCEPT` (wg-quick) does
   not affect us.
 - Role `firewall` (ansible) adds `iifname "wg-*" accept` to its input chain and

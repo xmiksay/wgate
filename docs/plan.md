@@ -34,13 +34,15 @@ under sudo).
   - peer IP: first free host of the network, not the hub address or broadcast
   - port: first free in `51800–51899`, skipping `51820`
   - routed subnets: rejected when overlapping the pool or another routed subnet
-- `compile(&DesiredState) -> Vec<NftPeer>`: per peer `addrs`, `outbound`, `inbound`
-  exactly per design.md → Rights (ceiling ∩ external rules − tenant space, rules
-  between networks, federation, mesh, inbound grants)
+- `compile(&DesiredState) -> Compiled { peers, skipped, tenant_space }`: per peer
+  `addrs`, `outbound`, `inbound` exactly per design.md → Rights (ceiling ∩ external
+  rules − tenant space, rules between networks, federation, mesh, inbound grants
+  clipped to outside sources + hub addresses). Peers with an unknown/invalid network,
+  an invalid IP, a routed LAN in the pool, or an address an older peer already holds
+  are skipped with a `Problem`.
 - Rendering:
   - `render_nft(&NftState) -> NftRender { script, skipped }`: the whole
-    `table inet wgate` per design.md; peers with an invalid or shared address are left
-    out and reported
+    `table inet wgate` per design.md from compiled peers and `tenant_space`
   - `render_client_config(&ClientConfig { address, hub_address, private_key,
     hub_public_key, endpoint, outbound, inbound }) -> String`
 - Tests: unit tests for every function; proptest (set ops match pointwise semantics,
@@ -74,7 +76,7 @@ under sudo).
      delete a disabled one); routes for routed subnets via their interface
   5. diff peers → `remove` first, then `add`/`update` (`AllowedIPs` = `addrs(peer)`)
   6. `nft -f -` with the rendered table (atomic)
-  7. `agent_status` (incl. `NftRender.skipped` peers as an error)
+  7. `agent_status` (incl. `Compiled.skipped` and `NftRender.skipped` peers as errors)
 - Only manages interfaces with the `wg-` prefix it has in its state; it never touches
   `wg0`. An unknown `wg-*` interface → warn, do not delete.
 - An error in one network does not block the others; the error goes to `agent_status`

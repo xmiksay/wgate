@@ -91,6 +91,11 @@ table inet wgate {
 		}
 	}
 
+	chain prerouting {
+		type filter hook prerouting priority raw; policy accept;
+		iifname != "wg-*" iifname != "lo" ip saddr @tenant_space counter drop
+	}
+
 	chain from_tenant {
 		ip daddr @peer_addrs jump tenant_to_tenant
 		ip saddr . ip daddr . meta l4proto . th dport @allow accept
@@ -131,7 +136,6 @@ table inet wgate {
 
 	chain input {
 		type filter hook input priority filter - 5; policy accept;
-		iifname != "wg-*" iifname != "lo" ip saddr @tenant_space counter drop
 		iifname "wg-*" ct direction original jump from_tenant
 		iifname "wg-*" ct direction reply jump tenant_answers
 		iifname "wg-*" counter drop
@@ -148,7 +152,6 @@ table inet wgate {
 
 	chain forward {
 		type filter hook forward priority filter - 5; policy accept;
-		iifname != "wg-*" ip saddr @tenant_space counter drop
 		iifname "wg-*" ct direction original jump from_tenant
 		iifname "wg-*" ct direction reply jump tenant_answers
 		iifname "wg-*" counter drop

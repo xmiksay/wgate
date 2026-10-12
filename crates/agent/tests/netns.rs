@@ -51,7 +51,7 @@ fn rendered_ruleset_loads_and_replaces() {
     let empty = render_nft(&NftState {
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![],
-        pool: vec![],
+        tenant_space: vec![],
         peers: vec![],
     });
     ns.exec(&["nft", "-f", "-"], Some(&empty.script));
