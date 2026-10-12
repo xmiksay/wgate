@@ -1,4 +1,5 @@
-//! Rule sets and the tiered rights model (design.md → Rights).
+//! Rule sets: canonical, disjoint sets of allowed `(proto, addr, port)` points
+//! (design.md → Rights).
 
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -73,6 +74,21 @@ impl RuleSet {
         rules
             .into_iter()
             .fold(Self::new(), |acc, r| acc.union(&Self::from_rule(r)))
+    }
+
+    /// `service` on every address of `nets`.
+    pub fn for_nets(nets: &[Ipv4Net], service: Service) -> Self {
+        nets.iter().fold(Self::new(), |acc, &net| {
+            acc.union(&Self::from_rule(&Rule::from_parts(net, service)))
+        })
+    }
+
+    /// Every service (all tcp and udp ports, icmp) on every address of `nets`.
+    pub fn everything(nets: &[Ipv4Net]) -> Self {
+        let all = PortRange::ALL;
+        [Service::Tcp(all), Service::Udp(all), Service::Icmp]
+            .iter()
+            .fold(Self::new(), |acc, &s| acc.union(&Self::for_nets(nets, s)))
     }
 
     fn from_rule(rule: &Rule) -> Self {
@@ -198,23 +214,6 @@ fn span(net: Ipv4Net) -> (u32, u32) {
     (net.network().into(), net.broadcast().into())
 }
 
-/// `effective(user) = company ∩ (user rules if any, else the union of the user's
-/// groups' rules if they are in any group, else company)`.
-///
-/// `groups` holds one entry per group the user is a member of, including groups
-/// without rules: membership alone switches the user from the company default to
-/// their groups' rules, so a member of rule-less groups gets nothing.
-pub fn effective(company: &RuleSet, groups: &[RuleSet], user: &RuleSet) -> RuleSet {
-    if !user.is_empty() {
-        company.intersect(user)
-    } else if !groups.is_empty() {
-        let union = groups.iter().fold(RuleSet::new(), |acc, g| acc.union(g));
-        company.intersect(&union)
-    } else {
-        company.clone()
-    }
-}
-
 /// The part of a rule its ceiling does not allow.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("not covered: {}", list(.0))]
@@ -277,25 +276,6 @@ mod tests {
             set(&["tcp 10.0.0.0/25 80", "tcp 10.0.0.128/25 80"]),
             set(&["tcp 10.0.0.0/24 80"])
         );
-    }
-
-    #[test]
-    fn effective_follows_the_tiers() {
-        let company = set(&["tcp 172.16.16.1/32 6443", "icmp 172.19.9.0/24"]);
-        let group = set(&["icmp 172.19.9.10/32", "tcp 0.0.0.0/0 22"]);
-        let user = set(&["tcp 172.16.16.1/32 6443-6444"]);
-
-        assert_eq!(effective(&company, &[], &RuleSet::new()), company);
-        assert_eq!(
-            effective(&company, std::slice::from_ref(&group), &RuleSet::new()),
-            set(&["icmp 172.19.9.10/32"])
-        );
-        assert_eq!(
-            effective(&company, &[group], &user),
-            set(&["tcp 172.16.16.1/32 6443"])
-        );
-        // In groups that grant nothing → nothing, not the company default.
-        assert!(effective(&company, &[RuleSet::new()], &RuleSet::new()).is_empty());
     }
 
     #[test]

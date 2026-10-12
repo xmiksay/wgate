@@ -1,6 +1,8 @@
-//! Pure logic: model, rights (intersection), allocators, nft and client-config rendering. No I/O.
+//! Pure logic: addressing, rights, compile of the desired state, nft and client-config
+//! rendering. No I/O.
 
 mod client;
+mod compile;
 mod interval;
 mod net;
 mod nft;
@@ -8,12 +10,16 @@ mod rights;
 mod rule;
 
 pub use client::{ClientConfig, render_client_config};
-pub use net::{
-    InvalidNetIndex, InvalidSlug, NET_INDEX_RANGE, NetIndex, Slug, TENANT_CIDR, is_device_ip,
-    next_net_index,
+pub use compile::{
+    Compiled, CompiledPeer, DesiredState, Federation, Id, NetRule, Network, Peer, Problem, Tenant,
+    compile,
 };
-pub use nft::{NftDevice, NftRender, NftState, Skip, render_nft};
-pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, effective, subtract_nets};
+pub use net::{
+    InvalidSlug, MAX_NETWORK_PREFIX, PORT_RANGE, RESERVED_PORT, Slug, first_overlap, hub_address,
+    is_inside, is_peer_ip, next_free_net, next_peer_ip, next_port, overlaps,
+};
+pub use nft::{NftRender, NftState, render_nft};
+pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, subtract_nets};
 pub use rule::{PortRange, Proto, Rule, RuleError, Service};
 
 #[cfg(test)]

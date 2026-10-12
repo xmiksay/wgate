@@ -61,6 +61,12 @@ impl PortRange {
         Ok(Self { from, to })
     }
 
+    /// Every service port.
+    pub const ALL: Self = Self {
+        from: 1,
+        to: u16::MAX,
+    };
+
     /// From a port span of a `RuleSet`, which only ever holds spans built from valid
     /// ranges, so the casts cannot truncate.
     pub(crate) fn from_span(lo: u32, hi: u32) -> Self {
@@ -188,6 +194,14 @@ impl Rule {
             return Err(RuleError::HostBits(net, net.trunc()));
         }
         Ok(Self { net, service })
+    }
+
+    /// From an already valid service; `net` is truncated to its network address.
+    pub fn from_parts(net: Ipv4Net, service: Service) -> Self {
+        Self {
+            net: net.trunc(),
+            service,
+        }
     }
 
     pub fn net(&self) -> Ipv4Net {

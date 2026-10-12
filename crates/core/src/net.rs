@@ -1,4 +1,5 @@
-//! Company networks: naming, addressing and allocation (design.md → Topology).
+//! Addressing: slugs, the global pool, blocks, network ranges, peer IPs and ports
+//! (design.md → Decisions).
 
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -7,16 +8,15 @@ use std::str::FromStr;
 
 use ipnet::Ipv4Net;
 
-/// Every company network lives inside this; the hub SNATs it towards the nodes.
-pub const TENANT_CIDR: Ipv4Net = Ipv4Net::new_assert(Ipv4Addr::new(10, 50, 0, 0), 16);
-/// Allocatable `net_index` values. 0 is reserved; 1..=9 map to UDP 51831–51839, the
-/// range the firewall opens.
-pub const NET_INDEX_RANGE: RangeInclusive<u8> = 1..=9;
-const PORT_BASE: u16 = 51830;
-/// `.1` is the hub, `.255` broadcast.
-const DEVICE_HOSTS: RangeInclusive<u8> = 2..=254;
+/// Network listen ports; the firewall opens exactly this range.
+pub const PORT_RANGE: RangeInclusive<u16> = 51800..=51899;
+/// wg0's port, kept for when wg0 becomes a network (phase 3).
+pub const RESERVED_PORT: u16 = 51820;
+/// Smallest network: hub + one peer.
+pub const MAX_NETWORK_PREFIX: u8 = 30;
 
-/// Company slug, `[a-z0-9-]{1,11}` starting and ending alphanumeric, so `wg-<slug>` fits the 15-byte IFNAMSIZ limit.
+/// Tenant or network slug, `[a-z0-9-]{1,11}` starting and ending alphanumeric, so
+/// `wg-<slug>` fits the 15-byte IFNAMSIZ limit.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Slug(String);
 
@@ -60,72 +60,69 @@ impl fmt::Display for Slug {
     }
 }
 
-/// A company's network number `n`, within [`NET_INDEX_RANGE`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NetIndex(u8);
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("net_index {0} is outside {lo}..={hi}", lo = NET_INDEX_RANGE.start(), hi = NET_INDEX_RANGE.end())]
-pub struct InvalidNetIndex(pub i32);
-
-impl TryFrom<i32> for NetIndex {
-    type Error = InvalidNetIndex;
-
-    fn try_from(n: i32) -> Result<Self, Self::Error> {
-        u8::try_from(n)
-            .ok()
-            .filter(|n| NET_INDEX_RANGE.contains(n))
-            .map(Self)
-            .ok_or(InvalidNetIndex(n))
-    }
+/// Whether two networks share any address.
+pub fn overlaps(a: Ipv4Net, b: Ipv4Net) -> bool {
+    a.contains(&b.network()) || b.contains(&a.network())
 }
 
-impl NetIndex {
-    pub fn get(self) -> u8 {
-        self.0
-    }
-
-    /// `10.50.n.0/24`.
-    pub fn subnet(self) -> Ipv4Net {
-        Ipv4Net::new_assert(Ipv4Addr::new(10, 50, self.0, 0), 24)
-    }
-
-    /// `10.50.n.1`, the hub's address on `wg-<slug>`.
-    pub fn hub_ip(self) -> Ipv4Addr {
-        Ipv4Addr::new(10, 50, self.0, 1)
-    }
-
-    /// `51830 + n`.
-    pub fn listen_port(self) -> u16 {
-        PORT_BASE + u16::from(self.0)
-    }
-
-    /// Lowest free device address in `10.50.n.2–254`, or `None` when the subnet is
-    /// full.
-    pub fn next_device_ip(self, used: &[Ipv4Addr]) -> Option<Ipv4Addr> {
-        DEVICE_HOSTS
-            .map(|h| Ipv4Addr::new(10, 50, self.0, h))
-            .find(|ip| !used.contains(ip))
-    }
+/// The first of `others` that shares an address with `net`.
+pub fn first_overlap(net: Ipv4Net, others: &[Ipv4Net]) -> Option<Ipv4Net> {
+    others.iter().copied().find(|&o| overlaps(net, o))
 }
 
-/// Whether `ip` is an assignable device address: `10.50.n.2–254` of a valid `n`.
-pub fn is_device_ip(ip: Ipv4Addr) -> bool {
-    let [a, b, n, h] = ip.octets();
-    (a, b) == (10, 50) && NET_INDEX_RANGE.contains(&n) && DEVICE_HOSTS.contains(&h)
+/// Whether `net` lies entirely inside one of `within`.
+pub fn is_inside(net: Ipv4Net, within: &[Ipv4Net]) -> bool {
+    within.iter().any(|w| w.contains(&net))
 }
 
-/// Lowest free `net_index`, or `None` when all are taken.
-pub fn next_net_index(used: &[NetIndex]) -> Option<NetIndex> {
-    NET_INDEX_RANGE
+/// The lowest `/prefix` inside one of `within` that overlaps none of `taken`: a block
+/// in the pool for a tenant, or a network range in a tenant's blocks.
+pub fn next_free_net(within: &[Ipv4Net], taken: &[Ipv4Net], prefix: u8) -> Option<Ipv4Net> {
+    let mut within = within.to_vec();
+    within.sort();
+    within
+        .iter()
+        .filter_map(|w| w.subnets(prefix).ok())
+        .flatten()
+        .find(|n| first_overlap(*n, taken).is_none())
+}
+
+/// The hub's address in a network: its first host.
+pub fn hub_address(net: Ipv4Net) -> Ipv4Addr {
+    Ipv4Addr::from(u32::from(net.network()) + 1)
+}
+
+/// Whether `ip` is assignable to a peer of `net`: a host other than the hub address.
+pub fn is_peer_ip(net: Ipv4Net, ip: Ipv4Addr) -> bool {
+    net.prefix_len() <= MAX_NETWORK_PREFIX
+        && net.contains(&ip)
+        && ip != net.network()
+        && ip != net.broadcast()
+        && ip != hub_address(net)
+}
+
+/// Lowest free peer address in `net`, or `None` when it is full.
+pub fn next_peer_ip(net: Ipv4Net, used: &[Ipv4Addr]) -> Option<Ipv4Addr> {
+    let (lo, hi) = (u32::from(net.network()) + 2, u32::from(net.broadcast()));
+    (lo..hi)
+        .map(Ipv4Addr::from)
+        .find(|ip| is_peer_ip(net, *ip) && !used.contains(ip))
+}
+
+/// Lowest free listen port, or `None` when all 99 are taken.
+pub fn next_port(used: &[u16]) -> Option<u16> {
+    PORT_RANGE
         .clone()
-        .map(NetIndex)
-        .find(|n| !used.contains(n))
+        .find(|p| *p != RESERVED_PORT && !used.contains(p))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn net(s: &str) -> Ipv4Net {
+        s.parse().unwrap()
+    }
 
     #[test]
     fn slug_validation() {
@@ -148,63 +145,69 @@ mod tests {
         }
     }
 
-    fn n(i: i32) -> NetIndex {
-        NetIndex::try_from(i).unwrap()
-    }
-
     #[test]
-    fn net_index_range_is_enforced() {
-        for bad in [-1, 0, 10, 256] {
-            assert_eq!(NetIndex::try_from(bad), Err(InvalidNetIndex(bad)));
-        }
-        assert_eq!(n(9).get(), 9);
-    }
-
-    #[test]
-    fn addressing() {
-        assert_eq!(n(1).subnet().to_string(), "10.50.1.0/24");
-        assert_eq!(n(2).hub_ip(), Ipv4Addr::new(10, 50, 2, 1));
-        assert_eq!(n(1).listen_port(), 51831);
-        assert_eq!(n(9).listen_port(), 51839);
-        assert!(TENANT_CIDR.contains(&n(9).subnet()));
-    }
-
-    #[test]
-    fn net_index_allocation() {
-        assert_eq!(next_net_index(&[]), Some(n(1)));
-        assert_eq!(next_net_index(&[n(1), n(2), n(4)]), Some(n(3)));
-        let all: Vec<_> = (1..=9).map(n).collect();
-        assert_eq!(next_net_index(&all), None);
-    }
-
-    #[test]
-    fn device_ip_validity() {
-        for ok in ["10.50.1.2", "10.50.9.254"] {
-            assert!(is_device_ip(ok.parse().unwrap()), "{ok}");
-        }
-        for bad in [
-            "10.50.1.1",
-            "10.50.1.0",
-            "10.50.1.255",
-            "10.50.0.5",
-            "10.50.10.5",
-            "10.49.1.2",
-        ] {
-            assert!(!is_device_ip(bad.parse().unwrap()), "{bad}");
-        }
-    }
-
-    #[test]
-    fn device_ip_allocation() {
-        let ip = |h| Ipv4Addr::new(10, 50, 3, h);
-        assert_eq!(n(3).next_device_ip(&[]), Some(ip(2)));
-        assert_eq!(n(3).next_device_ip(&[ip(2), ip(4)]), Some(ip(3)));
-        // Addresses of other companies do not count.
+    fn overlap_and_containment() {
+        assert!(overlaps(net("10.50.0.0/16"), net("10.50.4.0/24")));
+        assert!(overlaps(net("10.50.4.0/24"), net("10.50.0.0/16")));
+        assert!(!overlaps(net("10.50.4.0/24"), net("10.50.5.0/24")));
         assert_eq!(
-            n(3).next_device_ip(&[Ipv4Addr::new(10, 50, 1, 2)]),
-            Some(ip(2))
+            first_overlap(
+                net("10.50.4.128/25"),
+                &[net("10.50.5.0/24"), net("10.50.4.0/24")]
+            ),
+            Some(net("10.50.4.0/24"))
         );
-        let full: Vec<_> = (2..=254).map(ip).collect();
-        assert_eq!(n(3).next_device_ip(&full), None);
+        assert!(is_inside(net("10.50.4.0/26"), &[net("10.50.4.0/24")]));
+        assert!(!is_inside(net("10.50.4.0/23"), &[net("10.50.4.0/24")]));
+    }
+
+    #[test]
+    fn free_net_allocation() {
+        let pool = [net("10.50.0.0/16")];
+        assert_eq!(next_free_net(&pool, &[], 24), Some(net("10.50.0.0/24")));
+        let taken = [net("10.50.0.0/24"), net("10.50.1.0/25")];
+        assert_eq!(next_free_net(&pool, &taken, 24), Some(net("10.50.2.0/24")));
+        assert_eq!(
+            next_free_net(&pool, &taken, 25),
+            Some(net("10.50.1.128/25"))
+        );
+        // A prefix wider than the space fits nowhere.
+        assert_eq!(next_free_net(&[net("10.50.4.0/24")], &[], 23), None);
+        let full = [net("10.50.4.0/24")];
+        assert_eq!(next_free_net(&full, &full, 28), None);
+        // Several blocks: the lowest one wins regardless of order.
+        let blocks = [net("10.50.9.0/24"), net("10.50.4.0/24")];
+        assert_eq!(next_free_net(&blocks, &[], 26), Some(net("10.50.4.0/26")));
+    }
+
+    #[test]
+    fn peer_addressing() {
+        let n = net("10.50.4.0/29");
+        assert_eq!(hub_address(n), Ipv4Addr::new(10, 50, 4, 1));
+        assert_eq!(next_peer_ip(n, &[]), Some(Ipv4Addr::new(10, 50, 4, 2)));
+        let used: Vec<_> = (2..=5).map(|h| Ipv4Addr::new(10, 50, 4, h)).collect();
+        assert_eq!(next_peer_ip(n, &used), Some(Ipv4Addr::new(10, 50, 4, 6)));
+        let used: Vec<_> = (2..=6).map(|h| Ipv4Addr::new(10, 50, 4, h)).collect();
+        assert_eq!(next_peer_ip(n, &used), None);
+        for bad in [0, 1, 7] {
+            assert!(!is_peer_ip(n, Ipv4Addr::new(10, 50, 4, bad)), "{bad}");
+        }
+        assert!(!is_peer_ip(n, Ipv4Addr::new(10, 50, 5, 2)));
+        assert!(!is_peer_ip(
+            net("10.50.4.0/31"),
+            Ipv4Addr::new(10, 50, 4, 1)
+        ));
+        let tiny = net("10.50.4.0/30");
+        assert_eq!(next_peer_ip(tiny, &[]), Some(Ipv4Addr::new(10, 50, 4, 2)));
+    }
+
+    #[test]
+    fn port_allocation() {
+        assert_eq!(next_port(&[]), Some(51800));
+        let used: Vec<u16> = (51800..51820).collect();
+        assert_eq!(next_port(&used), Some(51821));
+        let all: Vec<u16> = PORT_RANGE.collect();
+        assert_eq!(next_port(&all), None);
+        assert_eq!(PORT_RANGE.filter(|p| *p != RESERVED_PORT).count(), 99);
     }
 }

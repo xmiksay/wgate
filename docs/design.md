@@ -170,7 +170,7 @@ The exact ruleset is the golden file `crates/core/tests/golden/ruleset.nft`; in 
 
 ```nft
 table inet wgate {
-  set devices      { peer addrs }                      # all addrs(peer), interval
+  set peer_addrs   { peer addrs }                      # all addrs(peer), interval
   set allow        { peer . dst . proto . dport }      # outbound
   set allow_icmp   { peer . dst }
   set inbound      { src . peer . proto . dport }      # inbound
@@ -178,9 +178,9 @@ table inet wgate {
 
   # who opened the connection picks the check; replies use the same sets, swapped
   #   fwd = ip saddr . ip daddr . meta l4proto . th dport, rev = the tuple swapped
-  chain from_tenant           { ip daddr @devices jump tenant_to_tenant; fwd @allow accept; drop }
+  chain from_tenant           { ip daddr @peer_addrs jump tenant_to_tenant; fwd @allow accept; drop }
   chain tenant_to_tenant      { fwd @allow fwd @inbound accept; drop }      # both sides
-  chain tenant_answers        { ip daddr @devices jump tenant_answers_tenant; rev @inbound accept; drop }
+  chain tenant_answers        { ip daddr @peer_addrs jump tenant_answers_tenant; rev @inbound accept; drop }
   chain tenant_answers_tenant { rev @allow rev @inbound accept; drop }
   chain to_tenant             { fwd @inbound accept; drop }
   chain to_tenant_reply       { rev @allow accept; drop }
@@ -192,7 +192,7 @@ table inet wgate {
            then oifname wg-*: original → to_tenant, reply → to_tenant_reply, else drop
   output:  oifname wg-*: a local socket posing as a peer → drop; hub ICMP errors for
            a tracked flow accept; original → to_tenant, reply → to_tenant_reply, else drop
-  postrouting: ip saddr @devices ip daddr { node_cidrs − tenant space } snat ip to 172.19.9.10
+  postrouting: ip saddr @peer_addrs ip daddr { node_cidrs − tenant space } snat ip to 172.19.9.10
 }
 ```
 
@@ -217,7 +217,7 @@ table inet wgate {
   whose source is outside the sending peer's `AllowedIPs` (its /32 + routed subnets),
   so a peer cannot pose as another. A tenant source arriving on any other interface,
   or from a local socket, is spoofed and dropped.
-- Device-to-device is told apart by `@devices`, not by the pool: a network's hub
+- Device-to-device is told apart by `@peer_addrs`, not by the pool: a network's hub
   address is in the pool but is no peer, so hub-opened connections (an inbound grant
   with the hub address as source) work.
 - Rules apply to hub-local addresses too (input/output hooks); that is how
@@ -300,10 +300,12 @@ Makefile                 build, lint, test, test-netns, golden, release
    hands out configs. Role `wgate`, firewall, ingress. Onboard nexial and krcmar.
 2. **Self-service:** tenant OIDC, the tenant-admin role, users add their own peers,
    audit log in the UI.
-3. **wg0 under wgate:** `172.16.16.0/24` joins the pool as a block of an `infra`
-   tenant and wg0 becomes its network (port 51820, the existing hub key, read
-   from `/etc/wireguard`, never from the DB). Import the wireguard-ui peers (nodes,
-   dbhosts, the Turris as a router with 192.168.0.0/23, admin devices); node configs
+3. **wg0 under wgate:** `172.16.16.0/24` joins the pool as the block of tenant
+   `miksa` and wg0 becomes its network "miksa" (port 51820, the existing hub key, read
+   from `/etc/wireguard`, never from the DB). Import the wireguard-ui peers: the
+   infra ones (nodes, dbhosts, the Turris as a router with 192.168.0.0/23, admin
+   devices) stay in "miksa"; many external devices move to other tenants/networks
+   instead (new peer, new IP and config there, old wg0 peer removed); node configs
    from wgate for ansible (`wg_peer`, `wireguard`); switch off wireguard-ui. Cutover
    over public SSH 22 (it stays open on all nodes as the fallback).
 4. **Later:** 1:1 NETMAP for colliding routed LANs; per-user k8s tokens instead of the

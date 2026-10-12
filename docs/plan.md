@@ -183,12 +183,14 @@ under sudo).
 
 ## Phase 3 — wg0 under wgate
 
-- Model: `172.16.16.0/24` joins the pool as a block of tenant `infra`; wg0 is its
-  network (port 51820, the existing hub key — the agent reads it from `/etc/wireguard`,
+- Model: `172.16.16.0/24` joins the pool as the block of tenant `miksa`; wg0 is its
+  network "miksa" (port 51820, the existing hub key — the agent reads it from `/etc/wireguard`,
   never from the DB; interface name stays `wg0`). The Turris is a router peer with
   192.168.0.0/23; nodes are peers with a `node` flag.
 - `wgate import-wgui /var/lib/wgui` imports the clients (names, public keys, IPs,
-  allowed IPs as routed subnets; private keys are not imported).
+  allowed IPs as routed subnets; private keys are not imported) into "miksa". External
+  devices are then moved per device to other tenants/networks: a new peer there (new
+  IP + config handed to the owner), the old wg0 peer revoked once the new one is up.
 - Ansible: `wg_peer`/`wireguard` take the hub public key + IP from `wgate export-node
   <host>`, not from the vault.
 - Cutover:
