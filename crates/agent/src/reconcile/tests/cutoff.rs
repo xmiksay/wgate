@@ -207,3 +207,20 @@ fn a_registration_shown_not_to_be_wgates_goes() {
     let removal = "delete element inet wgate from_net { \"wg-n1\" }";
     assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
 }
+
+#[test]
+fn a_full_tenant_space_without_its_guard_rules_guards_nothing() {
+    let dir = keys();
+    // The base fails; the set is still full, but the prerouting rules are gone.
+    let fake = owned_n1()
+        .fail_input("add set inet wgate tenant_space")
+        .answer(
+            "nft -j list set inet wgate tenant_space",
+            r#"{"nftables": [{"set": {"name": "tenant_space", "elem": [{"prefix": {"addr": "0.0.0.0", "len": 0}}]}}]}"#,
+        )
+        .answer("nft -j list chain inet wgate prerouting", r#"{"nftables": []}"#);
+    reconcile(&fake, &compiled(), dir.path());
+    // Treated as unknown: the kernel is left as it is, nothing grows.
+    assert!(fake.fragments_of(1).is_empty());
+    assert!(!fake.log().iter().any(|c| c.starts_with("ip link add")));
+}

@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, CompiledNetwork, Id, overlaps_any};
+use wgate_core::{Compiled, CompiledNetwork, DISPATCH, Id, overlaps_any};
 
 use crate::routes;
 use crate::runner::Runner;
@@ -96,7 +96,8 @@ fn unless_held<T>(
     command: impl Fn(&T) -> Vec<String>,
     what: &str,
 ) -> anyhow::Result<()> {
-    let (free, waiting): (Vec<&T>, Vec<&T>) = items.iter().partition(|i| !touches(nets(i), held));
+    let (free, waiting): (Vec<&T>, Vec<&T>) =
+        items.iter().partition(|i| !overlaps_any(nets(i), held));
     let done = all(r, free.into_iter().map(command).collect());
     if waiting.is_empty() {
         return done;
@@ -270,13 +271,6 @@ pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<Link>> {
     Ok(shown.into_iter().map(Link::from).collect())
 }
 
-/// The dispatch maps and the chain each one's elements jump to.
-const MAPS: [(&str, &str); 3] = [
-    ("from_net", "from"),
-    ("ingress", "ingress"),
-    ("to_net", "to"),
-];
-
 /// What the dispatch maps hold.
 #[derive(Default)]
 pub(super) struct Dispatch {
@@ -289,7 +283,7 @@ pub(super) struct Dispatch {
 pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Dispatch> {
     let mut networks = vec![];
     let mut stray = vec![];
-    for (map, chain) in MAPS {
+    for (map, chain) in DISPATCH {
         let json = r.run(&["nft", "-j", "list", "map", "inet", "wgate", map], None)?;
         let read = crate::nftmap::parse(&json, chain)?;
         if map == "from_net" {
@@ -307,11 +301,6 @@ pub(super) fn clear_stray(r: &dyn Runner, map: &str, iface: &str) -> anyhow::Res
         r,
         &format!("delete element inet wgate {map} {{ \"{iface}\" }}\n"),
     )
-}
-
-/// Whether any of `nets` overlaps any of `held`.
-pub(super) fn touches(nets: &[Ipv4Net], held: &[Ipv4Net]) -> bool {
-    overlaps_any(nets, held)
 }
 
 /// Whether any link (WireGuard or not) has this name.

@@ -12,8 +12,8 @@ use crate::rule::Service;
 const TABLE: &str = "inet wgate";
 const QUAD: &str = "ipv4_addr . ipv4_addr . inet_proto . inet_service";
 const PAIR: &str = "ipv4_addr . ipv4_addr";
-/// The dispatch maps and the per-network chain each one jumps to.
-const CHAINS: [(&str, &str); 3] = [
+/// The dispatch maps and the per-network chain (`n<id>_<chain>`) each one jumps to.
+pub const DISPATCH: [(&str, &str); 3] = [
     ("ingress", "ingress"),
     ("from_net", "from"),
     ("to_net", "to"),
@@ -38,7 +38,7 @@ pub fn render_base(c: &Compiled) -> String {
         "add set {TABLE} tenant_space {{ type ipv4_addr; flags interval; }}"
     );
     let _ = writeln!(out, "add set {TABLE} wg_ifaces {{ type ifname; }}");
-    for (map, _) in CHAINS {
+    for (map, _) in DISPATCH {
         let _ = writeln!(out, "add map {TABLE} {map} {{ type ifname : verdict; }}");
     }
     for (name, spec) in [
@@ -196,10 +196,22 @@ pub fn render_network_removal(id: Id, iface: &str) -> String {
     let mut out = ensure_parts(id);
     register(&mut out, id, iface);
     let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
-    for (map, _) in CHAINS {
+    for (map, _) in DISPATCH {
         let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
     }
     delete_parts(&mut out, id);
+    out
+}
+
+/// Takes only an interface's map entries off (each added first, so it applies whatever
+/// is already gone): for a stale name whose network is live on another interface.
+pub fn render_network_unmap(id: Id, iface: &str) -> String {
+    let mut out = ensure_parts(id);
+    register(&mut out, id, iface);
+    let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
+    for (map, _) in DISPATCH {
+        let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
+    }
     out
 }
 
@@ -208,7 +220,7 @@ pub fn render_network_removal(id: Id, iface: &str) -> String {
 pub fn render_network_cutoff(id: Id) -> String {
     let p = prefix(id);
     let mut out = ensure_parts(id);
-    for (_, chain) in CHAINS {
+    for (_, chain) in DISPATCH {
         rules(&mut out, &format!("{p}_{chain}"), &["counter drop"]);
     }
     out
@@ -224,7 +236,7 @@ fn ensure_parts(id: Id) -> String {
             "add set {TABLE} {p}_{set} {{ type {ty}; flags interval; }}"
         );
     }
-    for (_, chain) in CHAINS {
+    for (_, chain) in DISPATCH {
         let _ = writeln!(out, "add chain {TABLE} {p}_{chain}");
     }
     out
@@ -234,7 +246,7 @@ fn ensure_parts(id: Id) -> String {
 fn register(out: &mut String, id: Id, iface: &str) {
     let p = prefix(id);
     let _ = writeln!(out, "add element {TABLE} wg_ifaces {{ \"{iface}\" }}");
-    for (map, chain) in CHAINS {
+    for (map, chain) in DISPATCH {
         let _ = writeln!(
             out,
             "add element {TABLE} {map} {{ \"{iface}\" : jump {p}_{chain} }}"
@@ -244,7 +256,7 @@ fn register(out: &mut String, id: Id, iface: &str) {
 
 fn delete_parts(out: &mut String, id: Id) {
     let p = prefix(id);
-    for (_, chain) in CHAINS {
+    for (_, chain) in DISPATCH {
         let _ = writeln!(out, "delete chain {TABLE} {p}_{chain}");
     }
     for (set, _) in SETS {
