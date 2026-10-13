@@ -18,7 +18,9 @@ pub struct Registry {
     pub stray: Vec<String>,
 }
 
-pub fn parse(json: &str) -> anyhow::Result<Registry> {
+/// A dispatch map (`nft -j list map inet wgate <map>`), whose elements jump to the
+/// network's chain `n<id>_<chain>`; any other element is stray.
+pub fn parse(json: &str, chain: &str) -> anyhow::Result<Registry> {
     let v: Value = serde_json::from_str(json).context("nft -j")?;
     let mut out = Vec::new();
     let mut stray = Vec::new();
@@ -28,13 +30,13 @@ pub fn parse(json: &str) -> anyhow::Result<Registry> {
         };
         for e in elems {
             // One element that is not wgate's (added by hand) must not hide the rest.
-            let parsed = e[0]
-                .as_str()
-                .zip(e[1]["jump"]["target"].as_str().and_then(network_of_chain));
+            let target = e[1]["jump"]["target"].as_str();
+            let ours = target.filter(|t| t.ends_with(&format!("_{chain}")));
+            let parsed = e[0].as_str().zip(ours.and_then(network_of_chain));
             match (parsed, e[0].as_str()) {
                 (Some((iface, id)), _) => out.push((iface.to_owned(), id)),
                 (None, Some(iface)) => stray.push(iface.to_owned()),
-                (None, None) => tracing::warn!(element = %e, "unknown from_net element skipped"),
+                (None, None) => tracing::warn!(element = %e, "unknown map element skipped"),
             }
         }
     }
@@ -77,18 +79,18 @@ mod tests {
     fn parses_registered_networks() {
         let json = r#"{"nftables": [{"metainfo": {"version": "1.1.7", "json_schema_version": 1}}, {"map": {"family": "inet", "name": "from_net", "table": "wgate", "type": "ifname", "handle": 3, "map": "verdict", "elem": [["wg-a", {"jump": {"target": "n1_from"}}], ["wg-bb", {"jump": {"target": "n12_from"}}]]}}]}"#;
         assert_eq!(
-            parse(json).unwrap().networks,
+            parse(json, "from").unwrap().networks,
             [("wg-a".into(), 1), ("wg-bb".into(), 12)]
         );
         let empty =
             r#"{"nftables": [{"metainfo": {}}, {"map": {"name": "from_net", "map": "verdict"}}]}"#;
-        assert!(parse(empty).unwrap().networks.is_empty());
-        let odd = r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-x", "accept"], ["wg-a", {"jump": {"target": "n1_from"}}]]}}]}"#;
+        assert!(parse(empty, "from").unwrap().networks.is_empty());
+        let odd = r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-x", "accept"], ["wg-y", {"jump": {"target": "n2_ingress"}}], ["wg-a", {"jump": {"target": "n1_from"}}]]}}]}"#;
         assert_eq!(
-            parse(odd).unwrap(),
+            parse(odd, "from").unwrap(),
             Registry {
                 networks: vec![("wg-a".into(), 1)],
-                stray: vec!["wg-x".into()],
+                stray: vec!["wg-x".into(), "wg-y".into()],
             }
         );
     }

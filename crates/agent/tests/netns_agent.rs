@@ -4,7 +4,6 @@
 
 mod common;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use common::Netns;
@@ -12,7 +11,7 @@ use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-use wgate_agent::{Config, System, apply_saved, reconcile_once};
+use wgate_agent::{Config, Memory, System, apply_saved, reconcile_once};
 
 const KEY: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
 
@@ -70,8 +69,8 @@ async fn the_agent_builds_updates_and_tears_down_a_network() {
         reconcile_interval_secs: 60,
     };
     let runner = Arc::new(System::in_netns(&hub.0));
-    // A fresh cache each time: every pass writes its hub key, as after a restart.
-    let apply = async || reconcile_once(&db, &config, runner.clone(), &mut HashMap::new()).await;
+    // Fresh each time: every pass writes its hub key and state, as after a restart.
+    let apply = async || reconcile_once(&db, &config, runner.clone(), &mut Memory::default()).await;
 
     apply().await.expect("first reconcile");
     let dump = hub.output(&["wg", "show", "wg-n1", "dump"]);

@@ -2,31 +2,16 @@
 //! unreachable rebuilds what it last served. It holds no secret (addresses, rules,
 //! peer public keys) and is still written 0600, as the keys are.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use anyhow::Context;
 use wgate_core::DesiredState;
 
-/// Written to a temporary file, synced, then renamed: a crash leaves the previous one.
 pub fn save(path: &Path, state: &DesiredState) -> anyhow::Result<()> {
     let json = serde_json::to_vec(state).context("encode the state")?;
-    let tmp = path.with_extension("json.tmp");
-    let _ = fs::remove_file(&tmp);
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .and_then(|mut f| f.write_all(&json).and_then(|()| f.sync_all()))
-        .with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))?;
-    if let Some(dir) = path.parent() {
-        File::open(dir).and_then(|d| d.sync_all()).ok();
-    }
-    Ok(())
+    crate::private::write(path, &json)
 }
 
 /// `None` when there is none yet.

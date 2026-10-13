@@ -11,7 +11,10 @@ fn an_unmarked_interface_is_left_alone_on_every_path() {
                 "ip -j link show type wireguard",
                 &wg_links(&[("wg-n1", None)]),
             )
-            .answer("nft -j list map", &registry(&[("wg-n1", 1)]))
+            .answer(
+                "nft -j list map inet wgate from_net",
+                &registry(&[("wg-n1", 1)]),
+            )
             .answer(
                 "wg show wg-n1 allowed-ips",
                 &format!("{K2}\t10.50.0.3/32\n"),
@@ -93,7 +96,10 @@ fn owned_n1() -> Fake {
             "ip -j link show type wireguard",
             &wg_links(&[("wg-n1", Some(1))]),
         )
-        .answer("nft -j list map", &registry(&[("wg-n1", 1)]))
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-n1", 1)]),
+        )
 }
 
 #[test]
@@ -208,7 +214,10 @@ fn a_name_taken_again_after_removal_is_not_deleted() {
             "ip -j link show type wireguard",
             &wg_links(&[("wg-old", None)]),
         )
-        .answer("nft -j list map", &registry(&[("wg-old", 9)]));
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-old", 9)]),
+        );
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let log = fake.log();
@@ -225,7 +234,10 @@ fn a_network_that_cannot_be_made_loses_a_stale_registration() {
     let dir = keys();
     // wg-n1 was deleted by hand; its registration is still there.
     let fake = Fake::default()
-        .answer("nft -j list map", &registry(&[("wg-n1", 1)]))
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-n1", 1)]),
+        )
         .fail("ip link add wgtmp-1");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(

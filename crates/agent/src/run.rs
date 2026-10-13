@@ -22,13 +22,13 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
     let runner = Arc::new(runner);
     let db = connect(&config, &runner).await;
     let mut listener: Option<Listener> = None;
-    let mut published = HashMap::new();
+    let mut memory = Memory::default();
     let mut tick = tokio::time::interval(config.interval());
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             // The timer rewrites every hub key: a row lost meanwhile comes back.
-            _ = tick.tick() => published.clear(),
+            _ = tick.tick() => memory.published.clear(),
             note = next(&mut listener) => {
                 if !matches!(note, Ok(true)) {
                     let error = note.err().map(|e| e.to_string()).unwrap_or_default();
@@ -48,10 +48,21 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
             }
         }
         // A database outage leaves the kernel as it is: the VPN keeps running.
-        if let Err(e) = reconcile_once(&db, &config, runner.clone(), &mut published).await {
+        if let Err(e) = reconcile_once(&db, &config, runner.clone(), &mut memory).await {
             tracing::error!(error = format!("{e:#}"), "reconcile failed");
         }
     }
+}
+
+/// What the loop remembers between passes.
+#[derive(Debug, Default)]
+pub struct Memory {
+    /// The hub keys already written, so an unchanged key costs no write.
+    pub published: HashMap<Id, String>,
+    /// The revision last saved to the state file.
+    pub saved: Option<i64>,
+    /// Whether the database's state has been applied since the start.
+    pub applied: bool,
 }
 
 /// Connects, retrying on the timer. Meanwhile (a hub that boots during a database
@@ -79,7 +90,14 @@ pub async fn apply_saved<R: Runner + Send + Sync + 'static>(
     config: &Config,
     runner: Arc<R>,
 ) -> anyhow::Result<()> {
-    let saved = state::load(&config.state_file)?.context("no state saved yet")?;
+    let mut saved = state::load(&config.state_file)?.context("no state saved yet")?;
+    // The infrastructure as agent.toml has it now, not as it was when saved.
+    let infra = config.infra();
+    saved.pool = infra.pool;
+    saved.routed_space = infra.routed_space;
+    saved.reserved = infra.reserved;
+    saved.snat_source = infra.snat_source;
+    saved.node_cidrs = infra.node_cidrs;
     let compiled = compile(&saved);
     let keys_dir = config.keys_dir.clone();
     let outcome = tokio::task::spawn_blocking(move || reconcile(&*runner, &compiled, &keys_dir))
@@ -117,22 +135,34 @@ async fn next(listener: &mut Option<Listener>) -> Result<bool, ListenError> {
     Ok(true)
 }
 
-/// One load → compile → apply → report round. `published` remembers the hub keys
+/// One load → compile → apply → report round. `memory.published` remembers the hub keys
 /// already written, so an unchanged key costs no write.
 pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
     db: &DatabaseConnection,
     config: &Config,
     runner: Arc<R>,
-    published: &mut HashMap<Id, String>,
+    memory: &mut Memory,
 ) -> anyhow::Result<()> {
-    let loaded = wgate_db::desired_state(db, &config.infra())
-        .await
-        .context("load the desired state")?;
-    if let Err(e) = state::save(&config.state_file, &loaded.state) {
-        tracing::warn!(
-            error = format!("{e:#}"),
-            "state not saved for a start without the database"
-        );
+    let loaded = match wgate_db::desired_state(db, &config.infra()).await {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            // Connected but nothing loads yet (a migration, a grant): a hub that has
+            // applied nothing since it started serves the last state saved meanwhile.
+            if !memory.applied
+                && let Err(e) = apply_saved(config, runner.clone()).await
+            {
+                tracing::warn!(error = format!("{e:#}"), "no saved state served");
+            }
+            return Err(e).context("load the desired state");
+        }
+    };
+    if memory.saved != Some(loaded.revision) {
+        let (path, state) = (config.state_file.clone(), loaded.state.clone());
+        match tokio::task::spawn_blocking(move || state::save(&path, &state)).await {
+            Ok(Ok(())) => memory.saved = Some(loaded.revision),
+            Ok(Err(e)) => tracing::warn!(error = format!("{e:#}"), "state not saved"),
+            Err(e) => tracing::warn!(error = %e, "state not saved"),
+        }
     }
     let compiled = compile(&loaded.state);
     let mut problems: Vec<String> = loaded.warnings.clone();
@@ -167,13 +197,13 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
         .context("reconcile task")?;
     problems.extend(outcome.errors);
     for (network, key) in outcome.hub_keys {
-        if published.get(&network) == Some(&key) {
+        if memory.published.get(&network) == Some(&key) {
             continue;
         }
         // A network deleted meanwhile (its row is gone) must not cost the status.
         match wgate_db::agent::set_hub_key(db, network, &key).await {
             Ok(()) => {
-                published.insert(network, key);
+                memory.published.insert(network, key);
             }
             Err(e) => {
                 // The database's own words stay in the log, not in the admins' status.
@@ -186,6 +216,7 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
         tracing::warn!(problem = %p, "not applied");
     }
     let error = (!problems.is_empty()).then(|| problems.join("\n"));
+    memory.applied = true;
     wgate_db::agent::record_status(db, loaded.revision, error.as_deref())
         .await
         .context("record the agent status")?;

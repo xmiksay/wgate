@@ -270,33 +270,43 @@ pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<Link>> {
     Ok(shown.into_iter().map(Link::from).collect())
 }
 
-/// The interfaces registered in the `from_net` map, with their network, and those of
-/// elements that are not wgate's.
-pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<crate::nftmap::Registry> {
-    let json = r.run(
-        &["nft", "-j", "list", "map", "inet", "wgate", "from_net"],
-        None,
-    )?;
-    crate::nftmap::parse(&json)
+/// The dispatch maps and the chain each one's elements jump to.
+const MAPS: [(&str, &str); 3] = [
+    ("from_net", "from"),
+    ("ingress", "ingress"),
+    ("to_net", "to"),
+];
+
+/// What the dispatch maps hold.
+#[derive(Default)]
+pub(super) struct Dispatch {
+    /// The networks registered in `from_net`.
+    pub networks: Vec<(String, Id)>,
+    /// Map by map, the interfaces of elements that are not wgate's.
+    pub stray: Vec<(&'static str, String)>,
 }
 
-/// Takes an element that is not wgate's off a compiled network's name, map by map
-/// (it may be in any of them): its own entries could not go in otherwise.
-pub(super) fn clear_stray(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
-    let results: Vec<_> = ["from_net", "ingress", "to_net"]
-        .iter()
-        .map(|map| {
-            nft(
-                r,
-                &format!("delete element inet wgate {map} {{ \"{iface}\" }}\n"),
-            )
-        })
-        .collect();
-    // Gone from at least the map that showed it.
-    results
-        .into_iter()
-        .find(Result::is_ok)
-        .unwrap_or_else(|| Err(anyhow::anyhow!("not removed")))
+pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Dispatch> {
+    let mut networks = vec![];
+    let mut stray = vec![];
+    for (map, chain) in MAPS {
+        let json = r.run(&["nft", "-j", "list", "map", "inet", "wgate", map], None)?;
+        let read = crate::nftmap::parse(&json, chain)?;
+        if map == "from_net" {
+            networks = read.networks;
+        }
+        stray.extend(read.stray.into_iter().map(|iface| (map, iface)));
+    }
+    Ok(Dispatch { networks, stray })
+}
+
+/// Takes an element that is not wgate's out of its map: the network's own entry could
+/// not go in otherwise. Until it does, the base drops the interface's traffic.
+pub(super) fn clear_stray(r: &dyn Runner, map: &str, iface: &str) -> anyhow::Result<()> {
+    nft(
+        r,
+        &format!("delete element inet wgate {map} {{ \"{iface}\" }}\n"),
+    )
 }
 
 /// Whether any of `nets` overlaps any of `held`.
