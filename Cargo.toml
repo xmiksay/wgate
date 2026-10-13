@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/server", "crates/agent", "crates/wgate"]
+members = ["crates/core", "crates/db", "crates/server", "crates/agent", "crates/wgate"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ repository = "https://github.com/xmiksay/wgate"
 
 [workspace.dependencies]
 wgate-core = { path = "crates/core" }
+wgate-db = { path = "crates/db" }
 wgate-server = { path = "crates/server" }
 wgate-agent = { path = "crates/agent" }
 

@@ -9,7 +9,8 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
 
 - `make lint` — clippy `--all-targets -D warnings`, `cargo fmt --check`, eslint
   (`--max-warnings=0`), vue-tsc
-- `make test` — `test-unit` (lib/bin tests) + `test-int` (`tests/*.rs`)
+- `make test` — `test-unit` (lib/bin tests) + `test-int` (`tests/*.rs`; the `db` tests
+  start Postgres 17 containers, so Docker must be running)
 - `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns*.rs`
   (kernel accepts the golden ruleset; real packets vs. the rendered ruleset over veth
   links named `wg-*`, python3 endpoints);
@@ -26,7 +27,10 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
 - `crates/core` — pure, no I/O: addressing/allocators, rights (`RuleSet`), `compile`
   (desired state → per-peer sets; `compile/valid.rs` decides what fails closed), nft
   + client-config rendering
-- `crates/server` — Axum + SeaORM + OIDC; unprivileged
+- `crates/db` — SeaORM entities, the SQL migration (`migration/m0001_init.sql`: exclusion
+  constraints own address ranges), revision + NOTIFY, `desired_state()` loader; shared by
+  server and agent
+- `crates/server` — Axum + OIDC; unprivileged
 - `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener
 - `crates/wgate` — binary, `server | agent | migrate`
 - `web/` — Vue UI, embedded into the binary

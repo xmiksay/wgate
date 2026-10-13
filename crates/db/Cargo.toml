@@ -1,0 +1,23 @@
+[package]
+name = "wgate-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+ipnet.workspace = true
+ipnetwork = "0.21"
+sea-orm = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-json", "with-ipnetwork"] }
+sea-orm-migration = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
+wgate-core.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
