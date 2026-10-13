@@ -48,7 +48,8 @@ under sudo).
   tenant's (winning) blocks, with a known tenant, at most /30, and with a range and
   slug no older network holds.
 - Rendering:
-  - `render_base` / `render_network` / `render_network_removal` (`render_all` for
+  - `render_base` / `render_snat` / `render_network` / `render_network_purge` /
+    `render_network_cutoff` (`render_all` for
     tests): `table inet wgate` per design.md as a base plus one fragment per network,
     from one compile run (disjoint peer addresses, tenant space, SNAT source and
     node networks all come from it)
@@ -107,7 +108,7 @@ under sudo).
   (as the server's), `keys_dir`, `state_file` (the last desired state, served when
   the hub boots without its database), `reconcile_interval_secs = 60`.
 - Core: the nft rendering splits into `render_base` + `render_network` (one fragment
-  per network: its chains, sets and map entries) + `render_network_removal`;
+  per network: its chains, sets and map entries) + `render_network_purge`;
   `Compiled` lists its networks (interface, range, hub address, port).
 - Loop (`LISTEN wgate_changed` or a tick):
   1. load the desired state, `core::compile` it

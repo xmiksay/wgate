@@ -85,12 +85,13 @@ pub fn reconcile_after(
     let steps::Dispatch {
         networks: registered,
         stray,
-        entries,
+        mut entries,
     } = registry.unwrap_or_default();
     // An element that is not wgate's has no place in wgate's table: on a network's
     // name it would keep that network's own entries out, on any other it would let an
     // interface past the dispatch unchecked.
     for (map, iface) in &stray {
+        entries.retain(|(m, i)| !(m == map && i == iface));
         let result = clear_stray(r, map, iface);
         note(
             result.with_context(|| format!("{iface}: element not wgate's")),
@@ -123,13 +124,8 @@ pub fn reconcile_after(
         .collect();
     let mut ledger = Ledger::new(&gone, previously_held);
     // An invalid network keeps its interface as it is (see `remove_gone_links`).
-    for link in links.iter().flatten() {
-        if link
-            .owner
-            .is_some_and(|id| c.invalid_networks.contains(&id))
-        {
-            ledger.kept(r, link);
-        }
+    for link in links.iter().flatten().filter(|l| kept_invalid(c, l)) {
+        ledger.kept(r, link);
     }
     let unreadable = revoke_all(r, c, &active, &mut ledger, &mut out.errors);
     let grow = grow && ledger.grows();
@@ -162,7 +158,7 @@ pub fn reconcile_after(
         let made = new.iter().filter(|_| grow);
         let kept = owned.iter().chain(&unknown).chain(made).any(pair);
         if !kept {
-            unregister(r, c, &entries, iface, *id, &mut out.errors);
+            unregister(r, c, &mut entries, iface, *id, &mut out.errors);
         }
     }
 
@@ -177,15 +173,12 @@ pub fn reconcile_after(
             }
         }
         warn_unknown(c, links.as_deref());
-        out.held = ledger.taken();
+        out.held = ledger.carried();
         return out;
     }
     // Also the ports of gone interfaces that would not go, and of invalid networks'
     // kept interfaces.
-    let invalid_links = links
-        .iter()
-        .flatten()
-        .filter(|l| l.owner.is_some_and(|id| c.invalid_networks.contains(&id)));
+    let invalid_links = links.iter().flatten().filter(|l| kept_invalid(c, l));
     let holders: Vec<&str> = active
         .iter()
         .filter(|(_, exists, _)| *exists)
@@ -195,13 +188,13 @@ pub fn reconcile_after(
         .collect();
     free_ports(r, c, &holders, &mut out.errors);
 
-    let taken = ledger.taken();
     let rules = c.within_guard(ledger.cut());
-    let around = Around {
-        held: &taken,
-        entries: &entries,
-    };
     for (n, exists, plan) in active {
+        let taken = ledger.taken_for(n.id);
+        let around = Around {
+            held: &taken,
+            entries: &entries,
+        };
         let (key, errors) = network(r, &rules, n, keys, exists, plan, &around);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
@@ -211,7 +204,7 @@ pub fn reconcile_after(
     }
 
     warn_unknown(c, links.as_deref());
-    out.held = taken;
+    out.held = ledger.carried();
     out
 }
 
@@ -223,6 +216,12 @@ fn apply_or_cut(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork, errors: &mut 
         let cut = nft(r, &render_network_cutoff(n.id));
         note(cut.with_context(|| format!("{}: cutoff", n.iface)), errors);
     }
+}
+
+/// A link of a network invalid this pass: kept as it is (see `remove_gone_links`).
+fn kept_invalid(c: &Compiled, link: &Link) -> bool {
+    link.owner
+        .is_some_and(|id| c.invalid_networks.contains(&id))
 }
 
 /// `wg-*` interfaces that are neither wgate's nor a compiled network's name: their

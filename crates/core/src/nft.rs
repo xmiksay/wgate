@@ -184,20 +184,6 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
     out
 }
 
-/// Takes a network out: its map entries first (a chain still referenced cannot be
-/// deleted), then its chains and sets. Each is added before it is deleted, so the
-/// transaction also succeeds when some are already gone (nft before 1.0.8 has no
-/// `destroy`).
-pub fn render_network_removal(id: Id, iface: &str) -> String {
-    let mut out = ensure_parts(id);
-    register(&mut out, id, iface);
-    for (map, _) in DISPATCH {
-        let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
-    }
-    delete_parts(&mut out, id);
-    out
-}
-
 /// A network's chains and sets alone (each added first, so it applies whatever is
 /// already gone); fails while a map element still jumps to them.
 pub fn render_network_purge(id: Id) -> String {

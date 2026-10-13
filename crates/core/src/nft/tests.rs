@@ -174,9 +174,9 @@ fn a_network_fragment_holds_only_its_own_peers() {
 }
 
 #[test]
-fn a_removal_adds_what_it_deletes_first() {
+fn a_purge_adds_what_it_deletes_first() {
     // So it applies whatever is already gone.
-    let removal = render_network_removal(7, "wg-x");
+    let purge = render_network_purge(7);
     for (added, deleted) in [
         (
             "add chain inet wgate n7_from",
@@ -186,16 +186,13 @@ fn a_removal_adds_what_it_deletes_first() {
             "add set inet wgate n7_inbound_icmp",
             "delete set inet wgate n7_inbound_icmp",
         ),
-        (
-            "add element inet wgate from_net { \"wg-x\" : jump n7_from }",
-            "delete element inet wgate from_net { \"wg-x\" }",
-        ),
     ] {
         assert!(
-            removal.find(added).unwrap() < removal.find(deleted).unwrap(),
+            purge.find(added).unwrap() < purge.find(deleted).unwrap(),
             "{added}"
         );
     }
+    assert!(!purge.contains("element"));
 }
 
 #[test]
@@ -206,15 +203,6 @@ fn a_cutoff_drops_everything() {
             "flush chain inet wgate {chain}\nadd rule inet wgate {chain} counter drop"
         )));
     }
-}
-
-#[test]
-fn removal_deletes_map_entries_before_chains() {
-    let script = render_network_removal(7, "wg-x");
-    let entry = script.find("delete element inet wgate from_net").unwrap();
-    let chain = script.find("delete chain inet wgate n7_from").unwrap();
-    assert!(entry < chain);
-    assert!(script.contains("delete set inet wgate n7_inbound_icmp"));
 }
 
 #[test]
