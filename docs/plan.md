@@ -117,7 +117,8 @@ under sudo).
   3. networks registered in `from_net` (interface + network id) that are no longer
      compiled under that pair: interface deleted (only if it carries that network's
      key, or none), then the nft fragment removed (the map entry is the retry marker;
-     until it goes, the interface is not reused and loses its peers). Unregistered
+     until it goes, the interface is not reused, loses its peers and frees a wanted
+     port). A failed key read never counts as "no key". Unregistered
      `wg-*` interfaces carrying the key of a network not compiled on them (a flushed
      table) are deleted too
   4. ports another network wants are freed (`listen-port 0`). An existing interface
@@ -131,8 +132,8 @@ under sudo).
      `n<id>.key` in `keys_dir` (issued only to an interface without a key, never
      deleted; a damaged or missing one for a keyed interface is an error, never a
      rotation; its public key goes to `hub_key`); `ip addr replace`
-     hub/prefix; `wg set … private-key`, then `listen-port`; up; the fragment; peer
-     additions (`AllowedIPs` = `addrs(peer)`); LAN routes (`ip route add … proto
+     hub/prefix; `wg set … private-key`, then `listen-port`; up; the fragment; if it
+     applied, peer additions (`AllowedIPs` = `addrs(peer)`); LAN routes (`ip route add … proto
      150`, never taking over another's route)
   6. `agent_status` (applied revision, and everything `Compiled` rejected — blocks,
      networks, peers, routes — plus per-network failures as errors)

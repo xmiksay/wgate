@@ -1,12 +1,38 @@
 //! Networks that are gone: registered ones, and leftovers whose registration was lost.
+//! Also what decides whether an interface carries a network's key.
 
-use std::path::Path;
-
+use anyhow::Context;
 use wgate_core::{Compiled, Id, render_network_removal};
 
 use super::steps::{nft, run, strip_peers};
-use crate::keys;
+use crate::keys::Keys;
 use crate::runner::Runner;
+
+/// Whose key an interface has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Carried {
+    /// The network's own.
+    Its,
+    /// None yet (just created, before its key was set).
+    Nothing,
+    /// Someone else's.
+    Other,
+    /// A key, but the network's key file is missing: whose cannot be told.
+    Unverified,
+}
+
+/// Whose key `iface` has, against network `id`'s. A failed read is an error, never
+/// "no key": either reading would decide something irreversible.
+pub(super) fn carried(r: &dyn Runner, keys: &Keys, iface: &str, id: Id) -> anyhow::Result<Carried> {
+    let Some(shown) = interface_key(r, iface)? else {
+        return Ok(Carried::Nothing);
+    };
+    Ok(match keys.load(id).context("hub key")? {
+        Some((_, public)) if public == shown => Carried::Its,
+        Some(_) => Carried::Other,
+        None => Carried::Unverified,
+    })
+}
 
 /// Takes away the registered networks that are not compiled under the same interface
 /// *and* id, so a new network that reuses a slug starts on a fresh interface. The
@@ -16,7 +42,7 @@ use crate::runner::Runner;
 pub(super) fn remove_gone(
     r: &dyn Runner,
     c: &Compiled,
-    keys_dir: &Path,
+    keys: &Keys,
     registered: &[(String, Id)],
     links: &mut Vec<String>,
     errors: &mut Vec<String>,
@@ -26,22 +52,23 @@ pub(super) fn remove_gone(
         if c.networks.iter().any(|n| n.iface == *iface && n.id == *id) {
             continue;
         }
-        // The name may have been taken again after wgate's interface went: only one
-        // with the network's key (or none yet) is deleted.
-        let present = links.contains(iface);
-        let ours = present && {
-            let shown = interface_key(r, iface);
-            shown.is_none()
-                || keys::load(r, keys_dir, &format!("n{id}"))
-                    .ok()
-                    .flatten()
-                    .is_some_and(|(_, public)| shown.as_deref() == Some(public.as_str()))
-        };
-        if present && !ours {
-            errors.push(format!(
-                "{iface}: carries a key that is not network {id}'s; left alone"
-            ));
-        }
+        // The name may have been taken again after wgate's interface went: one with
+        // another key is left alone. Without the key file the registration decides.
+        let ours = links.contains(iface)
+            && match carried(r, keys, iface, *id) {
+                Ok(Carried::Its | Carried::Nothing | Carried::Unverified) => true,
+                Ok(Carried::Other) => {
+                    errors.push(format!(
+                        "{iface}: carries a key that is not network {id}'s; left alone"
+                    ));
+                    false
+                }
+                Err(e) => {
+                    errors.push(format!("{iface} (removing network {id}): {e:#}"));
+                    blocked.push(iface.clone());
+                    continue;
+                }
+            };
         let removed = if ours {
             run(r, &["ip", "link", "del", iface]).map(|()| links.retain(|l| l != iface))
         } else {
@@ -72,7 +99,7 @@ pub(super) fn remove_gone(
 pub(super) fn remove_unregistered(
     r: &dyn Runner,
     c: &Compiled,
-    keys_dir: &Path,
+    keys: &Keys,
     registered: Option<&[(String, Id)]>,
     links: &mut Vec<String>,
     errors: &mut Vec<String>,
@@ -82,8 +109,8 @@ pub(super) fn remove_unregistered(
         if !link.starts_with("wg-") || is_registered {
             continue;
         }
-        let Some(id) = interface_key(r, &link).and_then(|key| keys::owner_of(r, keys_dir, &key))
-        else {
+        let shown = interface_key(r, &link).ok().flatten();
+        let Some(id) = shown.and_then(|key| keys.owner_of(&key)) else {
             continue;
         };
         if c.networks.iter().any(|n| n.id == id && n.iface == link) {
@@ -99,9 +126,9 @@ pub(super) fn remove_unregistered(
     }
 }
 
-/// The public key an interface has; `None` when it has none (or cannot be read).
-pub(super) fn interface_key(r: &dyn Runner, iface: &str) -> Option<String> {
-    let key = r.run(&["wg", "show", iface, "public-key"], None).ok()?;
+/// The public key an interface has; `None` when it has none.
+pub(super) fn interface_key(r: &dyn Runner, iface: &str) -> anyhow::Result<Option<String>> {
+    let key = r.run(&["wg", "show", iface, "public-key"], None)?;
     let key = key.trim();
-    (!key.is_empty() && key != "(none)").then(|| key.to_owned())
+    Ok((!key.is_empty() && key != "(none)").then(|| key.to_owned()))
 }
