@@ -1,12 +1,239 @@
-//! Rendering of `table inet wgate` (design.md → Enforcement on the hub).
+//! Rendering of `table inet wgate` (design.md → Enforcement on the hub): a base plus
+//! one fragment per network, each an `nft -f` transaction of its own.
 
 use std::fmt::Write;
 
 use ipnet::Ipv4Net;
 
-use crate::compile::{Compiled, CompiledPeer};
+use crate::compile::{Compiled, CompiledNetwork, CompiledPeer, Id};
 use crate::rights::{AddrRange, RuleSet, subtract_nets};
 use crate::rule::Service;
+
+const TABLE: &str = "inet wgate";
+const QUAD: &str = "ipv4_addr . ipv4_addr . inet_proto . inet_service";
+const PAIR: &str = "ipv4_addr . ipv4_addr";
+/// The dispatch maps and the per-network chain each one jumps to.
+const CHAINS: [(&str, &str); 3] = [
+    ("ingress", "ingress"),
+    ("from_net", "from"),
+    ("to_net", "to"),
+];
+const SETS: [&str; 5] = ["peers", "allow", "allow_icmp", "inbound", "inbound_icmp"];
+
+/// The base: global sets, the dispatch maps and the hook chains. Idempotent: it creates
+/// what is missing and refills only what it owns, never the networks' map entries, so
+/// re-applying it leaves every network's fragment in place.
+pub fn render_base(c: &Compiled) -> String {
+    let mut out = format!("add table {TABLE}\n");
+    let _ = writeln!(
+        out,
+        "add set {TABLE} tenant_space {{ type ipv4_addr; flags interval; }}"
+    );
+    let _ = writeln!(out, "add set {TABLE} wg_ifaces {{ type ifname; }}");
+    for (map, _) in CHAINS {
+        let _ = writeln!(out, "add map {TABLE} {map} {{ type ifname : verdict; }}");
+    }
+    for (name, spec) in [
+        ("prerouting", "type filter hook prerouting priority raw"),
+        ("input", "type filter hook input priority filter - 5"),
+        ("forward", "type filter hook forward priority filter - 5"),
+        ("output", "type filter hook output priority filter - 5"),
+        ("postrouting", "type nat hook postrouting priority srcnat"),
+    ] {
+        let _ = writeln!(out, "add chain {TABLE} {name} {{ {spec}; policy accept; }}");
+    }
+
+    let tenant_space: Vec<String> = c.tenant_space.iter().map(|n| range(*n)).collect();
+    fill(&mut out, "tenant_space", &tenant_space);
+    // Tenant sources are believed only on their own network's interface (each
+    // fragment's ingress chain); anywhere else, or from a local socket that is no hub
+    // address, they are spoofed. These run before forwarding could answer a spoofed
+    // packet with an ICMP error related to the real peer's flow.
+    rules(
+        &mut out,
+        "prerouting",
+        &[
+            "iifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop",
+            "iifname \"wg-*\" iifname != @wg_ifaces counter drop",
+            "iifname vmap @ingress",
+        ],
+    );
+    // Every packet from a member passes its network's `from` chain, every packet to a
+    // member its network's `to` chain; they `return` when allowed, so device to device
+    // passes both. Revocation never depends on conntrack: it only picks the direction.
+    rules(&mut out, "input", &["iifname vmap @from_net"]);
+    rules(
+        &mut out,
+        "forward",
+        &[
+            "oifname \"wg-*\" oifname != @wg_ifaces counter drop",
+            "iifname vmap @from_net",
+            "oifname vmap @to_net",
+        ],
+    );
+    // No related-ICMP shortcut (ICMP errors can carry payload and match flows that
+    // outlive a revocation); only errors the hub itself generates for a tracked flow.
+    rules(
+        &mut out,
+        "output",
+        &[
+            "ip saddr @tenant_space fib saddr type != local counter drop",
+            "oifname \"wg-*\" oifname != @wg_ifaces counter drop",
+            "oifname \"wg-*\" ct state related icmp type { destination-unreachable, time-exceeded, parameter-problem } accept",
+            "oifname vmap @to_net",
+        ],
+    );
+    // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
+    let nodes = subtract_nets(&c.node_cidrs, &c.tenant_space);
+    let snat: Vec<String> = if nodes.is_empty() {
+        vec![]
+    } else {
+        let nodes: Vec<String> = nodes.iter().map(Ipv4Net::to_string).collect();
+        vec![format!(
+            "ip saddr @tenant_space ip daddr {{ {} }} snat ip to {}",
+            nodes.join(", "),
+            c.snat_source
+        )]
+    };
+    rules(&mut out, "postrouting", &snat);
+    out
+}
+
+/// One network's fragment: its sets and chains (created if missing, flushed and
+/// refilled) and its interface's entries in the dispatch maps. Needs the base.
+pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
+    let p = prefix(n.id);
+    let mut out = format!("add table {TABLE}\n");
+    let _ = writeln!(
+        out,
+        "add set {TABLE} {p}_peers {{ type ipv4_addr; flags interval; }}"
+    );
+    for (set, ty) in [
+        ("allow", QUAD),
+        ("allow_icmp", PAIR),
+        ("inbound", QUAD),
+        ("inbound_icmp", PAIR),
+    ] {
+        let _ = writeln!(
+            out,
+            "add set {TABLE} {p}_{set} {{ type {ty}; flags interval; }}"
+        );
+    }
+    for (_, chain) in CHAINS {
+        let _ = writeln!(out, "add chain {TABLE} {p}_{chain}");
+    }
+
+    let mut sets = Sets::default();
+    for peer in c.peers.iter().filter(|peer| peer.network == n.id) {
+        sets.add(peer);
+    }
+    fill(&mut out, &format!("{p}_peers"), &sets.peers);
+    fill(&mut out, &format!("{p}_allow"), &sets.allow);
+    fill(&mut out, &format!("{p}_allow_icmp"), &sets.allow_icmp);
+    fill(&mut out, &format!("{p}_inbound"), &sets.inbound);
+    fill(&mut out, &format!("{p}_inbound_icmp"), &sets.inbound_icmp);
+
+    let fwd = "ip saddr . ip daddr . meta l4proto . th dport";
+    let rev = "ip daddr . ip saddr . meta l4proto . th sport";
+    let icmp_fwd = "meta l4proto icmp ip saddr . ip daddr";
+    let icmp_rev = "meta l4proto icmp ip daddr . ip saddr";
+    rules(
+        &mut out,
+        &format!("{p}_ingress"),
+        &[format!("ip saddr != @{p}_peers counter drop")],
+    );
+    // From a member: what it opens needs its outbound right, what it answers needs the
+    // inbound right of whoever opened it (the tuple swapped).
+    rules(
+        &mut out,
+        &format!("{p}_from"),
+        &[
+            format!("ct direction original {fwd} @{p}_allow return"),
+            format!("ct direction original {icmp_fwd} @{p}_allow_icmp return"),
+            format!("ct direction reply {rev} @{p}_inbound return"),
+            format!("ct direction reply {icmp_rev} @{p}_inbound_icmp return"),
+            "counter drop".to_owned(),
+        ],
+    );
+    // To a member: the mirror image.
+    rules(
+        &mut out,
+        &format!("{p}_to"),
+        &[
+            format!("ct direction original {fwd} @{p}_inbound return"),
+            format!("ct direction original {icmp_fwd} @{p}_inbound_icmp return"),
+            format!("ct direction reply {rev} @{p}_allow return"),
+            format!("ct direction reply {icmp_rev} @{p}_allow_icmp return"),
+            "counter drop".to_owned(),
+        ],
+    );
+
+    let iface = &n.iface;
+    let _ = writeln!(out, "add element {TABLE} wg_ifaces {{ \"{iface}\" }}");
+    for (map, chain) in CHAINS {
+        let _ = writeln!(
+            out,
+            "add element {TABLE} {map} {{ \"{iface}\" : jump {p}_{chain} }}"
+        );
+    }
+    out
+}
+
+/// Takes a network out: its map entries first (a chain still referenced cannot be
+/// deleted), then its chains and sets.
+pub fn render_network_removal(id: Id, iface: &str) -> String {
+    let p = prefix(id);
+    let mut out = String::new();
+    let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
+    for (map, _) in CHAINS {
+        let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
+    }
+    for (_, chain) in CHAINS {
+        let _ = writeln!(out, "delete chain {TABLE} {p}_{chain}");
+    }
+    for set in SETS {
+        let _ = writeln!(out, "delete set {TABLE} {p}_{set}");
+    }
+    out
+}
+
+/// The base and every network's fragment as one script (tests, a first install).
+pub fn render_all(c: &Compiled) -> String {
+    let mut out = render_base(c);
+    for n in &c.networks {
+        out.push('\n');
+        out.push_str(&render_network(c, n));
+    }
+    out
+}
+
+/// The network a per-network chain name (`n<id>_from`, …) belongs to.
+pub fn network_of_chain(chain: &str) -> Option<Id> {
+    chain.strip_prefix('n')?.split_once('_')?.0.parse().ok()
+}
+
+fn prefix(id: Id) -> String {
+    format!("n{id}")
+}
+
+/// `flush` + refill; nft rejects an empty `add element … { }`.
+fn fill(out: &mut String, set: &str, elements: &[String]) {
+    let _ = writeln!(out, "flush set {TABLE} {set}");
+    if !elements.is_empty() {
+        let _ = writeln!(
+            out,
+            "add element {TABLE} {set} {{\n\t{}\n}}",
+            elements.join(",\n\t")
+        );
+    }
+}
+
+fn rules<R: AsRef<str>>(out: &mut String, chain: &str, rules: &[R]) {
+    let _ = writeln!(out, "flush chain {TABLE} {chain}");
+    for rule in rules {
+        let _ = writeln!(out, "add rule {TABLE} {chain} {}", rule.as_ref());
+    }
+}
 
 /// Set elements, keyed `peer . addr . proto . port` (outbound) and
 /// `addr . peer . proto . port` (inbound), so a packet's
@@ -14,9 +241,7 @@ use crate::rule::Service;
 /// ranges are keyed like its own address.
 #[derive(Default)]
 struct Sets {
-    /// `iface . addr`: the only sources believed on each wg interface.
-    ingress: Vec<String>,
-    peer_addrs: Vec<String>,
+    peers: Vec<String>,
     allow: Vec<String>,
     allow_icmp: Vec<String>,
     inbound: Vec<String>,
@@ -34,8 +259,7 @@ impl Sets {
         let (outbound, inbound) = (shown(&p.outbound), shown(&p.inbound));
         for own in &p.addrs {
             let own = range(*own);
-            self.ingress.push(format!("\"{}\" . {own}", p.iface));
-            self.peer_addrs.push(own.clone());
+            self.peers.push(own.clone());
             for (service, addrs) in &outbound {
                 push(
                     &mut self.allow,
@@ -69,159 +293,6 @@ fn push(quads: &mut Vec<String>, pairs: &mut Vec<String>, service: Service, [s, 
             quads.push(format!("{s} . {d} . {} . {p}", service.proto()));
         }
     }
-}
-
-/// A complete `nft -f` script. It creates the table if missing, then deletes and
-/// redefines it, so applying it is one atomic transaction that replaces the whole
-/// table whether or not it existed.
-pub fn render_nft(compiled: &Compiled) -> String {
-    let mut peers: Vec<&CompiledPeer> = compiled.peers.iter().collect();
-    peers.sort_by_key(|p| p.ip);
-    let mut sets = Sets::default();
-    for p in peers {
-        sets.add(p);
-    }
-    let tenant_space = &compiled.tenant_space;
-
-    // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
-    let node_cidrs = subtract_nets(&compiled.node_cidrs, tenant_space);
-    let snat = if node_cidrs.is_empty() {
-        String::new()
-    } else {
-        let nodes: Vec<String> = node_cidrs.iter().map(Ipv4Net::to_string).collect();
-        format!(
-            "\t\tip saddr @peer_addrs ip daddr {{ {} }} snat ip to {}\n",
-            nodes.join(", "),
-            compiled.snat_source
-        )
-    };
-    let quad = "ipv4_addr . ipv4_addr . inet_proto . inet_service";
-    let pair = "ipv4_addr . ipv4_addr";
-    let tenant_space: Vec<String> = tenant_space.iter().copied().map(range).collect();
-    let sets = [
-        set("tenant_space", "ipv4_addr", &tenant_space),
-        set("ingress", "ifname . ipv4_addr", &sets.ingress),
-        set("peer_addrs", "ipv4_addr", &sets.peer_addrs),
-        set("allow", quad, &sets.allow),
-        set("allow_icmp", pair, &sets.allow_icmp),
-        set("inbound", quad, &sets.inbound),
-        set("inbound_icmp", pair, &sets.inbound_icmp),
-    ]
-    .concat();
-
-    // Revocation must not depend on conntrack, so every packet to or from a peer is
-    // checked against the current sets; conntrack only picks *which* check:
-    // - from_tenant / to_tenant: whoever opens the connection. A peer opening to
-    //   another peer needs both its outbound right and the target's inbound right.
-    // - tenant_answers / to_tenant_reply: the same lookups with the tuple swapped.
-    // Peer-to-peer is told apart by @peer_addrs, not by tenant space: a network's hub
-    // address is tenant space but no peer. A peer's addresses are only believed on
-    // its own network's interface (@ingress; WireGuard additionally checks them
-    // against the peer's AllowedIPs), so a leftover or misconfigured wg-* interface
-    // cannot pose as a peer either. Tenant space arriving on any other interface is
-    // spoofed, and the hub itself never sends from a peer address. The ingress checks
-    // run in prerouting, before forwarding can answer a spoofed packet with an ICMP
-    // error that conntrack would relate to the real peer's flow.
-    // There is no related-ICMP shortcut (ICMP errors can carry payload and match
-    // flows that outlive a revocation); only ICMP errors the hub itself generates
-    // for a tracked flow pass unchecked. Untracked or invalid packets hit the drops.
-    let fwd = "ip saddr . ip daddr . meta l4proto . th dport";
-    let rev = "ip daddr . ip saddr . meta l4proto . th sport";
-    format!(
-        "table inet wgate {{}}
-delete table inet wgate
-
-table inet wgate {{
-{sets}\tchain prerouting {{
-\t\ttype filter hook prerouting priority raw; policy accept;
-\t\tiifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop
-\t\tiifname \"wg-*\" iifname . ip saddr != @ingress counter drop
-\t}}
-
-\tchain from_tenant {{
-\t\tip daddr @peer_addrs jump tenant_to_tenant
-\t\t{fwd} @allow accept
-\t\tmeta l4proto icmp ip saddr . ip daddr @allow_icmp accept
-\t\tcounter drop
-\t}}
-
-\tchain tenant_to_tenant {{
-\t\t{fwd} @allow {fwd} @inbound accept
-\t\tmeta l4proto icmp ip saddr . ip daddr @allow_icmp ip saddr . ip daddr @inbound_icmp accept
-\t\tcounter drop
-\t}}
-
-\tchain tenant_answers {{
-\t\tip daddr @peer_addrs jump tenant_answers_tenant
-\t\t{rev} @inbound accept
-\t\tmeta l4proto icmp ip daddr . ip saddr @inbound_icmp accept
-\t\tcounter drop
-\t}}
-
-\tchain tenant_answers_tenant {{
-\t\t{rev} @allow {rev} @inbound accept
-\t\tmeta l4proto icmp ip daddr . ip saddr @allow_icmp ip daddr . ip saddr @inbound_icmp accept
-\t\tcounter drop
-\t}}
-
-\tchain to_tenant {{
-\t\t{fwd} @inbound accept
-\t\tmeta l4proto icmp ip saddr . ip daddr @inbound_icmp accept
-\t\tcounter drop
-\t}}
-
-\tchain to_tenant_reply {{
-\t\t{rev} @allow accept
-\t\tmeta l4proto icmp ip daddr . ip saddr @allow_icmp accept
-\t\tcounter drop
-\t}}
-
-\tchain input {{
-\t\ttype filter hook input priority filter - 5; policy accept;
-\t\tiifname \"wg-*\" ct direction original jump from_tenant
-\t\tiifname \"wg-*\" ct direction reply jump tenant_answers
-\t\tiifname \"wg-*\" counter drop
-\t}}
-
-\tchain output {{
-\t\ttype filter hook output priority filter - 5; policy accept;
-\t\tip saddr @peer_addrs counter drop
-\t\toifname \"wg-*\" ct state related icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept
-\t\toifname \"wg-*\" ct direction original jump to_tenant
-\t\toifname \"wg-*\" ct direction reply jump to_tenant_reply
-\t\toifname \"wg-*\" counter drop
-\t}}
-
-\tchain forward {{
-\t\ttype filter hook forward priority filter - 5; policy accept;
-\t\tiifname \"wg-*\" ct direction original jump from_tenant
-\t\tiifname \"wg-*\" ct direction reply jump tenant_answers
-\t\tiifname \"wg-*\" counter drop
-\t\toifname \"wg-*\" ct direction original jump to_tenant
-\t\toifname \"wg-*\" ct direction reply jump to_tenant_reply
-\t\toifname \"wg-*\" counter drop
-\t}}
-
-\tchain postrouting {{
-\t\ttype nat hook postrouting priority srcnat; policy accept;
-{snat}\t}}
-}}
-"
-    )
-}
-
-fn set(name: &str, ty: &str, elements: &[String]) -> String {
-    let mut out = format!("\tset {name} {{\n\t\ttype {ty}\n\t\tflags interval\n");
-    // nft rejects an empty `elements = { }`.
-    if !elements.is_empty() {
-        let _ = write!(
-            out,
-            "\t\telements = {{\n\t\t\t{}\n\t\t}}\n",
-            elements.join(",\n\t\t\t")
-        );
-    }
-    out.push_str("\t}\n\n");
-    out
 }
 
 #[cfg(test)]

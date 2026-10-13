@@ -104,18 +104,26 @@ under sudo).
 - Config `/etc/wgate/agent.toml`: `database_url`, `public_ip`, `snat_source`
   (172.19.9.10), `node_cidrs` (172.19.9.0/24), `pool`, `routed_space`, `reserved`
   (as the server's), `keys_dir`, `reconcile_interval = 60s`.
-- Loop:
-  1. `LISTEN wgate_changed` or a tick
-  2. load the desired state, `core::compile` it
-  3. per network: key in `keys_dir` (generate if missing, write `hub_key`)
-  4. interface via `defguard_wireguard_rs` (create / address hub/prefix / listen-port /
-     delete a disabled one); routes for routed subnets via their interface
-  5. diff peers → `remove` first, then `add`/`update` (`AllowedIPs` = `addrs(peer)`)
-  6. `nft -f -` with the rendered table (atomic)
-  7. `agent_status` (incl. everything `Compiled` rejected — blocks, networks, peers,
-     routes — as errors)
-- Only manages interfaces with the `wg-` prefix it has in its state; it never touches
-  `wg0`. An unknown `wg-*` interface → warn, do not delete.
+- Core: the nft rendering splits into `render_base` + `render_network` (one fragment
+  per network: its chains, sets and map entries) + `render_network_removal`;
+  `Compiled` lists its networks (interface, range, hub address, port).
+- Loop (`LISTEN wgate_changed` or a tick):
+  1. load the desired state, `core::compile` it
+  2. apply the base
+  3. **network by network**: key in `keys_dir` (generate with `wg genkey` if missing,
+     write `hub_key`); interface (`ip link add … type wireguard`, `ip addr replace`
+     hub/prefix, up, `wg set … listen-port … private-key …`); peers diffed against
+     `wg show <if> dump` (removals first, then `wg set … peer K allowed-ips …`, with
+     `AllowedIPs` = `addrs(peer)`); routes for routed LANs (`ip route replace … proto
+     wgate`, stale ones deleted); then the network's nft fragment
+  4. networks the agent manages (its interfaces in `wg_ifaces`) that are no longer
+     compiled: nft fragment removed, then the interface deleted
+  5. `agent_status` (applied revision, and everything `Compiled` rejected — blocks,
+     networks, peers, routes — plus per-network failures as errors)
+- Tools: `ip` (iproute2), `wg` (wireguard-tools), `nft`; commands go through one
+  runner, so diffs are unit-tested against fake tool output.
+- Only manages interfaces it has registered (`wg_ifaces`); it never touches `wg0`. An
+  unknown `wg-*` interface → warn, do not delete (and its traffic is dropped).
 - An error in one network does not block the others; the error goes to `agent_status`
   + `tracing`.
 - systemd: `User=root`, `CapabilityBoundingSet=CAP_NET_ADMIN`, `ProtectSystem=strict`,

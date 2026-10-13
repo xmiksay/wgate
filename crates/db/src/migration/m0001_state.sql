@@ -82,7 +82,7 @@ BEGIN
     FOREACH spec SLICE 1 IN ARRAY ARRAY[
         ['tenant', 'no', 'disabled_at'],
         ['tenant_block', 'yes', ''],
-        ['network', 'yes', 'slug, port, mesh, disabled_at'],
+        ['network', 'yes', 'port, mesh, disabled_at'],
         ['app_user', 'no', 'disabled_at'],
         ['device', 'no', ''],
         ['peer', 'yes', 'revoked_at'],

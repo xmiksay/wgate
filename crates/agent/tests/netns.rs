@@ -7,7 +7,7 @@ mod common;
 use std::net::Ipv4Addr;
 
 use common::Netns;
-use wgate_core::{DesiredState, compile, render_nft};
+use wgate_core::{DesiredState, compile, render_base, render_network_removal};
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
 /// with concatenated interval keys (design.md → Risks).
@@ -33,22 +33,27 @@ fn kernel_supports_wg_and_concat_interval_sets() {
     );
 }
 
-/// The rendered ruleset golden (core) must be accepted by the kernel — overlapping
-/// interval elements are rejected — and applying another render must replace it.
+/// The rendered ruleset golden (core: the base plus every network's fragment) must be
+/// accepted by the kernel (overlapping interval elements are rejected), re-applying it
+/// must work, and removing the networks and re-applying an empty base must leave
+/// nothing of theirs behind.
 #[test]
 #[ignore = "needs root: make test-netns"]
-fn rendered_ruleset_loads_and_replaces() {
+fn rendered_ruleset_loads_reapplies_and_removes() {
+    let golden = include_str!("../../core/tests/golden/ruleset.nft");
     let ns = Netns::new("ruleset");
-    ns.exec(
-        &["nft", "-f", "-"],
-        Some(include_str!("../../core/tests/golden/ruleset.nft")),
-    );
-    assert!(
-        ns.output(&["nft", "list", "table", "inet", "wgate"])
-            .contains("10.50.1.2 . ")
-    );
+    ns.exec(&["nft", "-f", "-"], Some(golden));
+    ns.exec(&["nft", "-f", "-"], Some(golden));
+    let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
+    assert!(listed.contains("10.50.1.2 . "), "{listed}");
 
-    let empty = render_nft(&compile(&DesiredState {
+    for (id, iface) in [(1, "wg-nexial"), (2, "wg-nexial-dev"), (3, "wg-krcmar")] {
+        ns.exec(
+            &["nft", "-f", "-"],
+            Some(&render_network_removal(id, iface)),
+        );
+    }
+    let empty = render_base(&compile(&DesiredState {
         pool: vec![],
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![],
@@ -61,9 +66,7 @@ fn rendered_ruleset_loads_and_replaces() {
     }));
     ns.exec(&["nft", "-f", "-"], Some(&empty));
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
-    assert!(
-        !listed.contains("10.50.1."),
-        "stale elements survived:\n{listed}"
-    );
-    assert!(!listed.contains("snat"), "stale snat survived:\n{listed}");
+    for stale in ["10.50.", "n1_", "n2_", "wg-nexial", "snat"] {
+        assert!(!listed.contains(stale), "{stale} survived:\n{listed}");
+    }
 }

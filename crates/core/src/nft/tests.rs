@@ -107,12 +107,12 @@ fn sample() -> Compiled {
 
 #[test]
 fn ruleset_golden() {
-    assert_golden("ruleset.nft", &render_nft(&sample()));
+    assert_golden("ruleset.nft", &render_all(&sample()));
 }
 
 #[test]
 fn router_lans_are_keyed_like_the_router() {
-    let script = render_nft(&sample());
+    let script = render_all(&sample());
     assert!(script.contains("192.168.10.0-192.168.10.255 . 172.16.16.1 . tcp . 6443"));
     assert!(script.contains("192.168.10.0-192.168.10.255 . 10.50.1.2 . tcp . 22"));
 }
@@ -129,7 +129,7 @@ fn node_cidrs_are_merged_without_tenant_space() {
     .iter()
     .map(|n| net(n))
     .collect();
-    let script = render_nft(&compile(&state));
+    let script = render_all(&compile(&state));
     assert!(
         script.contains("ip daddr { 10.48.0.0/15, 10.51.0.0/16, 172.19.0.0/16 } snat"),
         "{script}"
@@ -138,7 +138,7 @@ fn node_cidrs_are_merged_without_tenant_space() {
 
 #[test]
 fn empty_state_has_no_elements_or_snat() {
-    let script = render_nft(&compile(&DesiredState {
+    let script = render_all(&compile(&DesiredState {
         pool: vec![],
         node_cidrs: vec![],
         tenants: vec![],
@@ -147,7 +147,41 @@ fn empty_state_has_no_elements_or_snat() {
         federations: vec![],
         ..desired()
     }));
-    assert!(!script.contains("elements"));
+    assert!(!script.contains("add element"));
     assert!(!script.contains("snat"));
     assert!(script.contains("counter drop"));
+}
+
+#[test]
+fn a_network_fragment_holds_only_its_own_peers() {
+    let c = sample();
+    let dev = c
+        .networks
+        .iter()
+        .find(|n| n.iface == "wg-nexial-dev")
+        .unwrap();
+    let fragment = render_network(&c, dev);
+    assert!(fragment.contains("add element inet wgate n2_peers {\n\t10.50.1.2,\n\t10.50.1.3\n}"));
+    assert!(!fragment.contains("10.50.0.2 ."), "another network's peer");
+    assert!(
+        fragment.contains("add element inet wgate from_net { \"wg-nexial-dev\" : jump n2_from }")
+    );
+    // The base never touches a network's map entries, so re-applying it keeps them.
+    assert!(!render_base(&c).contains("add element inet wgate from_net"));
+}
+
+#[test]
+fn removal_deletes_map_entries_before_chains() {
+    let script = render_network_removal(7, "wg-x");
+    let entry = script.find("delete element inet wgate from_net").unwrap();
+    let chain = script.find("delete chain inet wgate n7_from").unwrap();
+    assert!(entry < chain);
+    assert!(script.contains("delete set inet wgate n7_inbound_icmp"));
+}
+
+#[test]
+fn chain_names_name_their_network() {
+    assert_eq!(network_of_chain("n12_from"), Some(12));
+    assert_eq!(network_of_chain("n3_ingress"), Some(3));
+    assert_eq!(network_of_chain("forward"), None);
 }
