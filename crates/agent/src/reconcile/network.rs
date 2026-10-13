@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, CompiledNetwork, PORT_RANGE, render_network};
+use wgate_core::{Compiled, CompiledNetwork, PORT_RANGE, render_network, render_network_cutoff};
 
 use super::steps::{SCRATCH, additions, nft, owner_mark, route_commands, run, touches};
 use super::{Plan, note};
@@ -63,25 +63,27 @@ pub(super) fn network(
         if let Ok(d) = &plan.peers {
             step("peers", additions(r, n, d, held));
         }
-        step(
-            "routes",
-            plan.routes.and_then(|(add, _)| {
-                // A LAN still routed elsewhere waits for that route to go.
-                let (free, waiting): (Vec<_>, Vec<_>) =
-                    add.iter().partition(|lan| !touches(&[**lan], held));
-                let added = route_commands(r, n, "add", &free);
-                if waiting.is_empty() {
-                    return added;
-                }
+        // A failed read was reported with the deletions.
+        if let Ok((add, _)) = plan.routes {
+            // A LAN still routed elsewhere waits for that route to go.
+            let (free, waiting): (Vec<_>, Vec<_>) =
+                add.iter().partition(|lan| !touches(&[**lan], held));
+            let added = route_commands(r, n, "add", &free);
+            let result = if waiting.is_empty() {
+                added
+            } else {
                 let waiting: Vec<String> = waiting.iter().map(ToString::to_string).collect();
                 added.and(Err(anyhow::anyhow!(
                     "{} wait for routes still held elsewhere",
                     waiting.join(", ")
                 )))
-            }),
-        );
+            };
+            step("routes", result);
+        }
     } else {
-        // Growing on stale rules would hand a new holder its predecessor's rights.
+        // Growing on stale rules would hand a new holder its predecessor's rights,
+        // and keeping them would keep what was revoked: cut off until they apply.
+        step("cutoff", nft(r, &render_network_cutoff(n.id)));
         errors.push("peers and routes: held back until its rules apply".into());
     }
     let key = key.ok().filter(|_| keyed).map(|(_, public)| public);

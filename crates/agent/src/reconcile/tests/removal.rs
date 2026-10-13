@@ -62,7 +62,11 @@ fn a_gone_interface_that_would_not_go_is_disarmed_and_holds_its_name() {
             "wg show wg-n1 allowed-ips",
             &format!("{K2}\t10.50.9.2/32\n"),
         )
-        .answer("wg show all listen-port", "wg-n1\t51802\n");
+        .answer("wg show all listen-port", "wg-n1\t51802\n")
+        .answer(
+            "ip -j route show dev wg-n1",
+            r#"[{"dst":"192.168.9.0/24","scope":"link","flags":[]}]"#,
+        );
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("wg-n1: waits")),
@@ -74,7 +78,7 @@ fn a_gone_interface_that_would_not_go_is_disarmed_and_holds_its_name() {
     // wants comes free.
     position(&log, &format!("wg set wg-n1 peer {K2} remove"));
     position(&log, "ip addr flush dev wg-n1");
-    position(&log, "ip route flush dev wg-n1 proto 150");
+    position(&log, "ip route del 192.168.9.0/24 dev wg-n1 proto 150");
     assert!(nft_runs(&log) >= 2);
     assert!(
         position(&log, "wg set wg-n1 listen-port 51900")

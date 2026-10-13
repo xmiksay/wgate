@@ -116,7 +116,9 @@ under sudo).
      one. Otherwise, or without the full inventory
      (links and registry), nothing grows (nothing made, no peer added), but peer and
      route revocations apply, and then the fragments, cut down to what the stale
-     guard covers and to what is not held (`Compiled::within_guard`)
+     guard covers and to what is not held (`Compiled::within_guard`); with the
+     guard unknown, every network is cut off (its chains end in `drop`). Unreadable
+     peers in any network also stop growth: nothing is known to be free
   3. what is gone. An interface is wgate's when its alias carries the mark
      `wgate:n<id>` (set at creation; survives a flushed table and a lost key file).
      A marked interface whose network is not compiled under that name, or an
@@ -141,7 +143,8 @@ under sudo).
      damaged or missing one for a keyed interface is an error, never a rotation; its
      public key goes to `hub_key`); a new interface made as `wgtmp-<id>`, marked,
      renamed to `wg-<slug>` (a failure stops the network); `ip addr replace`
-     hub/prefix; `wg set … private-key`, then `listen-port`; up; the fragment; if it
+     hub/prefix; `wg set … private-key`, then `listen-port`; up; the fragment (one that
+     fails cuts the network off until it applies); if it
      applied, peer additions (`AllowedIPs` = `addrs(peer)`) and LAN routes (`ip route
      add … proto 150`, never taking over another's route)
   6. `agent_status` (applied revision, and everything `Compiled` rejected — blocks,

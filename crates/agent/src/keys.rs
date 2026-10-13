@@ -2,8 +2,6 @@
 //! issued on first use and never deleted or replaced. They never leave the hub; only
 //! the public key goes to the database.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -14,28 +12,19 @@ use wgate_core::{Id, is_wg_key};
 
 use crate::runner::Runner;
 
-/// The keys directory for one reconcile: each key file is read (and its public key
-/// derived) once.
+/// The keys directory, read through the tools' runner.
 pub struct Keys<'a> {
     r: &'a dyn Runner,
     dir: &'a Path,
-    known: RefCell<HashMap<Id, (PathBuf, String)>>,
 }
 
 impl<'a> Keys<'a> {
     pub fn new(r: &'a dyn Runner, dir: &'a Path) -> Self {
-        Self {
-            r,
-            dir,
-            known: RefCell::default(),
-        }
+        Self { r, dir }
     }
 
     /// Network `id`'s key file and public key; `None` when it has none.
     pub fn load(&self, id: Id) -> anyhow::Result<Option<(PathBuf, String)>> {
-        if let Some(found) = self.known.borrow().get(&id) {
-            return Ok(Some(found.clone()));
-        }
         let path = self.path(id);
         let private = match fs::read_to_string(&path) {
             Ok(key) if is_wg_key(key.trim()) => key,
@@ -48,9 +37,7 @@ impl<'a> Keys<'a> {
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
         };
-        let found = (path, self.public(&private)?);
-        self.known.borrow_mut().insert(id, found.clone());
-        Ok(Some(found))
+        Ok(Some((path, self.public(&private)?)))
     }
 
     /// Network `id`'s key, issued if there is none. Only for an interface that has no
@@ -66,9 +53,7 @@ impl<'a> Keys<'a> {
             .with_context(|| format!("create {}", self.dir.display()))?;
         let path = self.path(id);
         let private = generate(self.r, &path)?;
-        let found = (path, self.public(&private)?);
-        self.known.borrow_mut().insert(id, found.clone());
-        Ok(found)
+        Ok((path.clone(), self.public(&private)?))
     }
 
     fn path(&self, id: Id) -> PathBuf {
@@ -130,7 +115,6 @@ mod tests {
     fn issues_once_keeps_its_key_and_refuses_a_damaged_one() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::default();
-        // A fresh store each time: what is on disk counts, not the cache.
         let keys = || Keys::new(&tools, dir.path());
         let (path, public) = keys().ensure(1).unwrap();
         let key = fs::read_to_string(&path).unwrap();
