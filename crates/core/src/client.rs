@@ -1,7 +1,7 @@
 //! Rendering of a device's WireGuard client config.
 
 use std::fmt::Write;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
@@ -15,7 +15,13 @@ pub struct ClientConfig<'a> {
     /// `None` when the user brought their own key pair.
     pub private_key: Option<&'a str>,
     pub hub_public_key: &'a str,
-    pub endpoint: SocketAddrV4,
+    /// `host:port`, as the client dials it.
+    pub endpoint: &'a str,
+    /// What the endpoint's host resolves to: never routed into the tunnel (that would
+    /// loop the handshake).
+    pub endpoint_ips: &'a [Ipv4Addr],
+    /// Resolvers for the client; none = no `DNS` line.
+    pub dns: &'a [Ipv4Addr],
     /// What the device may open.
     pub outbound: &'a RuleSet,
     /// Who may open connections to the device; their replies must route back.
@@ -25,7 +31,7 @@ pub struct ClientConfig<'a> {
 /// `AllowedIPs` is the union of the outbound destinations and the inbound sources,
 /// so the client only routes what the hub would let through anyway, plus the hub
 /// address (else the client would drop the hub's ICMP errors). The endpoint is
-/// left out: routing it into the tunnel would loop the handshake. No DNS is pushed.
+/// left out: routing it into the tunnel would loop the handshake.
 ///
 /// Inbound sources are routed into the tunnel so replies reach them; a broad source
 /// (e.g. `0.0.0.0/0`) therefore makes the tunnel a full tunnel.
@@ -37,17 +43,27 @@ pub fn render_client_config(c: &ClientConfig) -> String {
         }
         None => out.push_str("# PrivateKey = <the private key of the public key you registered>\n"),
     }
+    let _ = writeln!(out, "Address = {}/32", c.address);
+    if !c.dns.is_empty() {
+        let dns: Vec<String> = c.dns.iter().map(Ipv4Addr::to_string).collect();
+        let _ = writeln!(out, "DNS = {}", dns.join(", "));
+    }
     let _ = write!(
         out,
-        "Address = {}/32\n\n[Peer]\nPublicKey = {}\nEndpoint = {}\n",
-        c.address, c.hub_public_key, c.endpoint
+        "\n[Peer]\nPublicKey = {}\nEndpoint = {}\n",
+        c.hub_public_key, c.endpoint
     );
     let hub = RuleSet::for_nets(&[Ipv4Net::from(c.hub_address)], Service::Icmp);
     let allowed: Vec<String> = c
         .outbound
         .union(c.inbound)
         .union(&hub)
-        .addresses(&[Ipv4Net::from(*c.endpoint.ip())])
+        .addresses(
+            &c.endpoint_ips
+                .iter()
+                .map(|ip| Ipv4Net::from(*ip))
+                .collect::<Vec<_>>(),
+        )
         .iter()
         .map(|n| n.to_string())
         .collect();
@@ -73,6 +89,7 @@ mod tests {
     }
 
     const NONE: &RuleSet = &RuleSet::new();
+    const ENDPOINT_IPS: &[Ipv4Addr] = &[Ipv4Addr::new(37, 205, 11, 119)];
 
     fn config<'a>(outbound: &'a RuleSet, private_key: Option<&'a str>) -> ClientConfig<'a> {
         ClientConfig {
@@ -80,7 +97,9 @@ mod tests {
             hub_address: Ipv4Addr::new(10, 50, 1, 1),
             private_key,
             hub_public_key: HUB_PK,
-            endpoint: "37.205.11.119:51831".parse().unwrap(),
+            endpoint: "vpn.mmik.cz:51831",
+            endpoint_ips: ENDPOINT_IPS,
+            dns: &[],
             outbound,
             inbound: NONE,
         }
@@ -128,6 +147,22 @@ mod tests {
             out.contains("AllowedIPs = 10.50.1.1/32, 10.50.2.0/24, 10.244.0.0/16\n"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn dns_is_pushed_when_the_network_has_some() {
+        let r = RuleSet::new();
+        let dns = [Ipv4Addr::new(10, 50, 1, 1), Ipv4Addr::new(1, 1, 1, 1)];
+        let c = ClientConfig {
+            dns: &dns,
+            ..config(&r, None)
+        };
+        let out = render_client_config(&c);
+        assert!(
+            out.contains("Address = 10.50.1.2/32\nDNS = 10.50.1.1, 1.1.1.1\n"),
+            "{out}"
+        );
+        assert!(!render_client_config(&config(&r, None)).contains("DNS"));
     }
 
     #[test]

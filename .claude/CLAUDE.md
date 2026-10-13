@@ -18,8 +18,8 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
 - `make migrate` — `wgate migrate` with `WGATE_DATABASE_URL` (`.env.example`)
-- Golden files live in `crates/core/tests/golden/`; `make golden` rewrites
-  them (review the diff). `ruleset.nft` is also loaded into a kernel by `make test-netns`.
+- Golden files live in `crates/core/tests/golden/` and `docs/openapi.json`;
+  `make golden` rewrites them (review the diff). `ruleset.nft` is also loaded into a kernel by `make test-netns`.
 
 Done = `make lint` + `make test` green, plus `make test-netns` when agent code, nft
 rendering (`crates/core/src/nft.rs`) or the goldens changed.
@@ -34,7 +34,13 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   revision + NOTIFY triggers), `grants.sql` (agent role), `desired_state()`
   loader, `agent` (the agent's only writes: `hub_key`, `agent_status`); shared by
   server and agent
-- `crates/server` — Axum + OIDC; unprivileged
+- `crates/server` — Axum + OIDC; unprivileged. `auth/` (OIDC login, sessions, `Actor`
+  + CSRF), `api/` (one module per resource; `clientconf` renders configs from the
+  compiled state, `openapi` lists every path), `error.rs` (`ApiError`, SQLSTATE
+  mapping), `audit.rs`, `wgkey.rs` (x25519, zeroized); config
+  `server.example.toml`, unit `deploy/wgate-server.service`. Tests: `tests/*.rs`
+  against Postgres containers and a mock IdP (`tests/common/idp.rs`);
+  `docs/openapi.json` is a golden (`make golden`)
 - `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener; reconciles network
   by network through `ip`/`wg`/`nft` behind a `Runner` (faked in unit tests); who may
   hold which address this pass is one account (`reconcile/holdings.rs`); saves

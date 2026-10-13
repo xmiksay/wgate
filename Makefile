@@ -64,8 +64,9 @@ test-int: ## Rust integration tests (tests/; netns ones are #[ignore]d; db ones 
 	cargo test --workspace --test '*' -- --test-threads=4
 
 .PHONY: golden
-golden: ## Rewrite core golden files from the current output (review the diff!)
+golden: ## Rewrite golden files (core outputs, docs/openapi.json) — review the diff!
 	UPDATE_GOLDEN=1 cargo test -p wgate-core --lib
+	UPDATE_GOLDEN=1 cargo test -p wgate-server --test openapi
 
 # Test binaries are built as the user and only executed under sudo, so target/
 # stays user-owned.

@@ -168,15 +168,20 @@ under sudo).
   `ReadWritePaths=/var/lib/wgate`.
 
 ### 1.5 `server` — API + global-admin login
-- Config `/etc/wgate/server.toml`:
-  - `listen = 172.19.9.10:8470`, `database_url`, `public_url = https://vpn.mmik.cz`
-  - `pool = ["10.50.0.0/16"]`, `routed_space = ["10.0.0.0/8", "172.16.0.0/12",
-    "192.168.0.0/16"]`, `reserved = ["172.19.9.0/24", "172.16.16.0/24"]` (node
-    network, wg0; must match the agent's), `session_key`
-  - `[admin_oidc]` issuer/client_id/client_secret + `admin_emails`
-  - `[[tenant_oidc]]` slug/issuer/client_id/client_secret (for phase 2)
-- OIDC login (PKCE) for the global admin only; sessions in Postgres, cookie
-  `HttpOnly; Secure; SameSite=Lax`, CSRF token on writes.
+- Config `/etc/wgate/server.toml` (`crates/server/server.example.toml`):
+  - `listen = 172.19.9.10:8470`, `database_url`, `public_url = https://vpn.mmik.cz`,
+    `endpoint_host` (clients' `Endpoint`)
+  - `pool`, `routed_space`, `reserved`, `snat_source`, `node_cidrs` (as the agent's:
+    the server compiles the state to render client configs)
+  - `[admin_oidc]` issuer (verbatim, as discovery wants it)/client_id/client_secret
+  - `[[tenant_oidc]]` comes with phase 2
+- OIDC login (generic, PKCE S256, nonce) for global admins only; the verified email
+  matches first, then `sub` is pinned; the role comes from the DB. Bootstrap:
+  `wgate admin grant <email>`. Sessions in Postgres (sha256 of the token, 8 h idle,
+  7 d max), cookie `HttpOnly; Secure; SameSite=Lax`, `X-CSRF-Token` on writes.
+- Schema additions (in m0001): `session`, `login_state`, `peer.key_source`, a public
+  key that rotates only while active and server-made, `network.dns`, block → network
+  cascade.
 - REST `/api/v1`: CRUD tenants, blocks, networks (mesh flag), users, devices, peers
   (create with a server or pasted key, routed subnets, revoke), ceilings, rules (422
   with the uncovered part / wrong tenant / overlap), federations, inbound grants;
@@ -184,7 +189,14 @@ under sudo).
   (global admin vs. tenant admin scoped to their tenant), even though only the global
   admin can log in until phase 2.
 - Peer create with a server key: the response contains the config + a QR (SVG). The
-  private key is never stored or logged (`tracing` field skip, a test greps the log).
+  private key is never stored or logged (a test greps the log). `POST
+  /peers/{id}/config` rotates a server key (new config, the old one dies); a pasted
+  key gets a config without `PrivateKey`. Until the agent publishes the hub key, the
+  config is missing and a warning says so.
+- Deletes cascade; every write leaves an `audit` row in its transaction (`GET /audit`,
+  paged with `before`/`limit`). Addresses are explicit; `free-ip`, `free-range`,
+  `free-block`, `free-port` suggest. OpenAPI from the code (utoipa), committed as
+  `docs/openapi.json`, a test keeps it in sync (`make golden`).
 - Inbound grant with a broad source → warning in the response (it makes every target
   peer a full tunnel).
 - Errors: typed `ApiError` → JSON, no raw DB errors to the client.

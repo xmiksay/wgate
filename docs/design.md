@@ -110,7 +110,8 @@ tenant        id, slug (unique), name, disabled_at
 tenant_block  id, tenant_id, cidr                 # global admin; disjoint; id = claim order
 network       id, tenant_id, block_id (FK, same tenant), slug (unique → wg-<slug>), name,
               cidr (inside its block; disjoint from all networks),
-              port (unique, 51800–51899 except 51820), mesh, disabled_at
+              port (unique, 51800–51899 except 51820), mesh, dns (hosts pushed to
+              clients, optional), disabled_at; a block's delete cascades
                                                   # hub address = first host of cidr
 oidc_provider id, tenant_id NULL (= global admin; one per tenant), issuer, client_id
                                                   # secret: config file
@@ -118,12 +119,13 @@ app_user      id, tenant_id NULL (= global admin), email (unique per tenant),
               oidc_sub NULL (bound on first login), role (global_admin | tenant_admin |
               user), disabled_at
 device        id, user_id, name, created_at
-peer          id, device_id, network_id, public_key, ip, created_at, revoked_at,
-              active (generated: revoked_at IS NULL)
+peer          id, device_id, network_id, public_key, ip, key_source (server | pasted),
+              created_at, revoked_at, active (generated: revoked_at IS NULL)
                                                   # ip a peer address of its network; key and ip
                                                   # unique among active peers; one active peer
                                                   # per (device, network); owner's tenant =
-                                                  # network's unless a global admin
+                                                  # network's unless a global admin;
+                                                  # only an active server key rotates
 peer_route    id, peer_id, active, cidr           # a router's LAN; FK (peer_id, active) cascades
                                                   # a revocation; active routes disjoint
 ceiling       id, tenant_id, proto, dst, port_from, port_to
@@ -139,6 +141,8 @@ hub_key       network_id, public_key              # written by the agent only
 audit         id, at, actor_user_id, action, target, detail jsonb
 state_revision  revision                          # bumped + NOTIFY once per changing transaction
 agent_status    applied_revision, applied_at, error   # written by the agent
+session       token_hash (sha256), user_id, csrf, created_at, seen_at, expires_at
+login_state   state, nonce, pkce_verifier, created_at   # one OIDC round trip, ≤ 10 min
 ```
 
 Ports are `NULL` for icmp. OIDC client secrets stay out of the DB, in
@@ -232,15 +236,25 @@ Other peers are unaffected; the interface never restarts.
   through the tenant's OIDC (PKCE). The match is `(issuer, email)` → a pre-created
   user, and the first login binds `oidc_sub`. Afterwards the match is only
   `(issuer, sub)`. An unknown user gets 403, with no auto-provisioning.
-- Session: an HttpOnly cookie with a signed session ID; sessions live in Postgres.
-- User: their devices and peers; "add to network" (server keypair → config + QR once /
-  or paste a public key → config without PrivateKey), revoke.
+- Phase 1: only global admins log in, through `[admin_oidc]` in `server.toml`. The
+  match is a verified email (any case) against a global admin, then `sub` is pinned;
+  the role is the DB's. The first one comes from `wgate admin grant <email>`.
+- Session: a random token in an `HttpOnly; Secure; SameSite=Lax` cookie; Postgres keeps
+  only its sha256 (8 h idle, 7 d at most). Writes carry the session's `X-CSRF-Token`.
+- User: their devices and peers; "add to network" (server keypair → config + QR /
+  or paste a public key → config without PrivateKey), revoke. A server key is never
+  stored: every config download of a server-key peer rotates its key (same peer,
+  the previous config stops working); a pasted key is never rotated.
 - Tenant admin: networks (inside own blocks, mesh flag), membership, routers and
   routed subnets, rules (with the ceiling check), the tenant's peers, its audit log.
 - Global admin: tenants, blocks, ceilings, federations, inbound grants, everything a
   tenant admin can do in every tenant, the whole audit log.
-- Client config: `Endpoint = 37.205.11.119:<network port>`, `AllowedIPs` as in Rights,
-  `PersistentKeepalive = 25`. No DNS is pushed.
+- Client config: `Endpoint = <endpoint_host>:<network port>`, `AllowedIPs` as in Rights
+  (minus the endpoint's own addresses), `PersistentKeepalive = 25`, `DNS` from the
+  network when it has some.
+- API: REST under `/api/v1`, its OpenAPI spec generated from the code
+  (`/api/v1/openapi.json`, committed as `docs/openapi.json`). Addresses are always
+  explicit; read-only `free-*` endpoints suggest them.
 - Stack: Axum, SeaORM, `openidconnect`, Vue 3 + TS + Vite + Tailwind + Pinia, embedded
   into the binary (`rust-embed`).
 

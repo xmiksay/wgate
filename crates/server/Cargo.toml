@@ -6,6 +6,37 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+ipnet = { workspace = true, features = ["serde"] }
+openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+rand = "0.8"
+sea-orm = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-json", "with-ipnetwork", "postgres-array"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+time = "0.3"
+tokio = { workspace = true, features = ["net"] }
+toml = "1"
+tracing.workspace = true
+url = "2"
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+wgate-core.workspace = true
+wgate-db.workspace = true
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize = "1"
+
+[dev-dependencies]
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tower = { version = "0.5", features = ["util"] }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
