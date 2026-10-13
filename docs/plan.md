@@ -128,9 +128,10 @@ under sudo).
      it goes. Registrations stay only for a network compiled on that name whose own
      interface is there or about to be made; any other is removed (idempotently;
      one that still fails has its chains cut off to `drop`), so nothing on that
-     name keeps a network's rights. Without the list of links each
-     network's own interface is read: wgate's still get their revocations (peers,
-     routes, the fragment), but nothing is made, deleted or added
+     name keeps a network's rights. The list of links falls back to
+     every link's details (`ip -j -d link show`); without either, nothing is made,
+     deleted or added, and every network's rules go in without its peers' addresses
+     (failing closed)
   4. ports another network wants are freed (parked on the first free spare port,
      51900–51999, outside `PORT_RANGE`). A name held by an unmarked interface, or by a link that is not
      WireGuard, is refused. Then, for **every** network: peer removals and

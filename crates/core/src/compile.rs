@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{Slug, hub_address, overlaps};
+use crate::net::{Slug, first_overlap, hub_address};
 use crate::rights::{RuleSet, merge_nets, subtract_nets};
 use crate::rule::{Rule, Service};
 
@@ -187,9 +187,12 @@ impl Compiled {
     /// address there is anyone's (a peer whose own address is, is dropped), and nobody
     /// keeps a right to or from it. Everything else, revocations included, applies.
     pub fn within_guard(&self, unguarded: &[Ipv4Net]) -> Compiled {
-        let cut = RuleSet::everything(unguarded);
-        let outside = |a: &Ipv4Net| unguarded.iter().any(|u| overlaps(*a, *u));
         let mut c = self.clone();
+        if unguarded.is_empty() {
+            return c;
+        }
+        let cut = RuleSet::everything(unguarded);
+        let outside = |a: &Ipv4Net| first_overlap(*a, unguarded).is_some();
         c.peers.retain(|p| !outside(&Ipv4Net::from(p.ip)));
         for p in &mut c.peers {
             p.addrs.retain(|a| !outside(a));

@@ -168,36 +168,6 @@ fn what_could_not_be_released_is_not_taken_elsewhere() {
 }
 
 #[test]
-fn without_the_list_of_links_wgates_own_interfaces_still_revoke() {
-    let dir = keys();
-    let fake = Fake::default()
-        .fail("ip -j link show type wireguard")
-        .answer(
-            "ip -j -d link show dev wg-n1",
-            r#"[{"ifname":"wg-n1","ifalias":"wgate:n1","linkinfo":{"info_kind":"wireguard"}}]"#,
-        )
-        .fail("ip -j -d link show dev wg-n2")
-        .answer(
-            "wg show wg-n1 allowed-ips",
-            &format!("{K2}\t10.50.0.3/32\n"),
-        );
-    let out = reconcile(&fake, &compiled(), dir.path());
-    assert!(
-        out.errors.iter().any(|e| e.starts_with("inventory: ")),
-        "{:?}",
-        out.errors
-    );
-    let log = fake.log();
-    position(&log, &format!("wg set wg-n1 peer {K2} remove"));
-    // Its rules are refreshed; nothing grows, nothing is made.
-    assert_eq!(nft_runs(&log), 2, "base + n1's fragment");
-    assert!(
-        !log.iter()
-            .any(|c| c.contains(" allowed-ips ") || c.starts_with("ip link add"))
-    );
-}
-
-#[test]
 fn an_address_still_held_gets_no_rights_either() {
     let dir = keys();
     // A revoked peer still holds 10.50.0.2, which network 1's router now owns.

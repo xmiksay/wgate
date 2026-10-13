@@ -77,19 +77,47 @@ fn what_a_stuck_interface_still_routes_is_held() {
 }
 
 #[test]
-fn an_unreadable_link_in_the_fallback_is_named() {
+fn the_list_of_links_falls_back_to_every_links_details() {
     let dir = keys();
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
-        .fail("ip -j -d link show dev wg-n1");
+        .answer(
+            "ip -j -d link show",
+            r#"[{"ifname":"eth0","linkinfo":null},{"ifname":"wg-n1","ifalias":"wgate:n1","linkinfo":{"info_kind":"wireguard"}},{"ifname":"wg-n2","linkinfo":{"info_kind":"veth"}}]"#,
+        )
+        .answer("ip -j link show dev wg-n2", r#"[{"ifname":"wg-n2"}]"#);
     let out = reconcile(&fake, &compiled(), dir.path());
+    // wg-n1 is wgate's and built; wg-n2 is not WireGuard, so it is not taken.
     assert!(
         out.errors
             .iter()
-            .any(|e| e.starts_with("wg-n1: no revocations without its link")),
+            .any(|e| e.starts_with("wg-n2: the name is taken")),
         "{:?}",
         out.errors
     );
+    position(&fake.log(), &format!("wg set wg-n1 peer {K1} allowed-ips"));
+}
+
+#[test]
+fn without_any_list_of_links_every_network_fails_closed() {
+    let dir = keys();
+    let fake = Fake::default()
+        .fail("ip -j link show type wireguard")
+        .fail("ip -j -d link show");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.iter().any(|e| e.starts_with("inventory: ")),
+        "{:?}",
+        out.errors
+    );
+    let log = fake.log();
+    // Nothing is touched on an interface whose mark is unknown; their rules go in
+    // with none of their peers' addresses.
+    assert!(
+        !log.iter()
+            .any(|c| c.starts_with("wg set") || c.starts_with("ip link"))
+    );
+    assert!(!fake.fragments_of(1)[0].contains("10.50.0.2"));
 }
 
 #[test]
@@ -127,12 +155,12 @@ fn a_stuck_interface_whose_leftovers_are_unknown_stops_growth() {
 }
 
 #[test]
-fn a_registration_shown_not_to_be_wgates_goes_without_the_full_list() {
+fn a_registration_shown_not_to_be_wgates_goes() {
     let dir = keys();
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
         .answer(
-            "ip -j -d link show dev wg-n1",
+            "ip -j -d link show",
             r#"[{"ifname":"wg-n1","linkinfo":{"info_kind":"wireguard"}}]"#,
         )
         .answer(
