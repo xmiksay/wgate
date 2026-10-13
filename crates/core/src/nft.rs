@@ -119,16 +119,7 @@ pub fn render_snat(c: &Compiled) -> String {
 /// refilled) and its interface's entries in the dispatch maps. Needs the base.
 pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
     let p = prefix(n.id);
-    let mut out = format!("add table {TABLE}\n");
-    for (set, ty) in SETS {
-        let _ = writeln!(
-            out,
-            "add set {TABLE} {p}_{set} {{ type {ty}; flags interval; }}"
-        );
-    }
-    for (_, chain) in CHAINS {
-        let _ = writeln!(out, "add chain {TABLE} {p}_{chain}");
-    }
+    let mut out = ensure_parts(n.id);
 
     let mut sets = Sets::default();
     for peer in c.peers_of(n.id) {
@@ -180,14 +171,7 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
         ],
     );
 
-    let iface = &n.iface;
-    let _ = writeln!(out, "add element {TABLE} wg_ifaces {{ \"{iface}\" }}");
-    for (map, chain) in CHAINS {
-        let _ = writeln!(
-            out,
-            "add element {TABLE} {map} {{ \"{iface}\" : jump {p}_{chain} }}"
-        );
-    }
+    register(&mut out, n.id, &n.iface);
     out
 }
 
@@ -196,27 +180,12 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
 /// transaction also succeeds when some are already gone (nft before 1.0.8 has no
 /// `destroy`).
 pub fn render_network_removal(id: Id, iface: &str) -> String {
-    let p = prefix(id);
     let mut out = ensure_parts(id);
-    let _ = writeln!(out, "add element {TABLE} wg_ifaces {{ \"{iface}\" }}");
-    for (map, chain) in CHAINS {
-        let _ = writeln!(
-            out,
-            "add element {TABLE} {map} {{ \"{iface}\" : jump {p}_{chain} }}"
-        );
-    }
+    register(&mut out, id, iface);
     let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
     for (map, _) in CHAINS {
         let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
     }
-    delete_parts(&mut out, id);
-    out
-}
-
-/// A network's chains and sets alone, for one whose map entries are already gone (a
-/// flushed map).
-pub fn render_network_purge(id: Id) -> String {
-    let mut out = ensure_parts(id);
     delete_parts(&mut out, id);
     out
 }
@@ -246,6 +215,18 @@ fn ensure_parts(id: Id) -> String {
         let _ = writeln!(out, "add chain {TABLE} {p}_{chain}");
     }
     out
+}
+
+/// The interface's entries in `wg_ifaces` and the dispatch maps.
+fn register(out: &mut String, id: Id, iface: &str) {
+    let p = prefix(id);
+    let _ = writeln!(out, "add element {TABLE} wg_ifaces {{ \"{iface}\" }}");
+    for (map, chain) in CHAINS {
+        let _ = writeln!(
+            out,
+            "add element {TABLE} {map} {{ \"{iface}\" : jump {p}_{chain} }}"
+        );
+    }
 }
 
 fn delete_parts(out: &mut String, id: Id) {

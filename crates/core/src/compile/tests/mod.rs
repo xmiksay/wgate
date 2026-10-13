@@ -265,3 +265,22 @@ fn within_the_guard_drops_what_it_leaves_out() {
     // Nothing left out: nothing changes.
     assert_eq!(c.within_guard(&[]).peers, c.peers);
 }
+
+#[test]
+fn within_the_guard_keeps_a_peer_whose_new_lan_it_leaves_out() {
+    let c = compile(&state());
+    let router = c
+        .peers
+        .iter()
+        .find(|p| p.addrs.len() > 1)
+        .expect("a router");
+    let lan = router.addrs[1];
+    let within = c.within_guard(&[lan]);
+    let kept = within
+        .peers
+        .iter()
+        .find(|p| p.id == router.id)
+        .expect("kept");
+    assert!(!kept.addrs.contains(&lan));
+    assert!(kept.addrs.contains(&Ipv4Net::from(router.ip)));
+}

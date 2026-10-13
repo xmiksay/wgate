@@ -183,18 +183,16 @@ impl Compiled {
         self.networks.iter().find(|n| n.id == id)
     }
 
-    /// What stays enforceable while the hub's spoof guard leaves `unguarded` out: a
-    /// peer with an address there is dropped (fail closed), and nobody keeps a right
-    /// to or from it. Everything else, revocations included, still applies.
+    /// What stays enforceable while the hub's spoof guard leaves `unguarded` out: no
+    /// address there is anyone's (a peer whose own address is, is dropped), and nobody
+    /// keeps a right to or from it. Everything else, revocations included, applies.
     pub fn within_guard(&self, unguarded: &[Ipv4Net]) -> Compiled {
         let cut = RuleSet::everything(unguarded);
+        let outside = |a: &Ipv4Net| unguarded.iter().any(|u| overlaps(*a, *u));
         let mut c = self.clone();
-        c.peers.retain(|p| {
-            !p.addrs
-                .iter()
-                .any(|a| unguarded.iter().any(|u| overlaps(*a, *u)))
-        });
+        c.peers.retain(|p| !outside(&Ipv4Net::from(p.ip)));
         for p in &mut c.peers {
+            p.addrs.retain(|a| !outside(a));
             p.outbound = p.outbound.difference(&cut);
             p.inbound = p.inbound.difference(&cut);
         }

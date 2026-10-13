@@ -122,6 +122,30 @@ fn compiled() -> Compiled {
     })
 }
 
+/// The `from_net` map (`nft -j list map …`) with these registrations.
+fn registry(elems: &[(&str, Id)]) -> String {
+    let elems: Vec<String> = elems
+        .iter()
+        .map(|(iface, id)| format!(r#"["{iface}", {{"jump": {{"target": "n{id}_from"}}}}]"#))
+        .collect();
+    format!(
+        r#"{{"nftables": [{{"map": {{"name": "from_net", "elem": [{}]}}}}]}}"#,
+        elems.join(", ")
+    )
+}
+
+/// The `ip -j link show type wireguard` of these links and their marks.
+fn wg_links(links: &[(&str, Option<Id>)]) -> String {
+    let shown: Vec<String> = links
+        .iter()
+        .map(|(name, owner)| match owner {
+            Some(id) => format!(r#"{{"ifname":"{name}","ifalias":"wgate:n{id}"}}"#),
+            None => format!(r#"{{"ifname":"{name}"}}"#),
+        })
+        .collect();
+    format!("[{}]", shown.join(","))
+}
+
 /// A keys directory holding the keys of networks 1, 2 and (gone) 9.
 fn keys() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -164,7 +188,7 @@ fn nft_run(log: &[String], n: usize) -> usize {
 }
 
 #[test]
-fn a_new_network_is_registered_then_built() {
+fn a_new_network_is_keyed_made_marked_and_built() {
     // No keys yet: both are issued.
     let dir = tempfile::tempdir().unwrap();
     let fake = Fake::default();
@@ -173,26 +197,24 @@ fn a_new_network_is_registered_then_built() {
     let issued = format!("pub-{GENERATED}");
     assert_eq!(out.hub_keys, [(1, issued.clone()), (2, issued)]);
     let log = fake.log();
-    let base = position(&log, "nft -f -");
-    let link = position(&log, "ip link add wg-n1 type wireguard");
+    // The key before the interface; made under a scratch name, marked, renamed.
+    let genkey = position(&log, "wg genkey");
+    let made = position(&log, "ip link add wgtmp-1 type wireguard");
+    let marked = position(&log, "ip link set dev wgtmp-1 alias wgate:n1");
+    let named = position(&log, "ip link set dev wgtmp-1 name wg-n1");
+    assert!(genkey < made && made < marked && marked < named);
     let addr = position(&log, "ip addr replace 10.50.0.1/24 dev wg-n1");
     let keyed = position(&log, "wg set wg-n1 private-key ");
     let port = position(&log, "wg set wg-n1 listen-port 51801");
-    assert!(addr < keyed && keyed < port);
+    assert!(named < addr && addr < keyed && keyed < port);
+    // A new peer joins only after its network's rules are in.
+    let fragment = nft_run(&log, 1);
     let peer = position(
         &log,
         &format!("wg set wg-n1 peer {K1} allowed-ips 10.50.0.2/32,192.168.1.0/24"),
     );
     let route = position(&log, "ip route add 192.168.1.0/24 dev wg-n1 proto 150");
-    // Its rules (and map entries) go in before the interface exists.
-    let fragment = nft_run(&log, 1);
-    assert!(base < fragment && fragment < link && link < addr && addr < port);
-    assert!(port < peer && peer < route);
-    assert_eq!(
-        nft_run(&log, 2),
-        position(&log, "ip link add wg-n2") - 1,
-        "n2 alike"
-    );
+    assert!(port < fragment && fragment < peer && peer < route);
     // Nothing asks about an interface before it exists.
     assert!(
         !log.iter()
@@ -217,7 +239,7 @@ fn revocations_come_before_additions_and_stale_routes_go() {
     let fake = Fake::default()
         .answer(
             "ip -j link show type wireguard",
-            r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
+            &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
         )
         .answer(
             "wg show wg-n1 allowed-ips",
@@ -252,7 +274,7 @@ fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
     let fake = Fake::default()
         .answer(
             "ip -j link show type wireguard",
-            r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
+            &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
         )
         .fail("wg show wg-n1 allowed-ips")
         .fail("ip -j route show dev wg-n1");
@@ -274,7 +296,7 @@ fn swapped_ports_are_freed_first() {
     let fake = Fake::default()
         .answer(
             "ip -j link show type wireguard",
-            r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
+            &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
         )
         .answer("wg show all listen-port", "wg-n1\t51802\nwg-n2\t51801\n");
     let out = reconcile(&fake, &compiled(), dir.path());
@@ -290,7 +312,10 @@ fn swapped_ports_are_freed_first() {
 fn a_port_nobody_else_wants_is_not_freed() {
     let dir = keys();
     let fake = Fake::default()
-        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1))]),
+        )
         .answer("wg show all listen-port", "wg-n1\t51900\nwg-n2\t51802\n");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
@@ -303,7 +328,10 @@ fn one_failing_revocation_does_not_keep_the_others() {
     let stale = |k: &str, ip: &str| format!("{k}\t{ip}\n");
     let k3 = format!("{:0>42}A=", 3);
     let fake = Fake::default()
-        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1))]),
+        )
         .answer(
             "wg show wg-n1 allowed-ips",
             &format!(
@@ -324,7 +352,7 @@ fn a_lan_moves_between_networks_in_one_reconcile() {
     let fake = Fake::default()
         .answer(
             "ip -j link show type wireguard",
-            r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
+            &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
         )
         .answer(
             "ip -j route show dev wg-n2",
@@ -342,7 +370,10 @@ fn a_lan_moves_between_networks_in_one_reconcile() {
 fn what_a_peer_loses_goes_before_the_rules_change() {
     let dir = keys();
     let fake = Fake::default()
-        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1))]),
+        )
         .answer(
             "wg show wg-n1 allowed-ips",
             &format!("{K1}\t10.50.0.2/32 192.168.1.0/24 192.168.7.0/24\n"),
