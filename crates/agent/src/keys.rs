@@ -1,66 +1,98 @@
-//! Hub private keys: one per network in the keys directory (0600), generated on first
-//! use and never deleted or replaced. They never leave the hub; only the public key
-//! goes to the database.
+//! Hub private keys: one per network (`n<id>.key`) in the keys directory (0600),
+//! issued on first use and never deleted or replaced. They never leave the hub; only
+//! the public key goes to the database.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use wgate_core::is_wg_key;
+use wgate_core::{Id, is_wg_key};
 
 use crate::runner::Runner;
 
-/// The key file named `name` and its public key, generated if there is none. Only for
-/// an interface that has no key yet: generating for one that has would rotate it.
-pub fn ensure(r: &dyn Runner, dir: &Path, name: &str) -> anyhow::Result<(PathBuf, String)> {
-    match load(r, dir, name)? {
-        Some(found) => Ok(found),
-        None => {
-            let path = dir.join(format!("{name}.key"));
-            let private = generate(r, &path)?;
-            Ok((path.clone(), public(r, &private)?))
+/// The keys directory for one reconcile: each key file is read (and its public key
+/// derived) once.
+pub struct Keys<'a> {
+    r: &'a dyn Runner,
+    dir: &'a Path,
+    known: RefCell<HashMap<Id, (PathBuf, String)>>,
+}
+
+impl<'a> Keys<'a> {
+    pub fn new(r: &'a dyn Runner, dir: &'a Path) -> Self {
+        Self {
+            r,
+            dir,
+            known: RefCell::default(),
         }
     }
-}
 
-/// The key file named `name` and its public key; `None` when there is none.
-pub fn load(r: &dyn Runner, dir: &Path, name: &str) -> anyhow::Result<Option<(PathBuf, String)>> {
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .with_context(|| format!("create {}", dir.display()))?;
-    let path = dir.join(format!("{name}.key"));
-    let private = match fs::read_to_string(&path) {
-        Ok(key) if is_wg_key(key.trim()) => key,
-        // Keys are written whole (below), so a bad one was damaged after its public
-        // key went out: replacing it would cut every client off. Someone decides.
-        Ok(_) => bail!(
-            "{} is not a WireGuard key; restore it, or delete it to issue a new one",
-            path.display()
-        ),
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
-    };
-    let public = public(r, &private)?;
-    Ok(Some((path, public)))
-}
+    /// Network `id`'s key file and public key; `None` when it has none.
+    pub fn load(&self, id: Id) -> anyhow::Result<Option<(PathBuf, String)>> {
+        if let Some(found) = self.known.borrow().get(&id) {
+            return Ok(Some(found.clone()));
+        }
+        let path = self.path(id);
+        let private = match fs::read_to_string(&path) {
+            Ok(key) if is_wg_key(key.trim()) => key,
+            // Keys are written whole (below), so a bad one was damaged after its
+            // public key went out: replacing it would cut every client off.
+            Ok(_) => bail!(
+                "{} is not a WireGuard key; restore it, or delete it to issue a new one",
+                path.display()
+            ),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        };
+        let found = (path, self.public(&private)?);
+        self.known.borrow_mut().insert(id, found.clone());
+        Ok(Some(found))
+    }
 
-/// The network (by id) whose key in `dir` is `public`.
-pub fn owner_of(r: &dyn Runner, dir: &Path, public: &str) -> Option<i64> {
-    let entries = fs::read_dir(dir).ok()?;
-    entries.flatten().find_map(|entry| {
-        let name = entry.file_name().into_string().ok()?;
-        let id = name.strip_prefix('n')?.strip_suffix(".key")?.parse().ok()?;
-        let (_, key) = load(r, dir, &format!("n{id}")).ok()??;
-        (key == public).then_some(id)
-    })
-}
+    /// Network `id`'s key, issued if there is none. Only for an interface that has no
+    /// key yet: issuing for one that has would rotate it.
+    pub fn ensure(&self, id: Id) -> anyhow::Result<(PathBuf, String)> {
+        if let Some(found) = self.load(id)? {
+            return Ok(found);
+        }
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(self.dir)
+            .with_context(|| format!("create {}", self.dir.display()))?;
+        let path = self.path(id);
+        let private = generate(self.r, &path)?;
+        let found = (path, self.public(&private)?);
+        self.known.borrow_mut().insert(id, found.clone());
+        Ok(found)
+    }
 
-fn public(r: &dyn Runner, private: &str) -> anyhow::Result<String> {
-    Ok(r.run(&["wg", "pubkey"], Some(private))?.trim().to_owned())
+    /// The network whose key is `public`.
+    pub fn owner_of(&self, public: &str) -> Option<Id> {
+        let entries = fs::read_dir(self.dir).ok()?;
+        entries.flatten().find_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let id = name.strip_prefix('n')?.strip_suffix(".key")?.parse().ok()?;
+            let (_, key) = self.load(id).ok()??;
+            (key == public).then_some(id)
+        })
+    }
+
+    fn path(&self, id: Id) -> PathBuf {
+        self.dir.join(format!("n{id}.key"))
+    }
+
+    fn public(&self, private: &str) -> anyhow::Result<String> {
+        Ok(self
+            .r
+            .run(&["wg", "pubkey"], Some(private))?
+            .trim()
+            .to_owned())
+    }
 }
 
 /// Written to a temporary file, synced, then renamed: a crash leaves either no key or
@@ -106,43 +138,39 @@ mod tests {
     }
 
     #[test]
-    fn generates_once_keeps_its_key_and_refuses_a_damaged_one() {
+    fn issues_once_keeps_its_key_and_refuses_a_damaged_one() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::default();
-        let (path, public) = ensure(&tools, dir.path(), "n1").unwrap();
+        // A fresh store each time: what is on disk counts, not the cache.
+        let keys = || Keys::new(&tools, dir.path());
+        let (path, public) = keys().ensure(1).unwrap();
         let key = fs::read_to_string(&path).unwrap();
         assert_eq!(public, format!("pub-{}", key.trim()));
-        assert_eq!(ensure(&tools, dir.path(), "n1").unwrap().1, public, "kept");
-        assert_ne!(
-            ensure(&tools, dir.path(), "n2").unwrap().1,
-            public,
-            "own key"
-        );
+        assert_eq!(keys().ensure(1).unwrap().1, public, "kept");
+        assert_ne!(keys().ensure(2).unwrap().1, public, "own key");
         fs::write(&path, "garbage").unwrap();
-        assert!(ensure(&tools, dir.path(), "n1").is_err());
+        assert!(keys().ensure(1).is_err());
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "garbage",
             "left for a human"
         );
         fs::remove_file(&path).unwrap();
-        assert_ne!(
-            ensure(&tools, dir.path(), "n1").unwrap().1,
-            public,
-            "reissued"
-        );
+        assert_ne!(keys().ensure(1).unwrap().1, public, "reissued");
     }
 
     #[test]
     fn loads_without_issuing_and_finds_a_keys_network() {
-        let dir = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("keys");
         let tools = Tools::default();
-        assert!(load(&tools, dir.path(), "n4").unwrap().is_none());
-        assert!(!dir.path().join("n4.key").exists(), "nothing issued");
-        let (_, four) = ensure(&tools, dir.path(), "n4").unwrap();
-        let (_, seven) = ensure(&tools, dir.path(), "n7").unwrap();
-        assert_eq!(load(&tools, dir.path(), "n4").unwrap().unwrap().1, four);
-        assert_eq!(owner_of(&tools, dir.path(), &seven), Some(7));
-        assert_eq!(owner_of(&tools, dir.path(), "unknown"), None);
+        let keys = Keys::new(&tools, &dir);
+        assert!(keys.load(4).unwrap().is_none());
+        assert!(!dir.exists(), "reading creates nothing");
+        let (_, four) = keys.ensure(4).unwrap();
+        let (_, seven) = keys.ensure(7).unwrap();
+        assert_eq!(keys.load(4).unwrap().unwrap().1, four);
+        assert_eq!(Keys::new(&tools, &dir).owner_of(&seven), Some(7));
+        assert_eq!(keys.owner_of("unknown"), None);
     }
 }

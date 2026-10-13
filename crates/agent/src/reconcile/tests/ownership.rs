@@ -225,6 +225,7 @@ fn an_unregistered_leftover_of_a_gone_network_is_removed() {
 #[test]
 fn a_name_taken_again_after_removal_is_not_deleted() {
     let dir = keys();
+    std::fs::write(dir.path().join("n9.key"), hub_private(9)).unwrap();
     let fake = Fake::default()
         .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
         .answer(

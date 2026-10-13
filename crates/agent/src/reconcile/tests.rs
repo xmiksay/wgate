@@ -357,5 +357,6 @@ fn what_a_peer_loses_goes_before_the_rules_change() {
     assert!(narrow < nft_run(&log, 1));
 }
 
+mod failures;
 mod ownership;
 mod removal;
