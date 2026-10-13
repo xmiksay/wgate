@@ -16,15 +16,14 @@ fragment); in short:
 table inet wgate {
   # base: global sets, the dispatch maps, the hooks
   set tenant_space { pool + routed LANs of compiled peers }
-  set wg_ifaces    { the agent's wg-<slug> interfaces }
   map ingress / from_net / to_net { wg-<slug> : jump n<id>_ingress / _from / _to }
 
   prerouting (raw): non-wg ingress claiming a tenant source → drop;
-                    an unknown wg-* → drop; a wg-* without its ingress entry → drop;
-                    iifname vmap @ingress
+                    a wg-* without its ingress entry (unknown, or an entry lost) →
+                    drop; iifname vmap @ingress
   input:    a wg-* without its from_net entry → drop; iifname vmap @from_net
-  forward:  oifname of an unknown wg-* → drop; a wg-* without its from_net / to_net
-            entry → drop; iifname vmap @from_net; oifname vmap @to_net
+  forward:  a wg-* without its from_net / to_net entry → drop;
+            iifname vmap @from_net; oifname vmap @to_net
   output:   a local packet with a tenant-space source that is no hub address → drop;
             a wg-* without its to_net entry → drop; hub ICMP errors for a tracked
             flow accept; oifname vmap @to_net

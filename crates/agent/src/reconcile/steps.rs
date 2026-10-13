@@ -274,7 +274,8 @@ pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<Link>> {
 /// What the dispatch maps hold.
 #[derive(Default)]
 pub(super) struct Dispatch {
-    /// The networks registered in `from_net`.
+    /// The networks registered on each name, in any of the maps (one left in a single
+    /// map is still a registration to take off).
     pub networks: Vec<(String, Id)>,
     /// Map by map, the interfaces of elements that are not wgate's.
     pub stray: Vec<(&'static str, String)>,
@@ -286,8 +287,10 @@ pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Dispatch> {
     for (map, chain) in DISPATCH {
         let json = r.run(&["nft", "-j", "list", "map", "inet", "wgate", map], None)?;
         let read = crate::nftmap::parse(&json, chain)?;
-        if map == "from_net" {
-            networks = read.networks;
+        for pair in read.networks {
+            if !networks.contains(&pair) {
+                networks.push(pair);
+            }
         }
         stray.extend(read.stray.into_iter().map(|iface| (map, iface)));
     }

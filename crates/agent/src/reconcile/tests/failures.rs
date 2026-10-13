@@ -264,3 +264,22 @@ fn what_an_unreadable_network_may_hold_is_taken_by_nobody() {
     // Rights are not cut for what is merely unreadable: n2's rules are whole.
     assert!(fake.fragments_of(2)[0].contains("192.168.1.0-192.168.1.255"));
 }
+
+#[test]
+fn a_router_held_back_gets_no_routes_for_its_lans() {
+    let dir = keys();
+    // A revoked peer still holds the router's own address.
+    let fake = owned_n1()
+        .answer(
+            "wg show wg-n1 allowed-ips",
+            &format!("{K2}\t10.50.0.2/32\n"),
+        )
+        .fail(&format!("wg set wg-n1 peer {K2} remove"));
+    reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        !fake
+            .log()
+            .iter()
+            .any(|c| c.starts_with("ip route add 192.168.1.0/24"))
+    );
+}

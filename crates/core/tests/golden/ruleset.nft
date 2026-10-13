@@ -1,6 +1,5 @@
 add table inet wgate
 add set inet wgate tenant_space { type ipv4_addr; flags interval; }
-add set inet wgate wg_ifaces { type ifname; }
 add map inet wgate ingress { type ifname : verdict; }
 add map inet wgate from_net { type ifname : verdict; }
 add map inet wgate to_net { type ifname : verdict; }
@@ -16,21 +15,18 @@ add element inet wgate tenant_space {
 }
 flush chain inet wgate prerouting
 add rule inet wgate prerouting iifname != "wg-*" iifname != "lo" ip saddr @tenant_space counter drop
-add rule inet wgate prerouting iifname "wg-*" iifname != @wg_ifaces counter drop
 add rule inet wgate prerouting iifname "wg-*" iifname != @ingress counter drop
 add rule inet wgate prerouting iifname vmap @ingress
 flush chain inet wgate input
 add rule inet wgate input iifname "wg-*" iifname != @from_net counter drop
 add rule inet wgate input iifname vmap @from_net
 flush chain inet wgate forward
-add rule inet wgate forward oifname "wg-*" oifname != @wg_ifaces counter drop
 add rule inet wgate forward iifname "wg-*" iifname != @from_net counter drop
 add rule inet wgate forward oifname "wg-*" oifname != @to_net counter drop
 add rule inet wgate forward iifname vmap @from_net
 add rule inet wgate forward oifname vmap @to_net
 flush chain inet wgate output
 add rule inet wgate output ip saddr @tenant_space fib saddr type != local counter drop
-add rule inet wgate output oifname "wg-*" oifname != @wg_ifaces counter drop
 add rule inet wgate output oifname "wg-*" oifname != @to_net counter drop
 add rule inet wgate output oifname "wg-*" ct state related icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
 add rule inet wgate output oifname vmap @to_net
@@ -89,7 +85,6 @@ add rule inet wgate n1_to ct direction original meta l4proto icmp ip saddr . ip 
 add rule inet wgate n1_to ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n1_allow return
 add rule inet wgate n1_to ct direction reply meta l4proto icmp ip daddr . ip saddr @n1_allow_icmp return
 add rule inet wgate n1_to counter drop
-add element inet wgate wg_ifaces { "wg-nexial" }
 add element inet wgate ingress { "wg-nexial" : jump n1_ingress }
 add element inet wgate from_net { "wg-nexial" : jump n1_from }
 add element inet wgate to_net { "wg-nexial" : jump n1_to }
@@ -156,7 +151,6 @@ add rule inet wgate n2_to ct direction original meta l4proto icmp ip saddr . ip 
 add rule inet wgate n2_to ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n2_allow return
 add rule inet wgate n2_to ct direction reply meta l4proto icmp ip daddr . ip saddr @n2_allow_icmp return
 add rule inet wgate n2_to counter drop
-add element inet wgate wg_ifaces { "wg-nexial-dev" }
 add element inet wgate ingress { "wg-nexial-dev" : jump n2_ingress }
 add element inet wgate from_net { "wg-nexial-dev" : jump n2_from }
 add element inet wgate to_net { "wg-nexial-dev" : jump n2_to }
@@ -196,7 +190,6 @@ add rule inet wgate n3_to ct direction original meta l4proto icmp ip saddr . ip 
 add rule inet wgate n3_to ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n3_allow return
 add rule inet wgate n3_to ct direction reply meta l4proto icmp ip daddr . ip saddr @n3_allow_icmp return
 add rule inet wgate n3_to counter drop
-add element inet wgate wg_ifaces { "wg-krcmar" }
 add element inet wgate ingress { "wg-krcmar" : jump n3_ingress }
 add element inet wgate from_net { "wg-krcmar" : jump n3_from }
 add element inet wgate to_net { "wg-krcmar" : jump n3_to }

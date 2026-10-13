@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, CompiledNetwork, PORT_RANGE, render_network, render_network_cutoff};
+use wgate_core::{
+    Compiled, CompiledNetwork, PORT_RANGE, overlaps_any, render_network, render_network_cutoff,
+};
 
 use super::gone::unregister;
 use super::steps::{SCRATCH, additions, nft, owner_mark, route_additions, run};
@@ -71,7 +73,16 @@ pub(super) fn network(
         }
         // A failed read was reported with the deletions.
         if let Ok((add, _)) = plan.routes {
-            step("routes", route_additions(r, n, &add, held));
+            // A router held back (its addition waits) keeps no route for its LANs.
+            let routers: Vec<Ipv4Net> = plan
+                .peers
+                .iter()
+                .flat_map(|d| &d.set)
+                .filter(|p| overlaps_any(&p.allowed, held))
+                .flat_map(|p| p.allowed.clone())
+                .collect();
+            let waits = [held, routers.as_slice()].concat();
+            step("routes", route_additions(r, n, &add, &waits));
         }
     } else {
         // Growing on stale rules would hand a new holder its predecessor's rights,
@@ -122,6 +133,17 @@ fn hub_key(
     exists: bool,
 ) -> anyhow::Result<(PathBuf, String)> {
     if let Some(found) = keys.load(n.id)? {
+        // A file whose key the live interface does not have (restored, copied) would
+        // rotate it: the interface's key wins until someone decides.
+        if exists
+            && let Some(live) = interface_key(r, &n.iface).context("the interface's key")?
+            && live != found.1
+        {
+            anyhow::bail!(
+                "{} is not the key the interface has; restore the right one",
+                found.0.display()
+            );
+        }
         return Ok(found);
     }
     if exists
