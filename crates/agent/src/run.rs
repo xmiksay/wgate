@@ -27,13 +27,6 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
     let mut tick = tokio::time::interval(config.interval());
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
-        if listener.is_none() {
-            // Without it the timer still reconciles; changes just wait for the tick.
-            match revision::listener(&config.database_url).await {
-                Ok(l) => listener = Some(l),
-                Err(e) => tracing::warn!(error = %e, "LISTEN failed; relying on the timer"),
-            }
-        }
         tokio::select! {
             // The timer rewrites every hub key: a row lost meanwhile comes back.
             _ = tick.tick() => published.clear(),
@@ -42,6 +35,14 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
                     tracing::warn!(error = %e, "LISTEN connection lost");
                     listener = None;
                 }
+            }
+        }
+        if listener.is_none() {
+            // Before the reconcile reads its snapshot, so nothing committed after it
+            // goes unnoticed. Without it the timer still reconciles.
+            match revision::listener(&config.database_url).await {
+                Ok(l) => listener = Some(l),
+                Err(e) => tracing::warn!(error = %e, "LISTEN failed; relying on the timer"),
             }
         }
         // A database outage leaves the kernel as it is: the VPN keeps running.
@@ -121,7 +122,11 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
             Ok(()) => {
                 published.insert(network, key);
             }
-            Err(e) => problems.push(format!("network {network}: hub key: {e}")),
+            Err(e) => {
+                // The database's own words stay in the log, not in the admins' status.
+                tracing::warn!(network, error = %e, "hub key not recorded");
+                problems.push(format!("network {network}: hub key not recorded"));
+            }
         }
     }
     for p in &problems {

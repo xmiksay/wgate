@@ -48,7 +48,8 @@ under sudo).
   tenant's (winning) blocks, with a known tenant, at most /30, and with a range and
   slug no older network holds.
 - Rendering:
-  - `render_nft(&Compiled) -> String`: the whole `table inet wgate` per design.md
+  - `render_base` / `render_network` / `render_network_removal` (`render_all` for
+    tests): `table inet wgate` per design.md as a base plus one fragment per network,
     from one compile run (disjoint peer addresses, tenant space, SNAT source and
     node networks all come from it)
   - `render_client_config(&ClientConfig { address, hub_address, private_key,
@@ -110,11 +111,15 @@ under sudo).
 - Loop (`LISTEN wgate_changed` or a tick):
   1. load the desired state, `core::compile` it
   2. apply the base; read the inventory (`nft -j list map … from_net`, `ip -j link`).
-     Without the inventory only peer revocations apply; without the base also the
-     removal of gone networks, but nothing is built and no fragment changes
+     A failed base still counts as guarding when the kernel's `tenant_space` covers
+     the compiled one; otherwise only peer revocations apply (nothing grows where
+     spoofed sources may pass)
   3. networks registered in `from_net` (interface + network id) that are no longer
-     compiled under that pair: interface deleted, then the nft fragment removed (the
-     map entry is the retry marker; until it goes, the interface is not reused)
+     compiled under that pair: interface deleted (only if it carries that network's
+     key, or none), then the nft fragment removed (the map entry is the retry marker;
+     until it goes, the interface is not reused and loses its peers). Unregistered
+     `wg-*` interfaces carrying the key of a network not compiled on them (a flushed
+     table) are deleted too
   4. ports another network wants are freed (`listen-port 0`). An existing interface
      is managed only if registered or carrying the network's hub key; a non-WireGuard
      link with the name is refused. Then, for **every** network: peer removals and
@@ -123,8 +128,9 @@ under sudo).
      — before any network grows, so nothing is held twice while it moves
   5. **network by network**, every step attempted: a new network's nft fragment goes
      in *before* `ip link add … type wireguard` (a failed create stops it); key
-     `n<id>.key` in `keys_dir` (generated if missing, never deleted; a damaged one is
-     an error, not rotated; its public key goes to `hub_key`); `ip addr replace`
+     `n<id>.key` in `keys_dir` (issued only to an interface without a key, never
+     deleted; a damaged or missing one for a keyed interface is an error, never a
+     rotation; its public key goes to `hub_key`); `ip addr replace`
      hub/prefix; `wg set … private-key`, then `listen-port`; up; the fragment; peer
      additions (`AllowedIPs` = `addrs(peer)`); LAN routes (`ip route add … proto
      150`, never taking over another's route)
