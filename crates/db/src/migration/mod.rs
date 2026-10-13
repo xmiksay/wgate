@@ -5,6 +5,8 @@ use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, TransactionT
 
 /// In order; a name is recorded once its migration is applied.
 const MIGRATIONS: &[(&str, &str)] = &[("m0001_init", include_str!("m0001_init.sql"))];
+/// Idempotent; applied on every run, after the migrations.
+const GRANTS: &str = include_str!("grants.sql");
 
 /// Applies the pending migrations in one transaction, so a failure leaves the schema
 /// as it was. Returns the names applied now.
@@ -21,6 +23,23 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
         )",
     )
     .await?;
+    // A schema newer than this binary (e.g. after a rollback) must stop the rollout,
+    // not run with code that does not know it.
+    let known: Vec<&str> = MIGRATIONS.iter().map(|(name, _)| *name).collect();
+    for row in txn
+        .query_all_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT name FROM wgate_migration",
+        ))
+        .await?
+    {
+        let name: String = row.try_get("", "name")?;
+        if !known.contains(&name.as_str()) {
+            return Err(DbErr::Migration(format!(
+                "database has migration {name}, which this wgate does not know (newer schema?)"
+            )));
+        }
+    }
     let mut applied = Vec::new();
     for (name, sql) in MIGRATIONS {
         let done = txn
@@ -42,6 +61,7 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
             applied.push(*name);
         }
     }
+    txn.execute_unprepared(GRANTS).await?;
     txn.commit().await?;
     Ok(applied)
 }

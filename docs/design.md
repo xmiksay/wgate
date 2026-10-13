@@ -99,9 +99,8 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
 tenant        id, slug (unique), name, disabled_at
 tenant_block  id, tenant_id, cidr                 # global admin; inside the pool, disjoint
                                                   # id = claim order: on a conflict the older wins
-network       id, tenant_id, slug (unique → wg-<slug>), name,
-              cidr (inside one block of its tenant, enforced by a trigger; a block
-              cannot be removed under its networks; disjoint from all other networks),
+network       id, tenant_id, block_id (FK to a block of the same tenant), slug (unique → wg-<slug>), name,
+              cidr (inside its block; disjoint from all other networks),
               port (unique, 51800–51899 except 51820), mesh bool, disabled_at
                                                   # hub address = first host of cidr
 oidc_provider tenant_id NULL (= global admin), issuer, client_id   # secret: config file
@@ -156,6 +155,15 @@ inbound(p ∈ N) =
     ∪ addrs(N) − addrs(p)   if N.mesh
 ```
 
+- **Ownership columns are immutable** (a block's range and tenant; a network's tenant,
+  block and range; a peer's device, network, IP and key; a device's user; a user's
+  tenant): moving means delete + re-create. The cross-row checks (network inside its
+  block, peer address inside its network, the device's tenant = the network's tenant
+  unless a global admin owns it) read only immutable data, so they cannot race; a
+  block cannot go away under its networks (foreign key).
+- **Disabling suspends, revoking frees.** A disabled user, network or tenant has no
+  access, but keeps its addresses and routed LANs reserved so re-enabling restores
+  it; revoking a peer frees its IP, key and LANs.
 - **Who owns an address is decided at save time.** The DB constraints (exclusion
   constraints on blocks, network ranges and routes, unique slugs/IPs) and the API
   checks refuse a conflicting row, so the first claim keeps it for good. `compile`

@@ -6,6 +6,7 @@ use sea_orm::prelude::IpNetwork;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
+    pub tenant_id: i64,
     pub network_id: i64,
     pub proto: String,
     pub port_from: Option<i32>,
