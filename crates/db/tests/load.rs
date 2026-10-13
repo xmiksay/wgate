@@ -31,7 +31,8 @@ const KEYS: [&str; 4] = [
 /// disabled network.
 const SCENARIO: &str = "
     INSERT INTO tenant (id, slug, name) VALUES (1, 'nexial', 'Nexial'), (2, 'krcmar', 'Krcmar');
-    INSERT INTO tenant_block (id, tenant_id, cidr) VALUES (1, 1, '10.50.0.0/23'), (2, 2, '10.50.2.0/24');
+    INSERT INTO tenant_block (id, tenant_id, cidr)
+        VALUES (1, 1, '10.50.0.0/23'), (2, 2, '10.50.2.0/24'), (3, 1, '10.50.3.0/24');
     INSERT INTO ceiling (tenant_id, proto, dst, port_from, port_to)
         VALUES (1, 'tcp', '172.16.16.1/32', 6443, 6443);
     INSERT INTO network (id, tenant_id, slug, name, cidr, port) VALUES
@@ -164,14 +165,10 @@ async fn a_device_cannot_join_another_tenants_network() {
     .await;
     let loaded = desired_state(&pg.db, &infra()).await.expect("load");
     // nexial's device in krcmar's network is refused; the global admin's is fine.
-    assert_eq!(
-        loaded.warnings,
-        ["peer 5: its device belongs to another tenant"]
-    );
-    assert_eq!(
-        loaded.state.peers.iter().map(|p| p.id).collect::<Vec<_>>(),
-        [6]
-    );
+    let c = compile(&loaded.state);
+    assert_eq!(c.skipped, [(5, wgate_core::Problem::ForeignDevice)]);
+    assert_eq!(c.peers.iter().map(|p| p.id).collect::<Vec<_>>(), [6]);
+    assert_eq!(c.peers[0].public_key, KEYS[1]);
 }
 
 #[tokio::test]

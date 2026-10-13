@@ -273,11 +273,6 @@ async fn a_revoked_peer_cannot_be_given_a_lan() {
         "INSERT INTO peer_route (peer_id, cidr) VALUES (1, '192.168.1.0/24')",
     )
     .await;
-    refused(
-        &pg.db,
-        "INSERT INTO tenant_block (tenant_id, cidr) VALUES (1, 'fd00::/64')",
-    )
-    .await;
 }
 
 /// A route inserted while the peer is being revoked must not survive: the guard's
@@ -324,4 +319,73 @@ async fn a_route_racing_a_revocation_is_freed() {
         .expect("count")
         .expect("row");
     assert_eq!(row.try_get::<i64>("", "n").expect("n"), 0);
+}
+
+#[tokio::test]
+async fn tenant_blocks_are_ipv4() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    refused(
+        &pg.db,
+        "INSERT INTO tenant_block (tenant_id, cidr) VALUES (1, 'fd00::/64')",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn networks_stay_inside_their_tenants_blocks() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    let network = |tenant: u32, cidr: &str| {
+        format!(
+            "INSERT INTO network (tenant_id, slug, name, cidr, port) VALUES ({tenant}, 'n2', 'x', '{cidr}', 51802)"
+        )
+    };
+    // In tenant 2's block, and in no block at all.
+    refused(&pg.db, &network(1, "10.50.1.0/28")).await;
+    refused(&pg.db, &network(1, "10.50.9.0/28")).await;
+    ok(&pg.db, &network(2, "10.50.1.0/28")).await;
+    // A block cannot be removed or shrunk away from its networks.
+    refused(&pg.db, "DELETE FROM tenant_block WHERE tenant_id = 2").await;
+    refused(
+        &pg.db,
+        "UPDATE tenant_block SET cidr = '10.50.1.128/25' WHERE tenant_id = 2",
+    )
+    .await;
+    ok(&pg.db, "DELETE FROM network WHERE tenant_id = 2").await;
+    ok(&pg.db, "DELETE FROM tenant_block WHERE tenant_id = 2").await;
+}
+
+#[tokio::test]
+async fn a_device_joins_a_network_once_and_revokes_at_read_committed() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    let insert = |id: u32, key: &str, ip: &str| {
+        format!(
+            "INSERT INTO peer (id, device_id, network_id, public_key, ip) VALUES ({id}, 1, 1, '{key}', '{ip}')"
+        )
+    };
+    ok(&pg.db, &insert(1, KEY, "10.50.0.2")).await;
+    refused(
+        &pg.db,
+        &insert(
+            2,
+            "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=",
+            "10.50.0.3",
+        ),
+    )
+    .await;
+    let txn = pg
+        .db
+        .begin_with_config(Some(sea_orm::IsolationLevel::RepeatableRead), None)
+        .await
+        .expect("begin");
+    assert!(
+        txn.execute_unprepared("UPDATE peer SET revoked_at = now() WHERE id = 1")
+            .await
+            .is_err(),
+        "a snapshot-isolated revoke could miss a racing route"
+    );
+    txn.rollback().await.expect("rollback");
+    ok(&pg.db, "UPDATE peer SET revoked_at = now() WHERE id = 1").await;
 }

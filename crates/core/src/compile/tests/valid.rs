@@ -218,6 +218,19 @@ fn invalid_peers_and_routes_are_left_out() {
 }
 
 #[test]
+fn a_device_of_another_tenant_cannot_join() {
+    let mut s = state();
+    let mut foreign = peer(60, C, "10.50.1.6", &[]);
+    foreign.owner_tenant = Some(10);
+    let mut own = peer(61, C, "10.50.1.7", &[]);
+    own.owner_tenant = Some(20);
+    s.peers.extend([foreign, own]);
+    let c = compile(&s);
+    assert_eq!(c.skipped, [(60, Problem::ForeignDevice)]);
+    get(&c, 61);
+}
+
+#[test]
 fn listen_ports_must_be_in_range_and_unique() {
     let mut s = state();
     let mut clash = network(14, 10, "10.50.0.64/28", false, vec![]);

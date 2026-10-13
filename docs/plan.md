@@ -65,8 +65,16 @@ under sudo).
   per-tenant email and OIDC subject. Exclusion constraints (GiST `inet_ops`, built in)
   keep blocks, networks and routes disjoint; CHECKs: slug syntax, port range, ≤ /30,
   "exactly one target" on `rule`, `valid_service` (icmp ⇔ NULL ports, never NULL).
-- `desired_state(db, &Infra)`: active rows → `core::DesiredState`; unmappable rows are
-  skipped with a warning (a load error would block revocations).
+- Triggers: a network lies inside one block of its tenant (and a block keeps its
+  networks); a revoked peer never holds a LAN (revoking frees its routes, routes need
+  an active peer; peer row locks serialize the race; revocations must run at READ
+  COMMITTED). One active peer per (device, network); keys and IPs unique among active
+  peers.
+- `desired_state(db, &Infra)`: one REPEATABLE READ read-only snapshot, active rows →
+  `core::DesiredState` (+ its revision, peer keys, owner tenants); unmappable rows are
+  skipped with a warning (a load error would block revocations). Cross-tenant devices
+  fail closed in `compile` (`Problem::ForeignDevice`).
+- Own migrator (`wgate_migration`, one transaction under an advisory lock).
 - Postgres is reached directly (5432), not through pgbouncer (transaction pooling
   breaks LISTEN).
 - Trigger-free NOTIFY: every write transaction ends with

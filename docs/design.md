@@ -100,8 +100,8 @@ tenant        id, slug (unique), name, disabled_at
 tenant_block  id, tenant_id, cidr                 # global admin; inside the pool, disjoint
                                                   # id = claim order: on a conflict the older wins
 network       id, tenant_id, slug (unique → wg-<slug>), name,
-              cidr (inside its tenant's blocks, adjacent blocks counting as one
-              range; disjoint from all other networks),
+              cidr (inside one block of its tenant, enforced by a trigger; a block
+              cannot be removed under its networks; disjoint from all other networks),
               port (unique, 51800–51899 except 51820), mesh bool, disabled_at
                                                   # hub address = first host of cidr
 oidc_provider tenant_id NULL (= global admin), issuer, client_id   # secret: config file

@@ -9,17 +9,18 @@ const MIGRATIONS: &[(&str, &str)] = &[("m0001_init", include_str!("m0001_init.sq
 /// Applies the pending migrations in one transaction, so a failure leaves the schema
 /// as it was. Returns the names applied now.
 pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr> {
-    db.execute_unprepared(
+    let txn = db.begin().await?;
+    // Two concurrent `wgate migrate` runs must not both apply the same migration, nor
+    // race to create the bookkeeping table; the lock covers both.
+    txn.execute_unprepared("SELECT pg_advisory_xact_lock(hashtext('wgate_migrate'))")
+        .await?;
+    txn.execute_unprepared(
         "CREATE TABLE IF NOT EXISTS wgate_migration (
             name       text PRIMARY KEY,
             applied_at timestamptz NOT NULL DEFAULT now()
         )",
     )
     .await?;
-    let txn = db.begin().await?;
-    // Two concurrent `wgate migrate` runs must not both apply the same migration.
-    txn.execute_unprepared("LOCK TABLE wgate_migration IN EXCLUSIVE MODE")
-        .await?;
     let mut applied = Vec::new();
     for (name, sql) in MIGRATIONS {
         let done = txn
