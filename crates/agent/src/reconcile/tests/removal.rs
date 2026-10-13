@@ -288,3 +288,34 @@ fn a_stray_in_one_map_is_cleared_from_that_map_only() {
             .any(|i| i.trim() == "delete element inet wgate from_net { \"wg-n1\" }")
     );
 }
+
+#[test]
+fn a_stale_name_pointing_at_two_live_networks_loses_each_entry_alone() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
+        )
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-n1", 1), ("wg-n2", 2), ("wg-old", 1)]),
+        )
+        .answer(
+            "nft -j list map inet wgate to_net",
+            r#"{"nftables": [{"map": {"name": "to_net", "elem": [["wg-old", {"jump": {"target": "n2_to"}}]]}}]}"#,
+        );
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        !out.errors.iter().any(|e| e.contains("wg-old")),
+        "{:?}",
+        out.errors
+    );
+    let inputs = fake.inputs.borrow();
+    for map in ["from_net", "to_net"] {
+        let delete = format!("delete element inet wgate {map} {{ \"wg-old\" }}");
+        assert!(inputs.iter().any(|i| i.trim() == delete), "{map}");
+    }
+    // Both networks live on: their chains stay.
+    assert!(!inputs.iter().any(|i| i.contains("delete chain")));
+}

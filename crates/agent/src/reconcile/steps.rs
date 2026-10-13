@@ -279,22 +279,31 @@ pub(super) struct Dispatch {
     pub networks: Vec<(String, Id)>,
     /// Map by map, the interfaces of elements that are not wgate's.
     pub stray: Vec<(&'static str, String)>,
+    /// Map by map, the interface of every element (wgate's or not).
+    pub entries: Vec<(&'static str, String)>,
 }
 
 pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Dispatch> {
     let mut networks = vec![];
     let mut stray = vec![];
+    let mut entries = vec![];
     for (map, chain) in DISPATCH {
         let json = r.run(&["nft", "-j", "list", "map", "inet", "wgate", map], None)?;
         let read = crate::nftmap::parse(&json, chain)?;
         for pair in read.networks {
+            entries.push((map, pair.0.clone()));
             if !networks.contains(&pair) {
                 networks.push(pair);
             }
         }
+        entries.extend(read.stray.iter().map(|iface| (map, iface.clone())));
         stray.extend(read.stray.into_iter().map(|iface| (map, iface)));
     }
-    Ok(Dispatch { networks, stray })
+    Ok(Dispatch {
+        networks,
+        stray,
+        entries,
+    })
 }
 
 /// Takes an element that is not wgate's out of its map: the network's own entry could

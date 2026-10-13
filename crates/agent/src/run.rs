@@ -8,11 +8,11 @@ use anyhow::Context;
 use ipnet::Ipv4Net;
 use sea_orm::{Database, DatabaseConnection};
 use tokio::time::MissedTickBehavior;
-use wgate_core::{Id, compile};
+use wgate_core::{Compiled, Id, compile};
 use wgate_db::revision::{self, ListenError, Listener};
 
 use crate::config::Config;
-use crate::reconcile::reconcile_after;
+use crate::reconcile::{Outcome, reconcile_after};
 use crate::runner::Runner;
 use crate::state;
 
@@ -71,6 +71,21 @@ pub struct Memory {
     pub held: Vec<Ipv4Net>,
 }
 
+/// A reconcile on a blocking thread (it runs the tools).
+async fn reconcile_blocking<R: Runner + Send + Sync + 'static>(
+    config: &Config,
+    runner: Arc<R>,
+    compiled: Compiled,
+    previously_held: Vec<Ipv4Net>,
+) -> anyhow::Result<Outcome> {
+    let keys_dir = config.keys_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        reconcile_after(&*runner, &compiled, &keys_dir, &previously_held)
+    })
+    .await
+    .context("reconcile task")
+}
+
 /// Connects, retrying on the timer. Meanwhile (a hub that boots during a database
 /// outage) the last state saved is served, so the VPN comes up as it was.
 async fn connect<R: Runner + Send + Sync + 'static>(
@@ -107,14 +122,8 @@ pub async fn apply_saved<R: Runner + Send + Sync + 'static>(
     saved.reserved = infra.reserved;
     saved.snat_source = infra.snat_source;
     saved.node_cidrs = infra.node_cidrs;
-    let compiled = compile(&saved);
-    let keys_dir = config.keys_dir.clone();
-    let previously_held = previously_held.to_vec();
-    let outcome = tokio::task::spawn_blocking(move || {
-        reconcile_after(&*runner, &compiled, &keys_dir, &previously_held)
-    })
-    .await
-    .context("reconcile task")?;
+    let outcome =
+        reconcile_blocking(config, runner, compile(&saved), previously_held.to_vec()).await?;
     for e in &outcome.errors {
         tracing::warn!(problem = %e, "not applied");
     }
@@ -173,8 +182,14 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
         let (path, state) = (config.state_file.clone(), loaded.state.clone());
         match tokio::task::spawn_blocking(move || state::save(&path, &state)).await {
             Ok(Ok(())) => memory.saved = Some(loaded.revision),
-            Ok(Err(e)) => tracing::warn!(error = format!("{e:#}"), "state not saved"),
-            Err(e) => tracing::warn!(error = %e, "state not saved"),
+            failed => {
+                tracing::warn!(?failed, "state not saved");
+                // Never serve an older state than what is applied now: a start without
+                // the database would take away what came since.
+                let path = config.state_file.clone();
+                let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(path)).await;
+                memory.saved = None;
+            }
         }
     }
     let compiled = compile(&loaded.state);
@@ -204,13 +219,8 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
             .map(|(id, p)| format!("peer_route {id}: {p:?}")),
     );
 
-    let keys_dir = config.keys_dir.clone();
     let previously_held = std::mem::take(&mut memory.held);
-    let outcome = tokio::task::spawn_blocking(move || {
-        reconcile_after(&*runner, &compiled, &keys_dir, &previously_held)
-    })
-    .await
-    .context("reconcile task")?;
+    let outcome = reconcile_blocking(config, runner, compiled, previously_held).await?;
     memory.held = outcome.held;
     problems.extend(outcome.errors);
     for (network, key) in outcome.hub_keys {

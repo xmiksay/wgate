@@ -140,11 +140,12 @@ under sudo).
      private and preshared keys) and stale LAN route deletions — before any network
      grows, so nothing is held twice while it moves; what a failed command could not
      release stays held: no peer, route or right anywhere takes it this pass. A
-     network whose peers or routes cannot be read is left as it is; what it may hold
-     (what its rules last gave, `n<id>_peers`, and what is compiled for it) no other
-     network takes, but rights to it stay; the other networks go on. When even that
-     cannot be read (its last rules, or a stuck interface's leftovers), nothing
-     grows this pass
+     network whose peers cannot be read gets rules that give them nothing this pass
+     (a revocation holds anyway) and no changes on its interface; one whose routes
+     cannot be read still revokes, but adds no route. What either may hold (its
+     compiled addresses and what its rules last gave, `n<id>_peers`) no other
+     network takes. When even that cannot be read (its last rules, or a stuck
+     interface's leftovers), nothing grows this pass
   5. **network by network**, every step attempted: the hub key `n<id>.key` in
      `keys_dir` first (issued only to an interface without a key, never deleted; a
      damaged or missing one for a keyed interface is an error, never a rotation; its

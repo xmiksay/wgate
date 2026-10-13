@@ -24,7 +24,7 @@ mod network;
 mod steps;
 
 use gone::{remove_gone_links, unregister};
-use network::{free_ports, network};
+use network::{Around, free_ports, network};
 use steps::{
     Link, SCRATCH, clear_stray, current_peers, current_routes, desired_peers, lans, link_exists,
     links, nft, peer_diff, registered, removals, route_deletions, set_ranges,
@@ -49,6 +49,8 @@ struct Plan {
 
 const NOT_MADE: &str = "an interface wgate did not make holds the name; left alone";
 
+/// A reconcile with nothing left held from before (tests).
+#[cfg(test)]
 pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     reconcile_after(r, c, keys_dir, &[])
 }
@@ -81,6 +83,7 @@ pub fn reconcile_after(
     let steps::Dispatch {
         networks: registered,
         stray,
+        entries,
     } = registry.unwrap_or_default();
     // An element that is not wgate's has no place in wgate's table: on a network's
     // name it would keep that network's own entries out, on any other it would let an
@@ -142,36 +145,54 @@ pub fn reconcile_after(
         }
     }
     let mut unreadable: Vec<Id> = vec![];
+    // What a network whose peers or routes cannot be read may hold there (its
+    // compiled addresses, and what its rules last gave): nobody else takes it.
+    let mut may_hold = |n: &CompiledNetwork, taken: &mut Vec<Ipv4Net>| {
+        taken.extend(c.peers_of(n.id).flat_map(|p| p.addrs.clone()));
+        match registered_addresses(r, n.id) {
+            Ok(addrs) => taken.extend(addrs),
+            // What it may hold is unknown: nothing is known to be free.
+            Err(_) => blind = true,
+        }
+    };
+    let mut own_held = vec![];
     for (n, _, plan) in &active {
-        let (Ok(peers), Ok((_, del))) = (&plan.peers, &plan.routes) else {
-            for e in [plan.peers.as_ref().err(), plan.routes.as_ref().err()]
-                .into_iter()
-                .flatten()
-            {
-                out.errors
-                    .push(format!("{}: left as it is: {e:#}", n.iface));
+        match &plan.peers {
+            Ok(peers) => {
+                let (result, still) = removals(r, &n.iface, peers);
+                held.extend(still);
+                note(
+                    result.with_context(|| format!("{}: peers", n.iface)),
+                    &mut out.errors,
+                );
             }
-            taken.extend(c.peers_of(n.id).flat_map(|p| p.addrs.clone()));
-            match registered_addresses(r, n.id) {
-                Ok(addrs) => taken.extend(addrs),
-                // What it may hold is unknown: nothing is known to be free.
-                Err(_) => blind = true,
+            Err(e) => {
+                // Its peers cannot be revoked: its rules give none of them anything
+                // this pass (below), so a revocation holds anyway.
+                out.errors.push(format!("{}: peers: {e:#}", n.iface));
+                let before = taken.len();
+                may_hold(n, &mut taken);
+                own_held.extend_from_slice(&taken[before..]);
+                unreadable.push(n.id);
             }
-            unreadable.push(n.id);
-            continue;
-        };
-        let (result, still) = removals(r, &n.iface, peers);
-        held.extend(still);
-        note(
-            result.with_context(|| format!("{}: peers", n.iface)),
-            &mut out.errors,
-        );
-        let (result, still) = route_deletions(r, &n.iface, del);
-        held.extend(still);
-        note(
-            result.with_context(|| format!("{}: routes", n.iface)),
-            &mut out.errors,
-        );
+        }
+        match &plan.routes {
+            Ok((_, del)) => {
+                let (result, still) = route_deletions(r, &n.iface, del);
+                held.extend(still);
+                note(
+                    result.with_context(|| format!("{}: routes", n.iface)),
+                    &mut out.errors,
+                );
+            }
+            // No route of its is added this pass (`network` adds only what it read).
+            Err(e) => {
+                out.errors.push(format!("{}: routes: {e:#}", n.iface));
+                if plan.peers.is_ok() {
+                    may_hold(n, &mut taken);
+                }
+            }
+        }
     }
     // An unreadable network may still hold what an earlier pass could not release (and
     // so left out of its rules): that stays taken too.
@@ -182,10 +203,27 @@ pub fn reconcile_after(
     // cannot be read either, a stuck interface whose leftovers cannot), nothing is
     // known to be free: nothing grows.
     let grow = grow && !blind;
-    let active: Vec<_> = active
+    let (unread, active): (Vec<_>, Vec<_>) = active
         .into_iter()
-        .filter(|(n, exists, _)| !unreadable.contains(&n.id) && (grow || *exists))
-        .collect();
+        .filter(|(_, exists, _)| grow || *exists)
+        .partition(|(n, _, _)| unreadable.contains(&n.id));
+    // Whose peers could not be read: rules that give them nothing (with the guard
+    // known; unknown, the kernel is left as it is).
+    if !unread.is_empty()
+        && let Some(unguarded) = &unguarded
+    {
+        let within = c.within_guard(&[unguarded.as_slice(), &held, &own_held].concat());
+        for (n, _, _) in &unread {
+            if let Err(e) = nft(r, &render_network(&within, n)) {
+                out.errors.push(format!("{}: nft: {e:#}", n.iface));
+                let cut = nft(r, &render_network_cutoff(n.id));
+                note(
+                    cut.with_context(|| format!("{}: cutoff", n.iface)),
+                    &mut out.errors,
+                );
+            }
+        }
+    }
 
     // A registration stays only for a network compiled on that interface whose own
     // interface is there, about to be made, or cannot be told: otherwise nothing on
@@ -203,7 +241,7 @@ pub fn reconcile_after(
         let made = new.iter().filter(|_| grow);
         let kept = owned.iter().chain(&unknown).chain(made).any(pair);
         if !kept {
-            unregister(r, c, iface, *id, &mut out.errors);
+            unregister(r, c, &entries, iface, *id, &mut out.errors);
         }
     }
 
@@ -249,7 +287,11 @@ pub fn reconcile_after(
     let waits = [held.as_slice(), &taken].concat();
     let rules = c.within_guard(&held);
     for (n, exists, plan) in active {
-        let (key, errors) = network(r, &rules, n, keys, exists, plan, &waits);
+        let around = Around {
+            held: &waits,
+            entries: &entries,
+        };
+        let (key, errors) = network(r, &rules, n, keys, exists, plan, &around);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
         }

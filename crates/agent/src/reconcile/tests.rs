@@ -300,7 +300,7 @@ fn revocations_come_before_additions_and_stale_routes_go() {
 }
 
 #[test]
-fn a_network_that_cannot_be_read_is_left_as_it_is() {
+fn a_network_whose_peers_cannot_be_read_gives_them_nothing() {
     let dir = keys();
     let fake = Fake::default()
         .answer(
@@ -310,22 +310,16 @@ fn a_network_that_cannot_be_read_is_left_as_it_is() {
         .fail("wg show wg-n1 allowed-ips")
         .fail("ip -j route show dev wg-n1");
     let out = reconcile(&fake, &compiled(), dir.path());
-    assert_eq!(out.errors.len(), 2, "{:?}", out.errors);
-    assert!(
-        out.errors
-            .iter()
-            .all(|e| e.starts_with("wg-n1: left as it is: ")),
-        "{:?}",
-        out.errors
-    );
-    // n1 keeps what the kernel has; n2 goes on as usual.
-    assert!(fake.fragments_of(1).is_empty());
+    assert_eq!(out.errors, ["wg-n1: peers: boom", "wg-n1: routes: boom"]);
+    // n1's rules give its peers nothing this pass (a revocation holds anyway); nothing
+    // is set on its interface; n2 goes on as usual.
+    let n1 = fake.fragments_of(1);
+    assert_eq!(n1.len(), 1);
+    assert!(!n1[0].contains("10.50.0.2"));
     assert_eq!(fake.fragments_of(2).len(), 1);
     assert!(
-        !fake
-            .log()
-            .iter()
-            .any(|c| c.starts_with("wg set wg-n1") || c.ends_with("dev wg-n1"))
+        !fake.log().iter().any(|c| c.starts_with("wg set wg-n1")
+            || c.ends_with("dev wg-n1") && c.starts_with("ip addr"))
     );
     assert_eq!(out.hub_keys, [(2, hub_pub(2))]);
 }

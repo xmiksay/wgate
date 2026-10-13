@@ -13,6 +13,6 @@ mod state;
 mod wg;
 
 pub use config::Config;
-pub use reconcile::{Outcome, reconcile, reconcile_after};
+pub use reconcile::{Outcome, reconcile_after};
 pub use run::{Memory, apply_saved, reconcile_once, run};
 pub use runner::{Runner, System};
