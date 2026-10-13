@@ -1,6 +1,7 @@
 //! Validation: networks, blocks, peers and routes that fail closed.
 
 use super::*;
+use crate::net::RESERVED_PORT;
 
 #[test]
 fn networks_outside_the_pool_or_overlapping_fail_closed() {
@@ -214,4 +215,26 @@ fn invalid_peers_and_routes_are_left_out() {
             .allows(Proto::Tcp, ip("192.168.1.9"), 22)
     );
     assert!(get(&c, 47).addrs.contains(&net("10.70.0.128/25")));
+}
+
+#[test]
+fn listen_ports_must_be_in_range_and_unique() {
+    let mut s = state();
+    let mut clash = network(14, 10, "10.50.0.64/28", false, vec![]);
+    clash.port = 51802; // B's
+    let mut reserved = network(15, 10, "10.50.0.80/28", false, vec![]);
+    reserved.port = RESERVED_PORT;
+    let mut outside = network(16, 10, "10.50.0.96/28", false, vec![]);
+    outside.port = 51900;
+    s.networks.extend([clash, reserved, outside]);
+    assert_eq!(compile(&s).invalid_networks, [14, 15, 16]);
+}
+
+#[test]
+fn losing_blocks_are_reported() {
+    let mut s = state();
+    s.tenants[1].blocks.push(block(50, "10.50.0.0/25"));
+    s.tenants[1].blocks.push(block(51, "10.60.0.0/24"));
+    s.tenants[1].blocks.push(block(52, "10.50.9.5/24"));
+    assert_eq!(compile(&s).invalid_blocks, [50, 51, 52]);
 }

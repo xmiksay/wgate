@@ -8,7 +8,9 @@ use std::collections::{HashMap, HashSet};
 use ipnet::Ipv4Net;
 
 use super::{DesiredState, Id, Network, Peer, Problem};
-use crate::net::{MAX_NETWORK_PREFIX, first_overlap, is_inside, is_peer_ip};
+use crate::net::{
+    MAX_NETWORK_PREFIX, PORT_RANGE, RESERVED_PORT, first_overlap, is_inside, is_peer_ip,
+};
 use crate::rights::RuleSet;
 use crate::rights::merge_nets;
 
@@ -18,10 +20,17 @@ pub(super) struct ValidNetwork<'a> {
     pub ceiling: &'a RuleSet,
 }
 
-/// Valid networks by id, plus the ids of the invalid ones: outside their tenant's
-/// valid blocks, unknown tenant, host bits, longer than /30, or a range or slug an
-/// older network already holds.
-pub(super) fn networks(state: &DesiredState) -> (HashMap<Id, ValidNetwork<'_>>, HashSet<Id>) {
+pub(super) struct Networks<'a> {
+    pub valid: HashMap<Id, ValidNetwork<'a>>,
+    pub invalid: HashSet<Id>,
+    /// Blocks that lost (outside the pool, host bits, or an older block's range).
+    pub invalid_blocks: Vec<Id>,
+}
+
+/// Valid networks: inside their tenant's valid blocks, known tenant, no host bits,
+/// at most /30, a listen port in range, and a range, slug and port no older network
+/// already holds.
+pub(super) fn networks(state: &DesiredState) -> Networks<'_> {
     let ceilings: HashMap<Id, &RuleSet> =
         state.tenants.iter().map(|t| (t.id, &t.ceiling)).collect();
     let pool = merge_nets(&state.pool);
@@ -35,12 +44,22 @@ pub(super) fn networks(state: &DesiredState) -> (HashMap<Id, ValidNetwork<'_>>, 
     blocks.sort_by_key(|(id, _, _)| *id);
     let mut taken = Vec::new();
     let mut owned: HashMap<Id, Vec<Ipv4Net>> = HashMap::new();
-    for (_, tenant, cidr) in blocks {
+    let mut invalid_blocks: Vec<Id> = state
+        .tenants
+        .iter()
+        .flat_map(|t| &t.blocks)
+        .filter(|b| b.cidr != b.cidr.trunc() || !is_inside(b.cidr, &pool))
+        .map(|b| b.id)
+        .collect();
+    for (id, tenant, cidr) in blocks {
         if first_overlap(cidr, &taken).is_none() {
             taken.push(cidr);
             owned.entry(tenant).or_default().push(cidr);
+        } else {
+            invalid_blocks.push(id);
         }
     }
+    invalid_blocks.sort_unstable();
     let owned: HashMap<Id, Vec<Ipv4Net>> = owned
         .into_iter()
         .map(|(t, b)| (t, merge_nets(&b)))
@@ -49,17 +68,21 @@ pub(super) fn networks(state: &DesiredState) -> (HashMap<Id, ValidNetwork<'_>>, 
     let mut candidates: Vec<&Network> = state.networks.iter().collect();
     candidates.sort_by_key(|n| n.id);
     let (mut valid, mut invalid) = (HashMap::new(), HashSet::new());
-    let (mut ranges, mut slugs) = (Vec::new(), HashSet::new());
+    let (mut ranges, mut slugs, mut ports) = (Vec::new(), HashSet::new(), HashSet::new());
     for n in candidates {
         let ok = n.cidr == n.cidr.trunc()
             && n.cidr.prefix_len() <= MAX_NETWORK_PREFIX
             && owned.get(&n.tenant).is_some_and(|b| is_inside(n.cidr, b))
+            && PORT_RANGE.contains(&n.port)
+            && n.port != RESERVED_PORT
             && first_overlap(n.cidr, &ranges).is_none()
-            && !slugs.contains(n.slug.as_str());
+            && !slugs.contains(n.slug.as_str())
+            && !ports.contains(&n.port);
         match ceilings.get(&n.tenant) {
             Some(ceiling) if ok => {
                 ranges.push(n.cidr);
                 slugs.insert(n.slug.as_str());
+                ports.insert(n.port);
                 valid.insert(n.id, ValidNetwork { net: n, ceiling });
             }
             _ => {
@@ -67,13 +90,19 @@ pub(super) fn networks(state: &DesiredState) -> (HashMap<Id, ValidNetwork<'_>>, 
             }
         }
     }
-    (valid, invalid)
+    Networks {
+        valid,
+        invalid,
+        invalid_blocks,
+    }
 }
 
 /// A peer that compiles, with the routes it was granted.
 pub(super) struct ValidPeer<'a> {
     pub peer: &'a Peer,
-    /// `ip/32` plus its accepted routes.
+    /// Its accepted routes.
+    pub routes: Vec<Ipv4Net>,
+    /// `ip/32` plus `routes`.
     pub addrs: Vec<Ipv4Net>,
 }
 
@@ -138,9 +167,14 @@ pub(super) fn peers<'a>(
     out.valid = accepted
         .into_iter()
         .map(|peer| {
+            let routes = granted.remove(&peer.id).unwrap_or_default();
             let mut addrs = vec![Ipv4Net::from(peer.ip)];
-            addrs.extend(granted.remove(&peer.id).unwrap_or_default());
-            ValidPeer { peer, addrs }
+            addrs.extend(&routes);
+            ValidPeer {
+                peer,
+                routes,
+                addrs,
+            }
         })
         .collect();
     out

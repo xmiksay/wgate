@@ -87,6 +87,7 @@ fn state() -> impl Strategy<Value = DesiredState> {
                     id: id as i64,
                     tenant: tenant_of(id as i64),
                     slug: format!("n{id}").parse().expect("slug"),
+                    port: 51800 + id as u16,
                     cidr: cidr(id as i64),
                     mesh,
                     rules,
