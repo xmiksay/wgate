@@ -12,7 +12,7 @@ use wgate_core::{Id, compile};
 use wgate_db::revision::{self, ListenError, Listener};
 
 use crate::config::Config;
-use crate::reconcile::{reconcile, reconcile_after};
+use crate::reconcile::reconcile_after;
 use crate::runner::Runner;
 use crate::state;
 
@@ -21,9 +21,12 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
     runner: R,
 ) -> anyhow::Result<()> {
     let runner = Arc::new(runner);
-    let db = connect(&config, &runner).await;
+    let (db, held) = connect(&config, &runner).await;
     let mut listener: Option<Listener> = None;
-    let mut memory = Memory::default();
+    let mut memory = Memory {
+        held,
+        ..Memory::default()
+    };
     let mut tick = tokio::time::interval(config.interval());
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
@@ -73,14 +76,16 @@ pub struct Memory {
 async fn connect<R: Runner + Send + Sync + 'static>(
     config: &Config,
     runner: &Arc<R>,
-) -> DatabaseConnection {
+) -> (DatabaseConnection, Vec<Ipv4Net>) {
+    let mut held = vec![];
     loop {
         match Database::connect(&config.database_url).await {
-            Ok(db) => return db,
+            Ok(db) => return (db, held),
             Err(e) => {
                 tracing::warn!(error = %e, "database unreachable; serving the last state saved");
-                if let Err(e) = apply_saved(config, runner.clone()).await {
-                    tracing::error!(error = format!("{e:#}"), "no saved state served");
+                match apply_saved(config, runner.clone(), &held).await {
+                    Ok(still) => held = still,
+                    Err(e) => tracing::error!(error = format!("{e:#}"), "no saved state served"),
                 }
                 tokio::time::sleep(config.interval()).await;
             }
@@ -88,11 +93,12 @@ async fn connect<R: Runner + Send + Sync + 'static>(
     }
 }
 
-/// Applies the last state saved, without the database.
+/// Applies the last state saved, without the database; returns what it left held.
 pub async fn apply_saved<R: Runner + Send + Sync + 'static>(
     config: &Config,
     runner: Arc<R>,
-) -> anyhow::Result<()> {
+    previously_held: &[Ipv4Net],
+) -> anyhow::Result<Vec<Ipv4Net>> {
     let mut saved = state::load(&config.state_file)?.context("no state saved yet")?;
     // The infrastructure as agent.toml has it now, not as it was when saved.
     let infra = config.infra();
@@ -103,13 +109,16 @@ pub async fn apply_saved<R: Runner + Send + Sync + 'static>(
     saved.node_cidrs = infra.node_cidrs;
     let compiled = compile(&saved);
     let keys_dir = config.keys_dir.clone();
-    let outcome = tokio::task::spawn_blocking(move || reconcile(&*runner, &compiled, &keys_dir))
-        .await
-        .context("reconcile task")?;
+    let previously_held = previously_held.to_vec();
+    let outcome = tokio::task::spawn_blocking(move || {
+        reconcile_after(&*runner, &compiled, &keys_dir, &previously_held)
+    })
+    .await
+    .context("reconcile task")?;
     for e in &outcome.errors {
         tracing::warn!(problem = %e, "not applied");
     }
-    Ok(())
+    Ok(outcome.held)
 }
 
 /// Waits for a notification: `true`, or `false` when the connection was lost
@@ -151,10 +160,11 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
         Err(e) => {
             // Connected but nothing loads yet (a migration, a grant): a hub that has
             // applied nothing since it started serves the last state saved meanwhile.
-            if !memory.applied
-                && let Err(e) = apply_saved(config, runner.clone()).await
-            {
-                tracing::warn!(error = format!("{e:#}"), "no saved state served");
+            if !memory.applied {
+                match apply_saved(config, runner.clone(), &memory.held).await {
+                    Ok(still) => memory.held = still,
+                    Err(e) => tracing::warn!(error = format!("{e:#}"), "no saved state served"),
+                }
             }
             return Err(e).context("load the desired state");
         }

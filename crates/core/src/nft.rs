@@ -37,7 +37,6 @@ pub fn render_base(c: &Compiled) -> String {
         out,
         "add set {TABLE} tenant_space {{ type ipv4_addr; flags interval; }}"
     );
-    let _ = writeln!(out, "add set {TABLE} wg_ifaces {{ type ifname; }}");
     for (map, _) in DISPATCH {
         let _ = writeln!(out, "add map {TABLE} {map} {{ type ifname : verdict; }}");
     }
@@ -62,7 +61,6 @@ pub fn render_base(c: &Compiled) -> String {
         "prerouting",
         &[
             "iifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop",
-            "iifname \"wg-*\" iifname != @wg_ifaces counter drop",
             // Fail closed: an interface whose dispatch entry is missing (a hand edit,
             // a removal halfway) is never let through unchecked.
             "iifname \"wg-*\" iifname != @ingress counter drop",
@@ -84,7 +82,6 @@ pub fn render_base(c: &Compiled) -> String {
         &mut out,
         "forward",
         &[
-            "oifname \"wg-*\" oifname != @wg_ifaces counter drop",
             "iifname \"wg-*\" iifname != @from_net counter drop",
             "oifname \"wg-*\" oifname != @to_net counter drop",
             "iifname vmap @from_net",
@@ -98,7 +95,6 @@ pub fn render_base(c: &Compiled) -> String {
         "output",
         &[
             "ip saddr @tenant_space fib saddr type != local counter drop",
-            "oifname \"wg-*\" oifname != @wg_ifaces counter drop",
             "oifname \"wg-*\" oifname != @to_net counter drop",
             "oifname \"wg-*\" ct state related icmp type { destination-unreachable, time-exceeded, parameter-problem } accept",
             "oifname vmap @to_net",
@@ -193,12 +189,7 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
 /// transaction also succeeds when some are already gone (nft before 1.0.8 has no
 /// `destroy`).
 pub fn render_network_removal(id: Id, iface: &str) -> String {
-    let mut out = ensure_parts(id);
-    register(&mut out, id, iface);
-    let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
-    for (map, _) in DISPATCH {
-        let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
-    }
+    let mut out = render_network_unmap(id, iface);
     delete_parts(&mut out, id);
     out
 }
@@ -208,7 +199,6 @@ pub fn render_network_removal(id: Id, iface: &str) -> String {
 pub fn render_network_unmap(id: Id, iface: &str) -> String {
     let mut out = ensure_parts(id);
     register(&mut out, id, iface);
-    let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
     for (map, _) in DISPATCH {
         let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
     }
@@ -242,10 +232,9 @@ fn ensure_parts(id: Id) -> String {
     out
 }
 
-/// The interface's entries in `wg_ifaces` and the dispatch maps.
+/// The interface's entries in the dispatch maps.
 fn register(out: &mut String, id: Id, iface: &str) {
     let p = prefix(id);
-    let _ = writeln!(out, "add element {TABLE} wg_ifaces {{ \"{iface}\" }}");
     for (map, chain) in DISPATCH {
         let _ = writeln!(
             out,

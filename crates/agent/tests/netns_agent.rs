@@ -112,7 +112,7 @@ async fn the_agent_builds_updates_and_tears_down_a_network() {
     // the state the last pass saved.
     hub.exec(&["ip", "link", "del", "wg-n1"], None);
     hub.exec(&["nft", "delete", "table", "inet", "wgate"], None);
-    apply_saved(&config, runner.clone())
+    apply_saved(&config, runner.clone(), &[])
         .await
         .expect("apply the saved state");
     assert!(

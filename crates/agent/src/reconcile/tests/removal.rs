@@ -101,7 +101,7 @@ fn a_gone_interface_that_would_not_go_is_disarmed_and_holds_its_name() {
 #[test]
 fn a_registration_that_will_not_go_is_cut_off() {
     let dir = keys();
-    let fake = gone_n9_on("wg-old").fail_input("delete element inet wgate wg_ifaces");
+    let fake = gone_n9_on("wg-old").fail_input("delete element inet wgate from_net");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors

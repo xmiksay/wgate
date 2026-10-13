@@ -248,3 +248,38 @@ fn a_network_that_cannot_be_made_loses_a_stale_registration() {
     let removal = "delete element inet wgate from_net { \"wg-n1\" }";
     assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
 }
+
+#[test]
+fn a_key_file_the_interface_does_not_have_never_rotates_it() {
+    let dir = keys();
+    // A restored n1.key that is not the key wg-n1 runs on.
+    std::fs::write(dir.path().join("n1.key"), hub_private(42)).unwrap();
+    let fake = owned_n1();
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.contains("is not the key the interface has")),
+        "{:?}",
+        out.errors
+    );
+    assert!(
+        !fake
+            .log()
+            .iter()
+            .any(|c| c.starts_with("wg set wg-n1 private-key"))
+    );
+    assert!(!out.hub_keys.iter().any(|(id, _)| *id == 1));
+}
+
+#[test]
+fn a_registration_left_in_one_map_only_is_taken_off() {
+    let dir = keys();
+    let fake = Fake::default().answer(
+        "nft -j list map inet wgate to_net",
+        r#"{"nftables": [{"map": {"name": "to_net", "elem": [["wg-old", {"jump": {"target": "n9_to"}}]]}}]}"#,
+    );
+    reconcile(&fake, &compiled(), dir.path());
+    let removal = "delete element inet wgate to_net { \"wg-old\" }";
+    assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
+}
