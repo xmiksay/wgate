@@ -80,12 +80,14 @@ under sudo).
 - Own migrator (`wgate_migration`, one transaction under an advisory lock).
 - Postgres is reached directly (5432), not through pgbouncer (transaction pooling
   breaks LISTEN).
-- Trigger-free NOTIFY: every write transaction ends with
-  `SELECT pg_notify('wgate_changed', <revision>)`. `revision` is a counter in table
-  `state_revision`.
+- NOTIFY from statement triggers on every desired-state table: bump the counter in
+  `state_revision` and `pg_notify('wgate_changed', <revision>)`.
 - Table `agent_status (applied_revision, applied_at, error)`, which the agent writes.
-- Grants: `wgate` = owner; `wgate_agent` = SELECT on everything except sessions,
-  INSERT/UPDATE `hub_key` + `agent_status`.
+- Grants: `wgate` = owner; `wgate_agent` = SELECT on the tables `desired_state()`
+  reads (on `app_user` only `id, tenant_id, role, disabled_at`), INSERT/UPDATE
+  `hub_key` + `agent_status`; re-applied on every migrate.
+- Revocation is final (un-revoking is refused); ownership columns may be rewritten
+  unchanged.
 - `wgate migrate` subcommand (run by ansible before the units restart).
 
 ### 1.4 `agent`

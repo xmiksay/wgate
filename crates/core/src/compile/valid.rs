@@ -127,8 +127,8 @@ pub(super) fn peers<'a>(
     let mut by_id: Vec<&Peer> = state.peers.iter().collect();
     by_id.sort_by_key(|p| p.id);
     let mut ips = HashSet::new();
-    // WireGuard keys peers by public key: a second peer with the same key on one
-    // interface would take over the first one's addresses.
+    // WireGuard keys peers by public key, and the DB makes keys unique among active
+    // peers: a second peer with a key would take over the first one's addresses.
     let mut keys = HashSet::new();
     let mut accepted = Vec::new();
     for p in by_id {
@@ -140,13 +140,19 @@ pub(super) fn peers<'a>(
             }
             Some(n) if !is_peer_ip(n.net.cidr, p.ip) => Some(Problem::InvalidIp),
             // Networks are disjoint, so a duplicate is always an older peer's address.
-            Some(_) if !ips.insert(p.ip) => Some(Problem::Overlap),
-            Some(_) if !keys.insert((p.network, p.public_key.as_str())) => Some(Problem::Overlap),
+            Some(_) if ips.contains(&p.ip) || keys.contains(p.public_key.as_str()) => {
+                Some(Problem::Overlap)
+            }
             Some(_) => None,
         };
+        // Only an accepted peer holds its address and key.
         match problem {
             Some(problem) => out.skipped.push((p.id, problem)),
-            None => accepted.push(p),
+            None => {
+                ips.insert(p.ip);
+                keys.insert(p.public_key.as_str());
+                accepted.push(p);
+            }
         }
     }
 

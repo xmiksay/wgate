@@ -7,7 +7,7 @@ use ipnet::Ipv4Net;
 use sea_orm::prelude::IpNetwork;
 use sea_orm::{
     AccessMode, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
-    IsolationLevel, QueryFilter, TransactionTrait,
+    IsolationLevel, QueryFilter, QuerySelect, TransactionTrait,
 };
 use wgate_core::{
     Claim, DesiredState, Federation, NetRule, Network, Peer, PortRange, Proto, Rule, RuleSet,
@@ -142,12 +142,15 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
     }
 
     // user id → tenant (None = a global admin, who may hold peers anywhere).
+    // Only the columns the agent role may read: no emails or OIDC subjects.
     let users: HashMap<i64, Option<i64>> = app_user::Entity::find()
+        .select_only()
+        .columns([app_user::Column::Id, app_user::Column::TenantId])
         .filter(app_user::Column::DisabledAt.is_null())
+        .into_tuple::<(i64, Option<i64>)>()
         .all(db)
         .await?
         .into_iter()
-        .map(|u| (u.id, u.tenant_id))
         .collect();
     // device id → owner's tenant, for active owners.
     let devices: HashMap<i64, Option<i64>> = device::Entity::find()
