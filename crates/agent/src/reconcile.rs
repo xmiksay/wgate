@@ -32,45 +32,73 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             &["nft", "-j", "list", "map", "inet", "wgate", "from_net"],
             None,
         )
-        .and_then(|json| nftmap::parse(&json))
-        .unwrap_or_else(|e| {
-            out.errors.push(format!("registered networks: {e:#}"));
-            vec![]
-        });
-    let mut links = links(r).unwrap_or_else(|e| {
-        out.errors.push(format!("links: {e:#}"));
-        vec![]
-    });
+        .and_then(|json| nftmap::parse(&json));
+    let links = links(r);
+    let (registered, mut links) = match (registered, links) {
+        (Ok(registered), Ok(links)) => (registered, links),
+        (registered, links) => {
+            // Without both, a network that is gone cannot be told from one that is not.
+            for e in [
+                registered.err(),
+                links.as_ref().err().map(|e| anyhow::anyhow!("{e:#}")),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                out.errors.push(format!("inventory: {e:#}"));
+            }
+            (vec![], links.unwrap_or_default())
+        }
+    };
 
-    // Gone first, matched by interface *and* id: a new network that reuses a slug must
-    // not inherit the old one's chains, addresses or key.
+    // Gone first, matched by interface *and* id, so a new network that reuses a slug
+    // starts on a fresh interface (no old addresses). The interface goes before the
+    // map entry: deleting it cuts the traffic at once, and the entry stays as the
+    // marker that retries a removal that failed halfway.
     for (iface, id) in &registered {
         if c.networks.iter().any(|n| n.iface == *iface && n.id == *id) {
             continue;
         }
-        match remove(r, *id, iface, &links, keys_dir) {
-            Ok(()) => {
-                links.retain(|l| l != iface);
-                tracing::info!(%iface, network = id, "network removed");
+        let removed = (|| {
+            if links.iter().any(|l| l == iface) {
+                run(r, &["ip", "link", "del", iface])?;
             }
+            nft(r, &render_network_removal(*id, iface))
+        })();
+        match removed {
+            Ok(()) => tracing::info!(%iface, network = id, "network removed"),
             Err(e) => out
                 .errors
                 .push(format!("{iface} (removing network {id}): {e:#}")),
         }
+        links.retain(|l| l != iface);
     }
 
-    // A network whose port changes first lets go of its old one, so two networks can
-    // swap ports.
+    // Ports can swap: an interface holding the port another network wants lets go of
+    // it (it gets its own in its turn below).
     if let Ok(ports) = r.run(&["wg", "show", "all", "listen-port"], None) {
-        for n in &c.networks {
-            let current = ports
-                .lines()
-                .find_map(|l| l.strip_prefix(&format!("{}\t", n.iface)));
-            if current.is_some_and(|p| p.trim() != n.port.to_string())
-                && let Err(e) = r.run(&["wg", "set", &n.iface, "listen-port", "0"], None)
+        for line in ports.lines() {
+            let Some((iface, port)) = line.split_once('\t') else {
+                continue;
+            };
+            let wanted_elsewhere = c
+                .networks
+                .iter()
+                .any(|n| n.iface != iface && n.port.to_string() == port.trim());
+            if wanted_elsewhere
+                && c.networks.iter().any(|n| n.iface == iface)
+                && let Err(e) = run(r, &["wg", "set", iface, "listen-port", "0"])
             {
-                out.errors.push(format!("{}: free port: {e:#}", n.iface));
+                out.errors.push(format!("{iface}: free port: {e:#}"));
             }
+        }
+    }
+
+    // Stale LAN routes of every network go before any is added, so a LAN can move
+    // from one network to another in one reconcile. A new interface has none.
+    for n in c.networks.iter().filter(|n| links.contains(&n.iface)) {
+        if let Err(e) = lan_routes(r, c, n, Phase::Remove) {
+            out.errors.push(format!("{}: routes: {e:#}", n.iface));
         }
     }
 
@@ -93,10 +121,17 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     out
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Remove,
+    Add,
+}
+
 /// Brings one network to its compiled state. Every step is attempted even when an
-/// earlier one failed: above all the nft fragment, which carries every revocation of a
-/// right and must never wait for an unrelated error. Returns the hub public key (when
-/// the key is in place) and the failed steps.
+/// earlier one failed. Peers are removed before the nft fragment and added after it:
+/// a peer that takes over an address freed in the same revision never meets the
+/// previous holder's rules. Returns the hub public key (when the key is in place) and
+/// the failed steps.
 fn network(
     r: &dyn Runner,
     c: &Compiled,
@@ -117,7 +152,9 @@ fn network(
             run(r, &["ip", "link", "add", iface, "type", "wireguard"]),
         );
     }
-    let key = keys::ensure(r, keys_dir, iface);
+    // By network id, not interface: a disabled network keeps its key for when it
+    // comes back, and a new network that reuses the slug gets its own.
+    let key = keys::ensure(r, keys_dir, &format!("n{}", n.id));
     let address = format!("{}/{}", n.hub, n.cidr.prefix_len());
     step(
         "address",
@@ -146,14 +183,14 @@ fn network(
     };
     step("wg", wg_set);
     step("up", run(r, &["ip", "link", "set", iface, "up"]));
-    step("peers", peers(r, c, n));
-    step("routes", lan_routes(r, c, n));
+    step("peers", peers(r, c, n, Phase::Remove));
     step("nft", nft(r, &render_network(c, n)));
+    step("peers", peers(r, c, n, Phase::Add));
+    step("routes", lan_routes(r, c, n, Phase::Add));
     (key.ok().map(|(_, public)| public), errors)
 }
 
-/// Removals first, then additions and changes.
-fn peers(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork) -> anyhow::Result<()> {
+fn peers(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork, phase: Phase) -> anyhow::Result<()> {
     let iface = n.iface.as_str();
     let desired: Vec<WgPeer> = c
         .peers
@@ -166,30 +203,40 @@ fn peers(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork) -> anyhow::Result<()
         .collect();
     let current = wg::parse_dump(&r.run(&["wg", "show", iface, "dump"], None)?)?;
     let diff = wg::diff(&current, &desired);
-    for key in &diff.remove {
-        run(r, &["wg", "set", iface, "peer", key, "remove"])?;
-    }
-    for p in &diff.set {
-        let allowed: Vec<String> = p.allowed.iter().map(Ipv4Net::to_string).collect();
-        run(
-            r,
-            &[
-                "wg",
-                "set",
-                iface,
-                "peer",
-                &p.public_key,
-                "allowed-ips",
-                &allowed.join(","),
-            ],
-        )?;
-    }
-    Ok(())
+    let commands: Vec<Vec<String>> = match phase {
+        Phase::Remove => diff
+            .remove
+            .iter()
+            .map(|key| argv(&["wg", "set", iface, "peer", key, "remove"]))
+            .collect(),
+        Phase::Add => diff
+            .set
+            .iter()
+            .map(|p| {
+                let allowed: Vec<String> = p.allowed.iter().map(Ipv4Net::to_string).collect();
+                argv(&[
+                    "wg",
+                    "set",
+                    iface,
+                    "peer",
+                    &p.public_key,
+                    "allowed-ips",
+                    &allowed.join(","),
+                ])
+            })
+            .collect(),
+    };
+    all(r, &commands)
 }
 
 /// A router's LANs (its addrs beyond its own /32) are routed via the interface. `add`,
 /// not `replace`: a route someone else owns is reported, never taken over.
-fn lan_routes(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork) -> anyhow::Result<()> {
+fn lan_routes(
+    r: &dyn Runner,
+    c: &Compiled,
+    n: &CompiledNetwork,
+    phase: Phase,
+) -> anyhow::Result<()> {
     let iface = n.iface.as_str();
     let lans: Vec<Ipv4Net> = c
         .peers
@@ -216,53 +263,47 @@ fn lan_routes(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork) -> anyhow::Resu
         None,
     )?)?;
     let (add, del) = routes::diff(&current, &lans);
-    for lan in del {
-        run(
-            r,
-            &[
+    let (verb, lans) = match phase {
+        Phase::Remove => ("del", del),
+        Phase::Add => ("add", add),
+    };
+    let commands: Vec<Vec<String>> = lans
+        .iter()
+        .map(|lan| {
+            argv(&[
                 "ip",
                 "route",
-                "del",
+                verb,
                 &lan.to_string(),
                 "dev",
                 iface,
                 "proto",
                 routes::PROTO,
-            ],
-        )?;
-    }
-    for lan in add {
-        run(
-            r,
-            &[
-                "ip",
-                "route",
-                "add",
-                &lan.to_string(),
-                "dev",
-                iface,
-                "proto",
-                routes::PROTO,
-            ],
-        )?;
-    }
-    Ok(())
+            ])
+        })
+        .collect();
+    all(r, &commands)
 }
 
-/// Takes a network out: its nft fragment, its interface (with its addresses and
-/// routes) and its key, so nothing of it survives into a network that reuses the slug.
-fn remove(
-    r: &dyn Runner,
-    id: Id,
-    iface: &str,
-    links: &[String],
-    keys_dir: &Path,
-) -> anyhow::Result<()> {
-    nft(r, &render_network_removal(id, iface))?;
-    if links.iter().any(|l| l == iface) {
-        run(r, &["ip", "link", "del", iface])?;
+/// Runs every command, also after one fails (one stuck peer must not keep the other
+/// revocations from applying); reports all failures.
+fn all(r: &dyn Runner, commands: &[Vec<String>]) -> anyhow::Result<()> {
+    let failures: Vec<String> = commands
+        .iter()
+        .filter_map(|cmd| {
+            let argv: Vec<&str> = cmd.iter().map(String::as_str).collect();
+            run(r, &argv).err().map(|e| format!("{e:#}"))
+        })
+        .collect();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(failures.join("; ")))
     }
-    keys::forget(keys_dir, iface)
+}
+
+fn argv(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|p| (*p).to_owned()).collect()
 }
 
 fn nft(r: &dyn Runner, script: &str) -> anyhow::Result<()> {

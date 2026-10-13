@@ -1,5 +1,6 @@
-//! Hub private keys: one per interface in the keys directory (0600), generated on
-//! first use. They never leave the hub; only the public key goes to the database.
+//! Hub private keys: one per network in the keys directory (0600), generated on first
+//! use and never deleted. They never leave the hub; only the public key goes to the
+//! database.
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -11,14 +12,14 @@ use wgate_core::is_wg_key;
 
 use crate::runner::Runner;
 
-/// The key file of `iface` and its public key.
-pub fn ensure(r: &dyn Runner, dir: &Path, iface: &str) -> anyhow::Result<(PathBuf, String)> {
+/// The key file named `name` and its public key.
+pub fn ensure(r: &dyn Runner, dir: &Path, name: &str) -> anyhow::Result<(PathBuf, String)> {
     DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
         .with_context(|| format!("create {}", dir.display()))?;
-    let path = dir.join(format!("{iface}.key"));
+    let path = dir.join(format!("{name}.key"));
     let private = match fs::read_to_string(&path) {
         Ok(key) if is_wg_key(key.trim()) => key,
         // Empty or truncated (a crash before it was ever used): its public key was
@@ -32,17 +33,6 @@ pub fn ensure(r: &dyn Runner, dir: &Path, iface: &str) -> anyhow::Result<(PathBu
     };
     let public = r.run(&["wg", "pubkey"], Some(&private))?.trim().to_owned();
     Ok((path, public))
-}
-
-/// Deletes the key of a network that is gone.
-pub fn forget(dir: &Path, iface: &str) -> anyhow::Result<()> {
-    let path = dir.join(format!("{iface}.key"));
-    match fs::remove_file(&path) {
-        Err(e) if e.kind() != ErrorKind::NotFound => {
-            Err(e).with_context(|| format!("remove {}", path.display()))
-        }
-        _ => Ok(()),
-    }
 }
 
 /// Written to a temporary file, synced, then renamed: a crash leaves either no key or
@@ -67,30 +57,42 @@ fn generate(r: &dyn Runner, path: &Path) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
-    struct Tools;
+    /// Every genkey returns a new key, so a regeneration shows.
+    #[derive(Default)]
+    struct Tools(Cell<u8>);
 
     impl Runner for Tools {
-        fn run(&self, argv: &[&str], _stdin: Option<&str>) -> anyhow::Result<String> {
+        fn run(&self, argv: &[&str], stdin: Option<&str>) -> anyhow::Result<String> {
             Ok(match argv {
-                ["wg", "genkey"] => "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\n".into(),
-                _ => "public\n".into(),
+                ["wg", "genkey"] => {
+                    self.0.set(self.0.get() + 1);
+                    format!("{:0>42}A=\n", self.0.get())
+                }
+                _ => format!("pub-{}", stdin.unwrap_or_default().trim()),
             })
         }
     }
 
     #[test]
-    fn generates_once_replaces_a_broken_key_and_forgets() {
+    fn generates_once_keeps_a_good_key_and_replaces_a_broken_one() {
         let dir = tempfile::tempdir().unwrap();
-        let (path, public) = ensure(&Tools, dir.path(), "wg-a").unwrap();
-        assert_eq!(public, "public");
+        let tools = Tools::default();
+        let (path, public) = ensure(&tools, dir.path(), "n1").unwrap();
         let key = fs::read_to_string(&path).unwrap();
+        assert_eq!(public, format!("pub-{}", key.trim()));
+        assert_eq!(ensure(&tools, dir.path(), "n1").unwrap().1, public, "kept");
         fs::write(&path, "").unwrap();
-        ensure(&Tools, dir.path(), "wg-a").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), key, "regenerated");
-        forget(dir.path(), "wg-a").unwrap();
-        assert!(!path.exists());
-        forget(dir.path(), "wg-a").unwrap();
+        let (_, replaced) = ensure(&tools, dir.path(), "n1").unwrap();
+        assert_ne!(replaced, public, "regenerated");
+        assert_ne!(fs::read_to_string(&path).unwrap(), key);
+        assert_ne!(
+            ensure(&tools, dir.path(), "n2").unwrap().1,
+            replaced,
+            "own key"
+        );
     }
 }

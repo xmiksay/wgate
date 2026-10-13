@@ -1,8 +1,10 @@
 //! Running `ip`, `wg` and `nft`. All kernel changes go through one runner, so the
 //! reconcile logic is tested against fake tool output.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 
@@ -13,16 +15,33 @@ pub trait Runner {
 }
 
 /// The real tools, optionally inside a network namespace (`ip netns exec <name>`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct System {
     prefix: Vec<String>,
+    /// A tool still running after this is killed: one hung command must not stall
+    /// every later reconcile.
+    timeout: Duration,
+}
+
+impl Default for System {
+    fn default() -> Self {
+        Self {
+            prefix: vec![],
+            timeout: Duration::from_secs(30),
+        }
+    }
 }
 
 impl System {
     pub fn in_netns(name: &str) -> Self {
         Self {
             prefix: ["ip", "netns", "exec", name].map(str::to_owned).to_vec(),
+            ..Self::default()
         }
+    }
+
+    pub fn with_timeout(self, timeout: Duration) -> Self {
+        Self { timeout, ..self }
     }
 }
 
@@ -52,11 +71,38 @@ impl Runner for System {
         let feeder = match (stdin, child.stdin.take()) {
             (Some(input), Some(mut pipe)) => {
                 let input = input.to_owned();
-                Some(std::thread::spawn(move || pipe.write_all(input.as_bytes())))
+                Some(thread::spawn(move || pipe.write_all(input.as_bytes())))
             }
             _ => None,
         };
-        let out = child.wait_with_output().context("wait")?;
+        let drain = |pipe: Option<Box<dyn Read + Send>>| {
+            thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut pipe) = pipe {
+                    let _ = pipe.read_to_end(&mut buf);
+                }
+                buf
+            })
+        };
+        let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+        let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+        let deadline = Instant::now() + self.timeout;
+        let status = loop {
+            if let Some(status) = child.try_wait().context("wait")? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("{} timed out after {:?}", argv.join(" "), self.timeout);
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let out = std::process::Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        };
         let fed = feeder.map(|f| f.join());
         if !out.status.success() {
             // argv only, never stdin: it may carry a private key.
@@ -89,5 +135,8 @@ mod tests {
             .run(&["sh", "-c", "echo nope >&2; exit 3"], None)
             .unwrap_err();
         assert!(err.to_string().contains("nope"), "{err}");
+        let slow = System::default().with_timeout(Duration::from_millis(200));
+        let err = slow.run(&["sleep", "5"], None).unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
     }
 }

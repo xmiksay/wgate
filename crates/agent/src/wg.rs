@@ -24,8 +24,11 @@ pub fn parse_dump(dump: &str) -> anyhow::Result<Vec<WgPeer>> {
             };
             let allowed = match *allowed {
                 "(none)" => vec![],
+                // Another tool's IPv6 entries are not ours to keep: skipped here, the
+                // peer's allowed-ips differ and the next set replaces them.
                 list => list
                     .split(',')
+                    .filter(|a| !a.contains(':'))
                     .map(|a| {
                         a.parse::<Ipv4Net>()
                             .with_context(|| format!("allowed ip {a}"))
@@ -81,7 +84,7 @@ mod tests {
     use super::*;
 
     const DUMP: &str = "KBYZNCjZpIdMSbByMkpfXquYSPRjaE0rXT5NzgGWtXM=\tUmQVw2/HRh5qyJf64Am2w7Ra1R6mY9PaAu1w6F3MQnE=\t51900\toff
-HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=\t(none)\t(none)\t10.50.0.2/32,192.168.1.0/24\t0\t0\t0\toff
+HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=\t(none)\t(none)\t10.50.0.2/32,fd00::/64,192.168.1.0/24\t0\t0\t0\toff
 yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\t(none)\t1.2.3.4:5\t(none)\t0\t0\t0\toff
 ";
 
