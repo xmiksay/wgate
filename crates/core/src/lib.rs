@@ -11,8 +11,8 @@ mod rule;
 
 pub use client::{ClientConfig, render_client_config};
 pub use compile::{
-    Compiled, CompiledPeer, DesiredState, Federation, Id, NetRule, Network, Peer, Problem, Tenant,
-    compile,
+    Claim, Compiled, CompiledPeer, DesiredState, Federation, Id, NetRule, Network, Peer, Problem,
+    Tenant, compile,
 };
 pub use net::{
     InvalidSlug, MAX_NETWORK_PREFIX, PORT_RANGE, RESERVED_PORT, Slug, first_overlap, hub_address,
@@ -29,7 +29,7 @@ mod testing {
 
     use ipnet::Ipv4Net;
 
-    use crate::{Id, Peer, PortRange, Rule, RuleSet, Service};
+    use crate::{Claim, Id, Peer, PortRange, Rule, RuleSet, Service};
 
     pub(crate) fn net(s: &str) -> Ipv4Net {
         s.parse().unwrap()
@@ -48,7 +48,22 @@ mod testing {
             id,
             network,
             ip: ip(addr),
-            routed: routed.iter().map(|r| net(r)).collect(),
+            routed: routed
+                .iter()
+                .enumerate()
+                .map(|(i, r)| Claim {
+                    id: id * 100 + i as Id,
+                    cidr: net(r),
+                })
+                .collect(),
+        }
+    }
+
+    /// A block claimed with `id`.
+    pub(crate) fn block(id: Id, cidr: &str) -> Claim {
+        Claim {
+            id,
+            cidr: net(cidr),
         }
     }
 

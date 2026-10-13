@@ -23,7 +23,9 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
 
 ## Layout
 
-- `crates/core` — pure, no I/O: rights, allocators, nft + client-config rendering
+- `crates/core` — pure, no I/O: addressing/allocators, rights (`RuleSet`), `compile`
+  (desired state → per-peer sets; `compile/valid.rs` decides what fails closed), nft
+  + client-config rendering
 - `crates/server` — Axum + SeaORM + OIDC; unprivileged
 - `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener
 - `crates/wgate` — binary, `server | agent | migrate`
