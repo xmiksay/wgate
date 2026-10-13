@@ -75,6 +75,58 @@ fn without_the_base_a_gone_network_still_goes() {
     position(&log, "ip link del wg-old");
     assert!(
         !log.iter()
-            .any(|c| c.contains("allowed-ips") || c.starts_with("ip link add"))
+            .any(|c| c.contains(" allowed-ips ") || c.starts_with("ip link add"))
     );
+}
+
+#[test]
+fn a_foreign_interface_keeps_its_peers_and_port_on_every_path() {
+    for base_fails in [false, true] {
+        let dir = keys();
+        let mut fake = Fake::default()
+            .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+            .answer("wg show wg-n1 public-key", "someone-elses\n")
+            .answer(
+                "wg show wg-n1 allowed-ips",
+                &format!("{K2}\t10.50.0.3/32\n"),
+            )
+            .answer("wg show all listen-port", "wg-n1\t51802\n");
+        if base_fails {
+            fake = fake.fail_input("add set inet wgate tenant_space");
+        }
+        reconcile(&fake, &compiled(), dir.path());
+        assert!(
+            !fake.log().iter().any(|c| c.starts_with("wg set wg-n1")),
+            "base fails: {base_fails}: {:#?}",
+            fake.log()
+        );
+    }
+}
+
+#[test]
+fn a_damaged_key_is_named_as_the_cause() {
+    let dir = keys();
+    std::fs::write(dir.path().join("n1.key"), "garbage").unwrap();
+    let fake = Fake::default().answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#);
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.iter().any(|e| e.starts_with("wg-n1: hub key: ")),
+        "{:?}",
+        out.errors
+    );
+}
+
+#[test]
+fn a_gone_network_whose_interface_stays_loses_its_peers() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
+        .answer(
+            "nft -j list map",
+            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-old", {"jump": {"target": "n9_from"}}]]}}]}"#,
+        )
+        .answer("wg show wg-old allowed-ips", &format!("{K2}\t10.50.9.2/32\n"))
+        .fail("ip link del wg-old");
+    reconcile(&fake, &compiled(), dir.path());
+    position(&fake.log(), &format!("wg set wg-old peer {K2} remove"));
 }
