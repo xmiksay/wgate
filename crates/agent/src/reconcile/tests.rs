@@ -56,9 +56,13 @@ impl Runner for Fake {
             Some((_, Ok(out))) => Ok(out.clone()),
             Some((_, Err(e))) => Err(anyhow::anyhow!("{e}")),
             None if cmd.starts_with("wg genkey") => Ok(format!("{GENERATED}\n")),
-            None if cmd.starts_with("wg pubkey") => Ok("hubpub\n".into()),
-            // Existing interfaces carry their network's key (the fake pubkey).
-            None if cmd.ends_with(" public-key") => Ok("hubpub\n".into()),
+            None if cmd.starts_with("wg pubkey") => {
+                Ok(format!("pub-{}\n", stdin.unwrap_or_default().trim()))
+            }
+            // wg-n1 and wg-n2 carry their network's key, other interfaces none.
+            None if cmd == "wg show wg-n1 public-key" => Ok(format!("{}\n", hub_pub(1))),
+            None if cmd == "wg show wg-n2 public-key" => Ok(format!("{}\n", hub_pub(2))),
+            None if cmd.ends_with(" public-key") => Ok("(none)\n".into()),
             None if cmd.starts_with("wg show") => Ok(String::new()),
             None if cmd.starts_with("ip -j") => Ok("[]".into()),
             None if cmd.starts_with("nft -j list map") => Ok(r#"{"nftables": []}"#.into()),
@@ -116,8 +120,22 @@ fn compiled() -> Compiled {
     })
 }
 
+/// A keys directory holding the keys of networks 1 and 2.
 fn keys() -> tempfile::TempDir {
-    tempfile::tempdir().unwrap()
+    let dir = tempfile::tempdir().unwrap();
+    for id in [1, 2] {
+        std::fs::write(dir.path().join(format!("n{id}.key")), hub_private(id)).unwrap();
+    }
+    dir
+}
+
+fn hub_private(id: i64) -> String {
+    format!("{:0>42}A=", 100 + id)
+}
+
+/// The fake `wg pubkey` of network `id`'s key.
+fn hub_pub(id: i64) -> String {
+    format!("pub-{}", hub_private(id))
 }
 
 fn position(log: &[String], needle: &str) -> usize {
@@ -142,11 +160,13 @@ fn nft_run(log: &[String], n: usize) -> usize {
 
 #[test]
 fn a_new_network_is_registered_then_built() {
-    let dir = keys();
+    // No keys yet: both are issued.
+    let dir = tempfile::tempdir().unwrap();
     let fake = Fake::default();
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
-    assert_eq!(out.hub_keys, [(1, "hubpub".into()), (2, "hubpub".into())]);
+    let issued = format!("pub-{GENERATED}");
+    assert_eq!(out.hub_keys, [(1, issued.clone()), (2, issued)]);
     let log = fake.log();
     let base = position(&log, "nft -f -");
     let link = position(&log, "ip link add wg-n1 type wireguard");

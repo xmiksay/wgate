@@ -46,8 +46,8 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
 - Toolchain is pinned in `rust-toolchain.toml`; CI reads the channel from it. Bump
   deliberately.
 - The agent owns `table inet wgate` (a base plus one atomic `nft -f` fragment per
-  network) and only the `wg-*` interfaces registered in its `from_net` map. Never
-  touch `wg0` or other nft tables.
+  network) and only `wg-*` interfaces that are registered in its `from_net` map or
+  carry one of its hub keys. Never touch `wg0` or other nft tables.
 - nft interval sets reject overlapping elements: rights go through `RuleSet` (canonical,
   disjoint) before rendering — never emit raw rules into a set.
 - Every packet to or from a tenant is checked against the current sets in both

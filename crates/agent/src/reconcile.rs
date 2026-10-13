@@ -5,20 +5,21 @@ use std::path::Path;
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{
-    Compiled, CompiledNetwork, Id, render_base, render_network, render_network_removal,
-};
+use wgate_core::{Compiled, CompiledNetwork, Id, render_base, render_network};
 
-use crate::keys;
 use crate::routes;
 use crate::runner::Runner;
 use crate::wg::{self, PeerDiff};
+use crate::{keys, nftmap};
 
+mod gone;
 mod steps;
+
+use gone::{interface_key, remove_gone, remove_unregistered};
 
 use steps::{
     additions, desired_peers, lans, link_exists, links, nft, peer_diff, registered, removals,
-    route_commands, run, strip_peers,
+    route_commands, run,
 };
 
 #[derive(Debug, Default)]
@@ -38,21 +39,29 @@ struct Plan {
 pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let mut out = Outcome::default();
     let base = nft(r, &render_base(c)).context("base");
-    let ready = base.is_ok();
-    report(base, &mut out.errors);
-    let mut links = links(r)
-        .context("inventory")
-        .map_err(|e| out.errors.push(format!("{e:#}")))
-        .ok();
-    let registered = registered(r)
-        .context("inventory")
-        .map_err(|e| out.errors.push(format!("{e:#}")))
-        .ok();
-    // A gone network can only be told from a live one with both inventories.
+    // A stale base still guards against spoofing when its tenant space covers today's;
+    // then only what else it holds (SNAT, …) waits for it.
+    let guarded = base.is_ok() || tenant_space_covered(r, c);
+    note(base, &mut out.errors);
+    let mut links = note(links(r).context("inventory"), &mut out.errors);
+    let registered = note(registered(r).context("inventory"), &mut out.errors);
+    // A gone network is told from a live one by both inventories, or by its key.
     let blocked = match (&mut links, &registered) {
-        (Some(links), Some(registered)) => remove_gone(r, c, registered, links, &mut out.errors),
+        (Some(links), Some(registered)) => {
+            remove_gone(r, c, keys_dir, registered, links, &mut out.errors)
+        }
         _ => vec![],
     };
+    if let Some(links) = &mut links {
+        remove_unregistered(
+            r,
+            c,
+            keys_dir,
+            registered.as_deref(),
+            links,
+            &mut out.errors,
+        );
+    }
     let mut owned = vec![];
     let mut new = vec![];
     for n in &c.networks {
@@ -70,19 +79,18 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             Err(why) => out.errors.push(format!("{}: {why}", n.iface)),
         }
     }
-    let (true, Some(links)) = (ready && registered.is_some(), links) else {
-        // Without the inventory nothing is built; a stale base may lack a new block's
-        // spoof guard, so nothing grows on it either and rights revoked inside a
-        // fragment wait for it. Peer revocations need neither.
+    if !guarded {
+        // Nothing grows where spoofed sources may not be dropped, and rights revoked
+        // inside a fragment wait for the base; peer revocations need none.
         for n in owned {
             let result = peer_diff(r, c, n).and_then(|d| removals(r, n, &d));
-            report(
+            note(
                 result.with_context(|| format!("{}: revocations", n.iface)),
                 &mut out.errors,
             );
         }
         return out;
-    };
+    }
     free_ports(r, c, &owned, &mut out.errors);
 
     let active: Vec<_> = owned
@@ -98,13 +106,13 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             Ok(d) => removals(r, n, d),
             Err(e) => Err(anyhow::anyhow!("{e:#}")),
         };
-        report(
+        note(
             result.with_context(|| format!("{}: peers", n.iface)),
             &mut out.errors,
         );
         if let Ok((_, del)) = &plan.routes {
             let result = route_commands(r, n, "del", del);
-            report(
+            note(
                 result.with_context(|| format!("{}: routes", n.iface)),
                 &mut out.errors,
             );
@@ -119,7 +127,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             .extend(errors.into_iter().map(|e| format!("{}: {e}", n.iface)));
     }
 
-    for link in &links {
+    for link in links.iter().flatten() {
         let known = c.networks.iter().any(|n| n.iface == *link) || blocked.contains(link);
         if link.starts_with("wg-") && !known {
             // Not ours to delete; its traffic is dropped (an unknown wg-*).
@@ -127,6 +135,16 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         }
     }
     out
+}
+
+/// Whether the kernel's `tenant_space` (the spoof guard's) covers the compiled one.
+fn tenant_space_covered(r: &dyn Runner, c: &Compiled) -> bool {
+    r.run(
+        &["nft", "-j", "list", "set", "inet", "wgate", "tenant_space"],
+        None,
+    )
+    .and_then(|json| nftmap::parse_ranges(&json))
+    .is_ok_and(|ranges| nftmap::covers(&ranges, &c.tenant_space))
 }
 
 /// What a compiled network's interface is to the agent.
@@ -164,57 +182,14 @@ fn iface_of(
     if mine {
         return Ok(Iface::Owned);
     }
-    let (_, public) =
-        keys::ensure(r, keys_dir, &key_name(n)).map_err(|e| format!("hub key: {e:#}"))?;
-    let carried = r
-        .run(&["wg", "show", &n.iface, "public-key"], None)
-        .is_ok_and(|key| key.trim() == public);
+    let key = keys::load(r, keys_dir, &key_name(n)).map_err(|e| format!("hub key: {e:#}"))?;
+    let carried =
+        key.is_some_and(|(_, public)| interface_key(r, &n.iface).as_deref() == Some(&public));
     match (carried, exists) {
         (true, _) => Ok(Iface::Owned),
         (false, Some(true)) => Err("an interface wgate did not make; left alone".into()),
         (false, _) => Ok(Iface::Unknown),
     }
-}
-
-/// Takes away the registered networks that are not compiled under the same interface
-/// *and* id, so a new network that reuses a slug starts on a fresh interface. The
-/// interface goes before the map entry: deleting it cuts the traffic at once, and the
-/// entry stays as the marker that retries a removal that failed halfway. Returns the
-/// interfaces whose removal failed: they are not reused until it succeeds.
-fn remove_gone(
-    r: &dyn Runner,
-    c: &Compiled,
-    registered: &[(String, Id)],
-    links: &mut Vec<String>,
-    errors: &mut Vec<String>,
-) -> Vec<String> {
-    let mut blocked = vec![];
-    for (iface, id) in registered {
-        if c.networks.iter().any(|n| n.iface == *iface && n.id == *id) {
-            continue;
-        }
-        let removed = if links.contains(iface) {
-            run(r, &["ip", "link", "del", iface])
-        } else {
-            Ok(())
-        }
-        .map(|()| links.retain(|l| l != iface))
-        .and_then(|()| nft(r, &render_network_removal(*id, iface)));
-        match removed {
-            Ok(()) => tracing::info!(%iface, network = id, "network removed"),
-            Err(e) => {
-                errors.push(format!("{iface} (removing network {id}): {e:#}"));
-                // Still there: it must at least stop carrying the gone network.
-                if links.contains(iface)
-                    && let Err(e) = strip_peers(r, iface)
-                {
-                    errors.push(format!("{iface} (removing network {id}): peers: {e:#}"));
-                }
-                blocked.push(iface.clone());
-            }
-        }
-    }
-    blocked
 }
 
 /// Ports can swap: an interface holding the port another network wants lets go of it
@@ -302,13 +277,21 @@ fn network(
     }
     let mut errors = Vec::new();
     let mut step = |what: &str, result: anyhow::Result<()>| {
-        let ok = result.is_ok();
-        if let Err(e) = result {
-            errors.push(format!("{what}: {e:#}"));
-        }
-        ok
+        note(result.with_context(|| what.to_owned()), &mut errors).is_some()
     };
-    let key = keys::ensure(r, keys_dir, &key_name(n));
+    // A key is issued only to an interface without one: anything else would rotate a
+    // key clients already have.
+    let key = match keys::load(r, keys_dir, &key_name(n)) {
+        Ok(Some(found)) => Ok(found),
+        Ok(None) if !exists || interface_key(r, iface).is_none() => {
+            keys::ensure(r, keys_dir, &key_name(n))
+        }
+        Ok(None) => Err(anyhow::anyhow!(
+            "the interface has a key but its file is missing; restore it, or delete the \
+             interface to issue a new one"
+        )),
+        Err(e) => Err(e),
+    };
     let address = format!("{}/{}", n.hub, n.cidr.prefix_len());
     step(
         "address",
@@ -342,10 +325,9 @@ fn network(
     (key, errors)
 }
 
-fn report(result: anyhow::Result<()>, errors: &mut Vec<String>) {
-    if let Err(e) = result {
-        errors.push(format!("{e:#}"));
-    }
+/// Records a failure; the value on success.
+fn note<T>(result: anyhow::Result<T>, errors: &mut Vec<String>) -> Option<T> {
+    result.map_err(|e| errors.push(format!("{e:#}"))).ok()
 }
 
 #[cfg(test)]

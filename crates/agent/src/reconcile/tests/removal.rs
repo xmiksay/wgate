@@ -32,6 +32,7 @@ fn a_reused_slug_gets_a_fresh_network() {
     std::fs::write(dir.path().join("n9.key"), &old_key).unwrap();
     let fake = Fake::default()
         .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer("wg show wg-n1 public-key", &format!("pub-{old_key}\n"))
         .answer(
             "nft -j list map",
             r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n9_from"}}]]}}]}"#,
@@ -44,10 +45,7 @@ fn a_reused_slug_gets_a_fresh_network() {
     let del = position(&log, "ip link del wg-n1");
     let add = position(&log, "ip link add wg-n1 type wireguard");
     assert!(del < add);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("n1.key")).unwrap(),
-        format!("{GENERATED}\n")
-    );
+    assert!(out.hub_keys.contains(&(1, hub_pub(1))));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("n9.key")).unwrap(),
         old_key
@@ -101,6 +99,7 @@ fn a_failed_removal_holds_back_the_network_reusing_its_interface() {
             "nft -j list map",
             r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n9_from"}}]]}}]}"#,
         )
+        .answer("wg show wg-n1 public-key", "(none)\n")
         .fail("ip link del wg-n1");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
