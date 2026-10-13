@@ -14,7 +14,7 @@ pub(super) struct Gone {
     pub deleted: Vec<(String, Id)>,
     /// Those that would not go (disarmed instead): their names are not reused, and
     /// their ports may be freed, until they do.
-    pub stuck: Vec<(String, Option<Id>)>,
+    pub stuck: Vec<String>,
     /// What the stuck ones still hold.
     pub held: Vec<Ipv4Net>,
 }
@@ -55,7 +55,7 @@ pub(super) fn remove_gone_links(
                 if let Err(e) = result {
                     errors.push(format!("{} (gone): disarm: {e:#}", link.name));
                 }
-                gone.stuck.push((link.name, link.owner));
+                gone.stuck.push(link.name);
             }
         }
     }

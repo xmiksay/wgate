@@ -80,7 +80,7 @@ fn what_a_stuck_interface_still_routes_is_held() {
         "{:?}",
         out.errors
     );
-    assert!(!fake.fragments_of(1)[0].contains("192.168.1.0/24"));
+    assert!(!fake.fragments_of(1)[0].contains("192.168.1.0-192.168.1.255"));
 }
 
 #[test]

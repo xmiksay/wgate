@@ -76,15 +76,20 @@ impl Runner for System {
             }
             _ => None,
         };
+        // Read on threads that report back, so a helper that kept the pipes open
+        // after the tool exited cannot hold the reconcile.
         let drain = |pipe: Option<Box<dyn Read + Send>>| {
+            let (tx, rx) = std::sync::mpsc::channel();
             thread::spawn(move || {
                 let mut buf = Vec::new();
                 if let Some(mut pipe) = pipe {
                     let _ = pipe.read_to_end(&mut buf);
                 }
-                buf
-            })
+                let _ = tx.send(buf);
+            });
+            rx
         };
+        let started = std::time::Instant::now();
         let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
         let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
         let waited = child.wait_timeout(self.timeout);
@@ -97,10 +102,15 @@ impl Runner for System {
                 _ => bail!("{} timed out after {:?}", argv.join(" "), self.timeout),
             }
         };
+        let left = || {
+            self.timeout
+                .saturating_sub(started.elapsed())
+                .max(Duration::from_millis(100))
+        };
         let out = std::process::Output {
             status,
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
+            stdout: stdout.recv_timeout(left()).unwrap_or_default(),
+            stderr: stderr.recv_timeout(left()).unwrap_or_default(),
         };
         let fed = feeder.map(|f| f.join());
         if !out.status.success() {
@@ -134,6 +144,13 @@ mod tests {
             .run(&["sh", "-c", "echo nope >&2; exit 3"], None)
             .unwrap_err();
         assert!(err.to_string().contains("nope"), "{err}");
+        // A helper that keeps the pipe open past the tool's exit holds nothing up.
+        let quick = System::default().with_timeout(Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        quick
+            .run(&["sh", "-c", "(sleep 3) & echo hi"], None)
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
         let slow = System::default().with_timeout(Duration::from_millis(200));
         let err = slow.run(&["sleep", "5"], None).unwrap_err();
         assert!(err.to_string().contains("timed out"), "{err}");
