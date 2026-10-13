@@ -207,3 +207,34 @@ async fn federations_link_two_tenants() {
     refused(&pg.db, &federation(1, 3)).await;
     ok(&pg.db, &federation(1, 2)).await;
 }
+
+#[tokio::test]
+async fn routed_lans_and_tenant_blocks_never_overlap() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        &format!(
+            "INSERT INTO peer (id, device_id, network_id, public_key, ip) VALUES (1, 1, 1, '{KEY}', '10.50.0.2');
+             INSERT INTO peer_route (peer_id, cidr) VALUES (1, '192.168.1.0/24')"
+        ),
+    )
+    .await;
+    refused(
+        &pg.db,
+        "INSERT INTO peer_route (peer_id, cidr) VALUES (1, '10.50.0.0/16')",
+    )
+    .await;
+    refused(
+        &pg.db,
+        "INSERT INTO tenant_block (id, tenant_id, cidr) VALUES (9, 1, '192.168.0.0/16')",
+    )
+    .await;
+    // Once the route is gone (revoked), the range is free for a block.
+    ok(&pg.db, "UPDATE peer SET revoked_at = now()").await;
+    ok(
+        &pg.db,
+        "INSERT INTO tenant_block (id, tenant_id, cidr) VALUES (9, 1, '192.168.0.0/16')",
+    )
+    .await;
+}

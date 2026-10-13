@@ -206,6 +206,30 @@ CREATE TABLE peer_route (
     EXCLUDE USING gist (cidr inet_ops WITH &&) WHERE (active)
 );
 
+-- Routed LANs never overlap tenant blocks (and so no network inside one): each
+-- table's EXCLUDE only sees its own rows, so this cross-table check serializes on one
+-- advisory lock and then reads what is committed (READ COMMITTED: each statement in
+-- the function takes a fresh snapshot).
+CREATE FUNCTION ranges_disjoint() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('wgate_ranges'));
+    IF TG_TABLE_NAME = 'peer_route' THEN
+        IF NEW.active AND EXISTS (SELECT FROM tenant_block WHERE cidr && NEW.cidr) THEN
+            RAISE EXCEPTION 'LAN % overlaps a tenant block', NEW.cidr
+                USING ERRCODE = 'exclusion_violation';
+        END IF;
+    ELSIF EXISTS (SELECT FROM peer_route WHERE active AND cidr && NEW.cidr) THEN
+        RAISE EXCEPTION 'block % overlaps a routed LAN', NEW.cidr
+            USING ERRCODE = 'exclusion_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER ranges_disjoint BEFORE INSERT ON tenant_block
+    FOR EACH ROW EXECUTE FUNCTION ranges_disjoint();
+CREATE TRIGGER ranges_disjoint BEFORE INSERT OR UPDATE OF cidr, active ON peer_route
+    FOR EACH ROW EXECUTE FUNCTION ranges_disjoint();
+
 -- proto + ports, shared by every rule-like table: tcp/udp carry 1 <= from <= to, icmp
 -- none. Never NULL: a CHECK passes on NULL, so `tcp` with NULL ports would slip by.
 CREATE FUNCTION valid_service(p proto, port_from integer, port_to integer)

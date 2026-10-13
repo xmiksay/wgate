@@ -77,7 +77,9 @@ under sudo).
 - All state writes run at READ COMMITTED (refused at the first statement otherwise)
   and never `SET CONSTRAINTS … IMMEDIATE`; TRUNCATE is refused (use DELETE); ids are
   immutable; re-revoking is a no-op. The once-per-transaction marker is the counter
-  row's own xmin, so no caller can mute it.
+  row's own xmin, and only the triggers may change that row, so no caller (not even
+  the owner) can mute or rewind it. Routed LANs and tenant blocks never overlap
+  (cross-table check under an advisory lock).
 - `desired_state(db, &Infra)`: one REPEATABLE READ read-only snapshot, active rows →
   `core::DesiredState` (+ its revision, peer keys, owner tenants); unmappable rows are
   skipped with a warning (a load error would block revocations). Cross-tenant devices

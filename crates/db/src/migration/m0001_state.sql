@@ -1,8 +1,8 @@
 -- Part of m0001 (appended to m0001_init.sql): the state revision and its NOTIFY,
 -- and the agent's status.
 
--- Every statement that changes the desired state bumps the revision and NOTIFYs the
--- agent, from a trigger, so no write path can forget it. Postgres delivers a NOTIFY
+-- Every transaction that changes the desired state bumps the revision once and
+-- NOTIFYs the agent, from triggers, so no write path can forget it. Postgres delivers a NOTIFY
 -- only on commit, so a rolled-back write never wakes the agent. The agent's own
 -- tables (hub_key, agent_status) and audit do not count.
 CREATE TABLE state_revision (
@@ -10,6 +10,21 @@ CREATE TABLE state_revision (
     revision bigint NOT NULL
 );
 INSERT INTO state_revision (revision) VALUES (0);
+
+-- Only the bump below may change the counter: a direct UPDATE (even by the owner)
+-- would mark the transaction as already bumped, muting it, or rewind the revision
+-- past what the agent reports as applied.
+CREATE FUNCTION revision_only_by_trigger() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() < 2 THEN
+        RAISE EXCEPTION 'state_revision changes only through the state triggers'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER revision_only_by_trigger BEFORE UPDATE OR DELETE ON state_revision
+    FOR EACH ROW EXECUTE FUNCTION revision_only_by_trigger();
 
 -- Deferred to commit and run once per transaction: the hot state_revision row lock
 -- is then the last lock a writer takes and is held only while it commits, so it can
@@ -94,9 +109,16 @@ BEGIN
                            'OLD.' || replace(spec[3], ', ', ', OLD.'),
                            'NEW.' || replace(spec[3], ', ', ', NEW.'));
         END IF;
-        EXECUTE format('CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON %I
-                        FOR EACH STATEMENT EXECUTE FUNCTION require_read_committed()',
-                       spec[1] || '_read_committed', spec[1]);
+        -- Only writes that can bump: renames, emails and the like may run at any level.
+        IF spec[2] = 'yes' OR spec[3] <> '' THEN
+            EXECUTE format('CREATE TRIGGER %I BEFORE %s ON %I
+                            FOR EACH STATEMENT EXECUTE FUNCTION require_read_committed()',
+                           spec[1] || '_read_committed',
+                           concat_ws(' OR ',
+                               CASE WHEN spec[2] = 'yes' THEN 'INSERT OR DELETE' END,
+                               CASE WHEN spec[3] <> '' THEN 'UPDATE OF ' || spec[3] END),
+                           spec[1]);
+        END IF;
         EXECUTE format('CREATE TRIGGER %I BEFORE TRUNCATE ON %I
                         FOR EACH STATEMENT EXECUTE FUNCTION no_truncate()',
                        spec[1] || '_no_truncate', spec[1]);
