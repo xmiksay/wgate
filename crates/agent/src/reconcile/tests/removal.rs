@@ -53,12 +53,13 @@ fn a_reused_slug_gets_a_fresh_network() {
 }
 
 #[test]
-fn without_the_links_a_gone_network_is_only_unregistered() {
+fn without_the_links_a_gone_network_still_goes() {
+    let registry = r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-old", {"jump": {"target": "n9_from"}}]]}}]}"#;
+    // Its key read proves the interface is there: deleted, and unregistered.
     let dir = keys();
-    let fake = Fake::default().fail("ip -j link show").answer(
-        "nft -j list map",
-        r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-old", {"jump": {"target": "n9_from"}}]]}}]}"#,
-    );
+    let fake = Fake::default()
+        .fail("ip -j link show type wireguard")
+        .answer("nft -j list map", registry);
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("inventory: ")),
@@ -66,7 +67,15 @@ fn without_the_links_a_gone_network_is_only_unregistered() {
         out.errors
     );
     let log = fake.log();
-    // Its map entries go (that cuts it off); its interface waits for the links.
+    assert!(position(&log, "ip link del wg-old") < nft_run(&log, 1));
+
+    // Its key cannot be read (most likely no interface): only unregistered.
+    let fake = Fake::default()
+        .fail("ip -j link show type wireguard")
+        .fail("wg show wg-old public-key")
+        .answer("nft -j list map", registry);
+    reconcile(&fake, &compiled(), dir.path());
+    let log = fake.log();
     assert!(!log.iter().any(|c| c.starts_with("ip link del")));
     assert!(nft_runs(&log) >= 2, "base + removal: {log:#?}");
 }

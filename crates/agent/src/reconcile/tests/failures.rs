@@ -215,3 +215,32 @@ fn a_freed_port_landing_on_a_wanted_one_is_picked_again() {
         .count();
     assert_eq!(picks, 5, "bounded retries");
 }
+
+#[test]
+fn without_a_guarding_base_stale_routes_still_go() {
+    let dir = keys();
+    let fake = Fake::default()
+        .fail("nft -f -")
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "ip -j route show dev wg-n1",
+            r#"[{"dst":"192.168.9.0/24","scope":"link","flags":[]}]"#,
+        );
+    reconcile(&fake, &compiled(), dir.path());
+    let log = fake.log();
+    position(&log, "ip route del 192.168.9.0/24 dev wg-n1 proto 150");
+    assert!(!log.iter().any(|c| c.starts_with("ip route add")));
+}
+
+#[test]
+fn a_leftover_takes_its_chains_along() {
+    let dir = keys();
+    std::fs::write(dir.path().join("n9.key"), hub_private(9)).unwrap();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
+        .answer("wg show wg-old public-key", &hub_pub(9));
+    reconcile(&fake, &compiled(), dir.path());
+    let log = fake.log();
+    let del = position(&log, "ip link del wg-old");
+    assert_eq!(log[del + 1], "nft -f -", "the purge right after: {log:#?}");
+}

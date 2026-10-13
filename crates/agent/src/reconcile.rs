@@ -1,7 +1,7 @@
 //! One reconcile: the base, the networks that are gone, what every peer loses, then
 //! network by network (an error in one never stops the others).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
@@ -85,11 +85,17 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     }
     if !guarded {
         // Nothing grows where spoofed sources may not be dropped, and rights revoked
-        // inside a fragment wait for the base; peer revocations need none.
+        // inside a fragment wait for the base; peer and route revocations need none.
         for n in owned {
-            let result = peer_diff(r, c, n).and_then(|d| removals(r, &n.iface, &d));
+            let plan = plan(r, c, n, true);
+            let peers = plan.peers.and_then(|d| removals(r, &n.iface, &d));
+            let routes = plan
+                .routes
+                .and_then(|(_, del)| route_commands(r, n, "del", &del));
             note(
-                result.with_context(|| format!("{}: revocations", n.iface)),
+                peers
+                    .and(routes)
+                    .with_context(|| format!("{}: revocations", n.iface)),
                 &mut out.errors,
             );
         }
@@ -312,24 +318,7 @@ fn network(
     let mut step = |what: &str, result: anyhow::Result<()>| {
         note(result.with_context(|| what.to_owned()), &mut errors).is_some()
     };
-    // A key is issued only to an interface known to have none: anything else would
-    // rotate a key clients already have.
-    let key = match keys.load(n.id) {
-        Ok(Some(found)) => Ok(found),
-        Ok(None) => match if exists {
-            interface_key(r, iface)
-        } else {
-            Ok(None)
-        } {
-            Ok(None) => keys.ensure(n.id),
-            Ok(Some(_)) => Err(anyhow::anyhow!(
-                "the interface has a key but its file is missing; restore it, or delete \
-                 the interface to issue a new one"
-            )),
-            Err(e) => Err(e.context("the interface's key")),
-        },
-        Err(e) => Err(e),
-    };
+    let key = hub_key(r, keys, n, exists);
     let address = format!("{}/{}", n.hub, n.cidr.prefix_len());
     step(
         "address",
@@ -365,6 +354,30 @@ fn network(
     }
     let key = key.ok().filter(|_| keyed).map(|(_, public)| public);
     (key, errors)
+}
+
+/// The network's hub key. One is issued only to an interface known to have none:
+/// anything else would rotate a key clients already have.
+fn hub_key(
+    r: &dyn Runner,
+    keys: &Keys,
+    n: &CompiledNetwork,
+    exists: bool,
+) -> anyhow::Result<(PathBuf, String)> {
+    if let Some(found) = keys.load(n.id)? {
+        return Ok(found);
+    }
+    if exists
+        && interface_key(r, &n.iface)
+            .context("the interface's key")?
+            .is_some()
+    {
+        anyhow::bail!(
+            "the interface has a key but its file is missing; restore it, or delete the \
+             interface to issue a new one"
+        );
+    }
+    keys.ensure(n.id)
 }
 
 /// Records a failure; the value on success.

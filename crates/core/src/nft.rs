@@ -131,7 +131,7 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
     }
 
     let mut sets = Sets::default();
-    for peer in c.peers.iter().filter(|peer| peer.network == n.id) {
+    for peer in c.peers_of(n.id) {
         sets.add(peer);
     }
     let elements = [
@@ -194,12 +194,20 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
 /// Takes a network out: its map entries first (a chain still referenced cannot be
 /// deleted), then its chains and sets.
 pub fn render_network_removal(id: Id, iface: &str) -> String {
-    let p = prefix(id);
     let mut out = String::new();
     let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
     for (map, _) in CHAINS {
         let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
     }
+    out.push_str(&render_network_purge(id));
+    out
+}
+
+/// A network's chains and sets alone, for one whose map entries are already gone (a
+/// flushed map).
+pub fn render_network_purge(id: Id) -> String {
+    let p = prefix(id);
+    let mut out = String::new();
     for (_, chain) in CHAINS {
         let _ = writeln!(out, "delete chain {TABLE} {p}_{chain}");
     }

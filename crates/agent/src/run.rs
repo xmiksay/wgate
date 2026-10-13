@@ -30,12 +30,17 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
         tokio::select! {
             // The timer rewrites every hub key: a row lost meanwhile comes back.
             _ = tick.tick() => published.clear(),
-            note = next(&mut listener) => {
-                if let Err(e) = note {
+            note = next(&mut listener) => match note {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!("LISTEN connection lost");
+                    listener = None;
+                }
+                Err(e) => {
                     tracing::warn!(error = %e, "LISTEN connection lost");
                     listener = None;
                 }
-            }
+            },
         }
         if listener.is_none() {
             // Before the reconcile reads its snapshot, so nothing committed after it
@@ -52,22 +57,25 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
     }
 }
 
-/// Waits for a notification. A lost connection (`try_recv` → `None`; sqlx then
-/// reconnects) also wakes us: notifications sent meanwhile are gone, so reconcile now
-/// rather than at the next tick. Whatever else is already queued is drained (for at
-/// most a second), so a burst of changes costs one reconcile.
-async fn next(listener: &mut Option<Listener>) -> Result<(), ListenError> {
+/// Waits for a notification: `true`, or `false` when the connection was lost
+/// (`try_recv` → `None`). Notifications sent meanwhile are gone, so a lost connection
+/// also reconciles now; LISTEN is set up again before that reconcile reads its
+/// snapshot. Whatever else is already queued is drained (for at most a second), so a
+/// burst of changes costs one reconcile.
+async fn next(listener: &mut Option<Listener>) -> Result<bool, ListenError> {
     let Some(l) = listener else {
         return std::future::pending().await;
     };
-    l.try_recv().await?;
+    if l.try_recv().await?.is_none() {
+        return Ok(false);
+    }
     // Bounded: a steady stream of changes must not hold every reconcile off.
     let until = tokio::time::Instant::now() + Duration::from_secs(1);
     while tokio::time::Instant::now() < until
         && let Ok(Ok(Some(_))) = tokio::time::timeout(Duration::from_millis(50), l.try_recv()).await
     {
     }
-    Ok(())
+    Ok(true)
 }
 
 /// One load → compile → apply → report round. `published` remembers the hub keys
