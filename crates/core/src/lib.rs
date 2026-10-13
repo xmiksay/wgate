@@ -19,14 +19,38 @@ pub use net::{
     is_inside, is_peer_ip, next_free_net, next_peer_ip, next_port, overlaps,
 };
 pub use nft::{NftRender, NftState, render_nft};
-pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, subtract_nets};
+pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, merge_nets, subtract_nets};
 pub use rule::{PortRange, Proto, Rule, RuleError, Service};
 
 #[cfg(test)]
 mod testing {
+    use std::net::Ipv4Addr;
     use std::path::PathBuf;
 
-    use crate::{Rule, RuleSet};
+    use ipnet::Ipv4Net;
+
+    use crate::{Id, Peer, PortRange, Rule, RuleSet, Service};
+
+    pub(crate) fn net(s: &str) -> Ipv4Net {
+        s.parse().unwrap()
+    }
+
+    pub(crate) fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
+
+    pub(crate) fn tcp(port: u16) -> Service {
+        Service::Tcp(PortRange::new(port, port).unwrap())
+    }
+
+    pub(crate) fn peer(id: Id, network: Id, addr: &str, routed: &[&str]) -> Peer {
+        Peer {
+            id,
+            network,
+            ip: ip(addr),
+            routed: routed.iter().map(|r| net(r)).collect(),
+        }
+    }
 
     pub(crate) fn rule_set(rules: &[&str]) -> RuleSet {
         let rules: Vec<Rule> = rules.iter().map(|r| r.parse().unwrap()).collect();

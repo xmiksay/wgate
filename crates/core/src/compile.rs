@@ -5,8 +5,8 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{first_overlap, hub_address, is_inside, is_peer_ip};
-use crate::rights::{RuleSet, subtract_nets};
+use crate::net::{Slug, first_overlap, hub_address, is_inside, is_peer_ip};
+use crate::rights::{RuleSet, merge_nets, subtract_nets};
 use crate::rule::{Rule, Service};
 
 pub type Id = i64;
@@ -16,6 +16,10 @@ pub type Id = i64;
 #[derive(Clone, Debug, Default)]
 pub struct DesiredState {
     pub pool: Vec<Ipv4Net>,
+    /// Where routed LANs may lie (global admin): private ranges minus the pool and
+    /// infrastructure. A LAN becomes tenant space, which the hub drops as a source
+    /// on non-wg interfaces, so it must never cover anything else.
+    pub routed_space: Vec<Ipv4Net>,
     pub tenants: Vec<Tenant>,
     pub networks: Vec<Network>,
     pub peers: Vec<Peer>,
@@ -33,6 +37,8 @@ pub struct Tenant {
 pub struct Network {
     pub id: Id,
     pub tenant: Id,
+    /// The interface is `wg-<slug>`.
+    pub slug: Slug,
     pub cidr: Ipv4Net,
     /// Members reach each other on every service.
     pub mesh: bool,
@@ -72,6 +78,8 @@ pub struct Federation {
 pub struct CompiledPeer {
     pub id: Id,
     pub ip: Ipv4Addr,
+    /// The interface its packets must arrive on.
+    pub iface: String,
     /// `ip/32` plus routed subnets: the hub-side `AllowedIPs`.
     pub addrs: Vec<Ipv4Net>,
     /// What the peer (and its routed LANs) may open; addresses = destinations.
@@ -84,13 +92,14 @@ pub struct CompiledPeer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
     UnknownNetwork,
-    /// Its network lies outside the pool or overlaps another network.
+    /// Its network lies outside the pool, has an unknown tenant or overlaps an older
+    /// network.
     InvalidNetwork,
     /// Not a peer address of its network (outside it, the hub address, network or
     /// broadcast).
     InvalidIp,
-    /// A routed subnet inside the pool.
-    RoutedInPool,
+    /// A routed subnet outside `routed_space` (or inside the pool).
+    RoutedNotAllowed,
     /// Its addresses overlap another peer's.
     Overlap,
 }
@@ -99,27 +108,31 @@ pub enum Problem {
 pub struct Compiled {
     pub peers: Vec<CompiledPeer>,
     pub skipped: Vec<(Id, Problem)>,
-    /// The pool plus every declared routed LAN (also of skipped routers), merged:
+    /// The pool plus every allowed declared routed LAN (also of skipped routers), merged:
     /// what nft treats as tenant space.
     pub tenant_space: Vec<Ipv4Net>,
 }
 
 pub fn compile(state: &DesiredState) -> Compiled {
-    // A network outside the pool or overlapping an older one would put its peers
-    // outside tenant space (no subtraction, no spoof guard): its peers fail closed.
-    let ranges: Vec<(Id, Vec<Ipv4Net>)> = state
+    // A network outside the pool, with an unknown tenant or overlapping an older one
+    // fails closed. Only networks that could be valid compete for addresses, so a bad
+    // row cannot knock out a good one.
+    let tenants: HashSet<Id> = state.tenants.iter().map(|t| t.id).collect();
+    let (eligible, mut invalid): (Vec<&Network>, Vec<&Network>) = state
         .networks
         .iter()
-        .map(|n| (n.id, vec![n.cidr]))
-        .collect();
+        .partition(|n| is_inside(n.cidr, &state.pool) && tenants.contains(&n.tenant));
+    let ranges: Vec<(Id, Vec<Ipv4Net>)> = eligible.iter().map(|n| (n.id, vec![n.cidr])).collect();
     let clashing = conflicting(&ranges);
-    let (networks, invalid): (Vec<&Network>, Vec<&Network>) = state
-        .networks
-        .iter()
-        .partition(|n| is_inside(n.cidr, &state.pool) && clashing.binary_search(&n.id).is_err());
+    let (networks, clashed): (Vec<&Network>, Vec<&Network>) = eligible
+        .into_iter()
+        .partition(|n| clashing.binary_search(&n.id).is_err());
+    invalid.extend(clashed);
     let invalid: HashSet<Id> = invalid.iter().map(|n| n.id).collect();
     let networks: HashMap<Id, &Network> = networks.into_iter().map(|n| (n.id, n)).collect();
     let mut skipped = Vec::new();
+    let routable =
+        |r: Ipv4Net| is_inside(r, &state.routed_space) && first_overlap(r, &state.pool).is_none();
 
     let mut candidates = Vec::new();
     for p in &state.peers {
@@ -127,13 +140,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
             None if invalid.contains(&p.network) => Some(Problem::InvalidNetwork),
             None => Some(Problem::UnknownNetwork),
             Some(n) if !is_peer_ip(n.cidr, p.ip) => Some(Problem::InvalidIp),
-            Some(_)
-                if p.routed
-                    .iter()
-                    .any(|r| first_overlap(*r, &state.pool).is_some()) =>
-            {
-                Some(Problem::RoutedInPool)
-            }
+            Some(_) if !p.routed.iter().all(|r| routable(*r)) => Some(Problem::RoutedNotAllowed),
             Some(_) => None,
         };
         match problem {
@@ -167,9 +174,15 @@ pub fn compile(state: &DesiredState) -> Compiled {
         .pool
         .iter()
         .copied()
-        .chain(state.peers.iter().flat_map(|p| p.routed.iter().copied()))
+        .chain(
+            state
+                .peers
+                .iter()
+                .flat_map(|p| p.routed.iter().copied())
+                .filter(|r| routable(*r)),
+        )
         .collect();
-    let tenant_nets = subtract_nets(&tenant_nets, &[]);
+    let tenant_nets = merge_nets(&tenant_nets);
     let tenant_space = RuleSet::everything(&tenant_nets);
     // Inbound grants are for sources outside tenant space; the only in-pool source
     // that is no peer is a hub address (hub-opened connections).
@@ -242,6 +255,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
             Some(CompiledPeer {
                 id: p.id,
                 ip: p.ip,
+                iface: networks.get(&p.network)?.slug.iface(),
                 outbound: outbound.difference(&own),
                 inbound: inbound.difference(&own),
                 addrs,

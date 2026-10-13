@@ -200,6 +200,7 @@ fn state() -> DesiredState {
     let network = |id, tenant, cidr: &str, rules| Network {
         id,
         tenant,
+        slug: format!("n{id}").parse().expect("slug"),
         cidr: net(cidr),
         mesh: false,
         rules,
@@ -215,6 +216,7 @@ fn state() -> DesiredState {
     };
     DesiredState {
         pool: vec![net("10.50.0.0/16")],
+        routed_space: vec![],
         tenants: vec![
             Tenant {
                 id: 1,
@@ -304,6 +306,26 @@ fn spoofed_tenant_sources_are_dropped() {
         .find(|l| l.contains("ip saddr @tenant_space counter"))
         .expect("spoof rule");
     assert!(spoof.contains("packets 1 "), "{spoof}");
+}
+
+/// A peer's address is only believed on its own network's interface: `a` on wg-n1
+/// sending as network 2's peer `b` is dropped before any rights lookup.
+#[test]
+#[ignore = "needs root: make test-netns"]
+fn peers_cannot_pose_as_another_network() {
+    let lab = Lab::new();
+    lab.apply(&state());
+    lab.a
+        .exec(&["ip", "addr", "add", "10.50.1.2/32", "dev", "p0"], None);
+    lab.a.exec(&["python3", "-c", SPOOF, B, C, "7000"], None);
+    let chain = lab
+        .hub
+        .output(&["nft", "list", "chain", "inet", "wgate", "prerouting"]);
+    let ingress = chain
+        .lines()
+        .find(|l| l.contains("!= @ingress"))
+        .expect("ingress rule");
+    assert!(ingress.contains("packets 1 "), "{ingress}");
 }
 
 /// Removing a right cuts a connection that is already open, even though conntrack

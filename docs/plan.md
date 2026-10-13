@@ -33,7 +33,8 @@ under sudo).
     from its other networks; hub address = first host
   - peer IP: first free host of the network, not the hub address or broadcast
   - port: first free in `51800–51899`, skipping `51820`
-  - routed subnets: rejected when overlapping the pool or another routed subnet
+  - routed subnets: rejected when outside `routed_space` (global-admin allowlist),
+    inside the pool, or overlapping another routed subnet
 - `compile(&DesiredState) -> Compiled { peers, skipped, tenant_space }`: per peer
   `addrs`, `outbound`, `inbound` exactly per design.md → Rights (ceiling ∩ external
   rules − tenant space, rules between networks, federation, mesh, inbound grants
@@ -87,7 +88,8 @@ under sudo).
 ### 1.5 `server` — API + global-admin login
 - Config `/etc/wgate/server.toml`:
   - `listen = 172.19.9.10:8470`, `database_url`, `public_url = https://vpn.mmik.cz`
-  - `pool = ["10.50.0.0/16"]`, `session_key`
+  - `pool = ["10.50.0.0/16"]`, `routed_space = ["10.0.0.0/8", "172.16.0.0/12",
+    "192.168.0.0/16"]` minus pool/infra, `session_key`
   - `[admin_oidc]` issuer/client_id/client_secret + `admin_emails`
   - `[[tenant_oidc]]` slug/issuer/client_id/client_secret (for phase 2)
 - OIDC login (PKCE) for the global admin only; sessions in Postgres, cookie
