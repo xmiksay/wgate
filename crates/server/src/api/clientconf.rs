@@ -9,6 +9,7 @@ use utoipa::ToSchema;
 use wgate_core::{ClientConfig, compile, render_client_config};
 use wgate_db::entity::{hub_key, network};
 
+use super::dns_hosts;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::wgkey::qr_svg;
@@ -17,8 +18,9 @@ use crate::wgkey::qr_svg;
 pub struct Rendered {
     /// The `wg-quick` config.
     pub config: String,
-    /// The same as a QR code (SVG) for the WireGuard app.
-    pub qr_svg: String,
+    /// The same as a QR code (SVG) for the WireGuard app; missing when the config is
+    /// too long for one.
+    pub qr_svg: Option<String>,
 }
 
 /// `None` (with a warning saying why) while the peer has no config yet: it is not
@@ -57,14 +59,8 @@ pub async fn render(
     let dns: Vec<Ipv4Addr> = network::Entity::find_by_id(net.id)
         .one(&s.db)
         .await?
-        .map(|n| n.dns)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|d| match d.ip() {
-            IpAddr::V4(a) => Some(a),
-            IpAddr::V6(_) => None,
-        })
-        .collect();
+        .map(|n| dns_hosts(&n.dns))
+        .unwrap_or_default();
     let endpoint = format!("{}:{}", s.config.endpoint_host, net.port);
     let endpoint_ips: Vec<Ipv4Addr> = match tokio::net::lookup_host(&endpoint).await {
         Ok(addrs) => addrs
@@ -92,6 +88,9 @@ pub async fn render(
         outbound: &peer.outbound,
         inbound: &peer.inbound,
     });
-    let qr_svg = qr_svg(&config)?;
+    let qr_svg = qr_svg(&config);
+    if qr_svg.is_none() {
+        warnings.push("the config is too long for a QR code: import the file".into());
+    }
     Ok(Some(Rendered { config, qr_svg }))
 }

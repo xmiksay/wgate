@@ -885,7 +885,7 @@
         "tags": [
           "peers"
         ],
-        "summary": "A server-key peer gets a new key pair (the previous config stops working at once);\na pasted-key peer's config comes without a private key.",
+        "summary": "A server-key peer gets a new key pair (the previous config stops working at once);\na pasted-key peer's config comes without a private key. The rotation commits only\nwith a config to show for it: else the working key stays.",
         "operationId": "config",
         "parameters": [
           {
@@ -1735,7 +1735,7 @@
           },
           "error": {
             "type": "string",
-            "description": "`unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid` or\n`internal`."
+            "description": "`unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid`,\n`too_many` or `internal`."
           },
           "message": {
             "type": "string"
@@ -2121,8 +2121,7 @@
       "Rendered": {
         "type": "object",
         "required": [
-          "config",
-          "qr_svg"
+          "config"
         ],
         "properties": {
           "config": {
@@ -2130,8 +2129,11 @@
             "description": "The `wg-quick` config."
           },
           "qr_svg": {
-            "type": "string",
-            "description": "The same as a QR code (SVG) for the WireGuard app."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same as a QR code (SVG) for the WireGuard app; missing when the config is\ntoo long for one."
           }
         }
       },
@@ -2305,7 +2307,8 @@
       "Status": {
         "type": "object",
         "required": [
-          "revision"
+          "revision",
+          "failing"
         ],
         "properties": {
           "applied_at": {
@@ -2327,7 +2330,11 @@
               "string",
               "null"
             ],
-            "description": "What the agent could not apply, if anything."
+            "description": "What the agent could not apply, if anything: its own words (every tenant's\ninterfaces and ranges), so for a global admin only."
+          },
+          "failing": {
+            "type": "boolean",
+            "description": "Whether the agent reported an error."
           },
           "revision": {
             "type": "integer",

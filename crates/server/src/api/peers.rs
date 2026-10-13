@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use ipnet::Ipv4Net;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
-    QueryFilter, QueryOrder,
+    QueryFilter, QueryOrder, QuerySelect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -103,18 +103,34 @@ async fn peer_out<C: ConnectionTrait>(db: &C, p: peer::Model) -> Result<Peer, Ap
     })
 }
 
-/// The peer and the tenant its network belongs to, checked against the actor.
+/// The peer, if the actor manages both its network's tenant and its device (a global
+/// admin's device only a global admin does). In a transaction, the row stays locked
+/// until it ends: two config downloads rotate one after the other.
 pub(super) async fn owned<C: ConnectionTrait>(
     db: &C,
     actor: &Actor,
     id: i64,
 ) -> Result<peer::Model, ApiError> {
     let p = peer::Entity::find_by_id(id)
+        .lock_exclusive()
         .one(db)
         .await?
         .ok_or(ApiError::NotFound)?;
     actor.tenant(tenant_of_network(db, p.network_id).await?)?;
+    device_managed(db, actor, p.device_id).await?;
     Ok(p)
+}
+
+async fn device_managed<C: ConnectionTrait>(
+    db: &C,
+    actor: &Actor,
+    device: i64,
+) -> Result<(), ApiError> {
+    let user = one_i64(db, "SELECT user_id AS v FROM device WHERE id = $1", device).await?;
+    match tenant_of_user(db, user).await? {
+        Some(t) => actor.tenant(t),
+        None => actor.global(),
+    }
 }
 
 #[utoipa::path(get, path = "/peers", params(PeerFilter), responses((status = 200, body = [Peer])))]
@@ -156,32 +172,21 @@ pub async fn create(
     actor: Actor,
     Json(body): Json<PeerCreate>,
 ) -> Result<(StatusCode, Json<PeerCreated>), ApiError> {
-    let pair = match &body.public_key {
+    let (pair, public_key, key_source) = match &body.public_key {
         Some(key) if !is_wg_key(key) => {
             return Err(ApiError::invalid("not a WireGuard public key"));
         }
-        Some(_) => None,
-        None => Some(wgkey::generate()),
-    };
-    let (public_key, key_source) = match (&pair, &body.public_key) {
-        (Some(p), _) => (p.public.clone(), "server"),
-        (None, Some(k)) => (k.clone(), "pasted"),
-        (None, None) => return Err(ApiError::invalid("no key")),
+        Some(key) => (None, key.clone(), "pasted"),
+        None => {
+            let pair = wgkey::generate();
+            let public = pair.public.clone();
+            (Some(pair), public, "server")
+        }
     };
     let txn = begin(&s.db).await?;
     let tenant = tenant_of_network(&txn, body.network_id).await?;
     actor.tenant(tenant)?;
-    let device_user = one_i64(
-        &txn,
-        "SELECT user_id AS v FROM device WHERE id = $1",
-        body.device_id,
-    )
-    .await?;
-    // The device must be the actor's to manage (a global admin's only for a global admin).
-    match tenant_of_user(&txn, device_user).await? {
-        Some(t) => actor.tenant(t)?,
-        None => actor.global()?,
-    }
+    device_managed(&txn, &actor, body.device_id).await?;
     let p = peer::ActiveModel {
         device_id: Set(body.device_id),
         network_id: Set(body.network_id),
@@ -199,7 +204,15 @@ pub async fn create(
     txn.commit().await?;
     let mut warnings = vec![];
     let private = pair.as_ref().map(|p| p.private.as_str());
-    let config = clientconf::render(&s, p.id, private, &mut warnings).await?;
+    // The peer exists now: a failed render is a warning, and a download makes a new
+    // config (and key).
+    let config = clientconf::render(&s, p.id, private, &mut warnings)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(peer = p.id, error = %e, "rendering the new peer's config");
+            warnings.push("no config: rendering it failed; download it again".into());
+            None
+        });
     Ok((
         StatusCode::CREATED,
         Json(PeerCreated {
@@ -211,7 +224,8 @@ pub async fn create(
 }
 
 /// A server-key peer gets a new key pair (the previous config stops working at once);
-/// a pasted-key peer's config comes without a private key.
+/// a pasted-key peer's config comes without a private key. The rotation commits only
+/// with a config to show for it: else the working key stays.
 #[utoipa::path(post, path = "/peers/{id}/config", responses((status = 200, body = ConfigOut)))]
 pub async fn config(
     State(s): State<AppState>,
@@ -239,7 +253,7 @@ pub async fn config(
         .await?;
         private = Some(pair.private);
     }
-    txn.commit().await?;
+    // The rights do not depend on the key: the committed state renders the new one.
     let mut warnings = vec![];
     let config = clientconf::render(
         &s,
@@ -248,6 +262,9 @@ pub async fn config(
         &mut warnings,
     )
     .await?;
+    if config.is_some() {
+        txn.commit().await?;
+    }
     Ok(Json(ConfigOut { config, warnings }))
 }
 

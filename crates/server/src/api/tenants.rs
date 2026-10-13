@@ -15,6 +15,7 @@ use utoipa::ToSchema;
 use wgate_core::{is_inside, overlaps};
 use wgate_db::entity::{ceiling, tenant, tenant_block};
 
+use super::routes::clear_of_others_lans;
 use super::{ServiceBody, begin, from_db, to_db};
 use crate::audit;
 use crate::auth::Actor;
@@ -330,6 +331,7 @@ pub async fn add_ceiling(
     actor.global()?;
     let (proto, port_from, port_to) = body.service.columns()?;
     let txn = begin(&s.db).await?;
+    clear_of_others_lans(&txn, id, body.dst.trunc()).await?;
     let c = ceiling::ActiveModel {
         tenant_id: Set(id),
         proto: Set(proto),

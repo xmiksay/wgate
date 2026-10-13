@@ -177,7 +177,8 @@ under sudo).
   - `[[tenant_oidc]]` comes with phase 2
 - OIDC login (generic, PKCE S256, nonce) for global admins only; the verified email
   matches first, then `sub` is pinned; the role comes from the DB. Bootstrap:
-  `wgate admin grant <email>`. Sessions in Postgres (sha256 of the token, 8 h idle,
+  `wgate admin grant <email>`. The login is bound to its browser (`wgate_login`
+  cookie), at most 1000 in progress. Sessions in Postgres (sha256 of the token, 8 h idle,
   7 d max), cookie `HttpOnly; Secure; SameSite=Lax`, `X-CSRF-Token` on writes.
 - Schema additions (in m0001): `session`, `login_state`, `peer.key_source`, a public
   key that rotates only while active and server-made, `network.dns`, block → network
@@ -192,7 +193,12 @@ under sudo).
   private key is never stored or logged (a test greps the log). `POST
   /peers/{id}/config` rotates a server key (new config, the old one dies); a pasted
   key gets a config without `PrivateKey`. Until the agent publishes the hub key, the
-  config is missing and a warning says so.
+  config is missing and a warning says so (and the key does not rotate). A peer of a
+  global admin's device is the global admin's to manage.
+- Routed LANs as compile wants them (routed space, clear of the pool and the
+  infrastructure); no ceiling or inbound source reaches another tenant's LAN (checked
+  both ways under one advisory lock). `/status` shows the agent's error text to
+  global admins only.
 - Deletes cascade; every write leaves an `audit` row in its transaction (`GET /audit`,
   paged with `before`/`limit`). Addresses are explicit; `free-ip`, `free-range`,
   `free-block`, `free-port` suggest. OpenAPI from the code (utoipa), committed as
