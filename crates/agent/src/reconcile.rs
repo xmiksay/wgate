@@ -62,14 +62,13 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     note(base, &mut out.errors);
     note(nft(r, &render_snat(c)).context("snat"), &mut out.errors);
     let mut links = note(links(r).context("inventory"), &mut out.errors);
-    let complete = links.is_some();
     let registry = note(registered(r).context("inventory"), &mut out.errors);
     // Nothing grows where spoofed sources may not be dropped, nor without knowing what
     // is gone, free or registered.
-    let grow = guarded && complete && registry.is_some();
+    let grow = guarded && links.is_some() && registry.is_some();
     let registered = registry.unwrap_or_default();
     let gone = match &mut links {
-        Some(links) if complete => remove_gone_links(r, c, links, &mut out.errors),
+        Some(links) => remove_gone_links(r, c, links, &mut out.errors),
         _ => Default::default(),
     };
     let stuck: Vec<String> = gone.stuck.iter().map(|(name, _)| name.clone()).collect();
@@ -78,7 +77,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let mut new = vec![];
     let mut unknown = vec![];
     for n in &c.networks {
-        match iface_of(r, n, links.as_deref(), complete, &stuck) {
+        match iface_of(r, n, links.as_deref(), &stuck) {
             Ok(Iface::Owned) => owned.push(n),
             Ok(Iface::New) => new.push(n),
             Ok(Iface::Unknown) => unknown.push(n),
@@ -163,7 +162,14 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             .iter()
             .filter(|(_, exists, _)| *exists)
             .map(|(n, _, _)| *n);
-        for n in existing.chain(unknown.iter().copied()) {
+        // Without the links, only what is already registered is refreshed: who holds
+        // a name not registered yet is unknown.
+        let registered_unknown = unknown.iter().copied().filter(|n| {
+            registered
+                .iter()
+                .any(|(i, id)| *i == n.iface && *id == n.id)
+        });
+        for n in existing.chain(registered_unknown) {
             let script = match &within {
                 Some(within) => render_network(within, n),
                 None => render_network_cutoff(n.id),
@@ -174,6 +180,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
                 &mut out.errors,
             );
         }
+        warn_unknown(c, links.as_deref());
         return out;
     }
     // Also the ports of gone interfaces that would not go.
@@ -184,9 +191,15 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         .collect();
     free_ports(r, c, &holders, &mut out.errors);
 
-    let rules = c.within_guard(&held);
+    let within;
+    let rules = if held.is_empty() {
+        c
+    } else {
+        within = c.within_guard(&held);
+        &within
+    };
     for (n, exists, plan) in active {
-        let (key, errors) = network(r, &rules, n, keys, exists, plan, &held);
+        let (key, errors) = network(r, rules, n, keys, exists, plan, &held);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
         }
@@ -194,14 +207,20 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             .extend(errors.into_iter().map(|e| format!("{}: {e}", n.iface)));
     }
 
-    for link in links.iter().flatten() {
+    warn_unknown(c, links.as_deref());
+    out
+}
+
+/// `wg-*` interfaces that are neither wgate's nor a compiled network's name: their
+/// traffic is dropped; not ours to delete.
+fn warn_unknown(c: &Compiled, links: Option<&[Link]>) {
+    for link in links.into_iter().flatten() {
         let known = link.owner.is_some() || c.networks.iter().any(|n| n.iface == link.name);
         if link.name.starts_with("wg-") && !known {
             // Not ours to delete; its traffic is dropped (an unknown wg-*).
             tracing::warn!(link = %link.name, "unknown wg- interface left alone");
         }
     }
-    out
 }
 
 /// What of the compiled tenant space the kernel's `tenant_space` (the spoof guard's)
@@ -226,13 +245,12 @@ enum Iface {
     Unknown,
 }
 
-/// Decided once, from the links read (`complete` when they are all of them); `Err`
+/// Decided once, from the links read; `Err`
 /// is why it is left alone.
 fn iface_of(
     r: &dyn Runner,
     n: &CompiledNetwork,
     links: Option<&[Link]>,
-    complete: bool,
     stuck: &[String],
 ) -> Result<Iface, String> {
     let Some(links) = links else {
@@ -244,7 +262,6 @@ fn iface_of(
     match links.iter().find(|l| l.name == n.iface) {
         Some(l) if l.owner == Some(n.id) => Ok(Iface::Owned),
         Some(_) => Err(NOT_MADE.into()),
-        None if !complete => Ok(Iface::Unknown),
         None if link_exists(r, &n.iface) => {
             Err("the name is taken by a link that is not WireGuard; left alone".into())
         }

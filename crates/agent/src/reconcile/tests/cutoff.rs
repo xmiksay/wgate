@@ -103,7 +103,8 @@ fn without_any_list_of_links_every_network_fails_closed() {
     let dir = keys();
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
-        .fail("ip -j -d link show");
+        .fail("ip -j -d link show")
+        .answer("nft -j list map", &registry(&[("wg-n1", 1)]));
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("inventory: ")),
@@ -111,13 +112,14 @@ fn without_any_list_of_links_every_network_fails_closed() {
         out.errors
     );
     let log = fake.log();
-    // Nothing is touched on an interface whose mark is unknown; their rules go in
-    // with none of their peers' addresses.
+    // Nothing is touched on an interface whose mark is unknown; registered networks'
+    // rules go in with none of their peers' addresses, and no name is newly registered.
     assert!(
         !log.iter()
             .any(|c| c.starts_with("wg set") || c.starts_with("ip link"))
     );
     assert!(!fake.fragments_of(1)[0].contains("10.50.0.2"));
+    assert!(fake.fragments_of(2).is_empty());
 }
 
 #[test]

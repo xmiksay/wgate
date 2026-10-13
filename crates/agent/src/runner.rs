@@ -87,10 +87,15 @@ impl Runner for System {
         };
         let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
         let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
-        let Some(status) = child.wait_timeout(self.timeout).context("wait")? else {
+        let waited = child.wait_timeout(self.timeout);
+        let Ok(Some(status)) = waited else {
+            // Timed out, or the wait itself failed: no tool is left running.
             let _ = child.kill();
             let _ = child.wait();
-            bail!("{} timed out after {:?}", argv.join(" "), self.timeout);
+            match waited {
+                Err(e) => return Err(e).context("wait"),
+                _ => bail!("{} timed out after {:?}", argv.join(" "), self.timeout),
+            }
         };
         let out = std::process::Output {
             status,
