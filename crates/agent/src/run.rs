@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use ipnet::Ipv4Net;
 use sea_orm::{Database, DatabaseConnection};
 use tokio::time::MissedTickBehavior;
 use wgate_core::{Id, compile};
 use wgate_db::revision::{self, ListenError, Listener};
 
 use crate::config::Config;
-use crate::reconcile::reconcile;
+use crate::reconcile::{reconcile, reconcile_after};
 use crate::runner::Runner;
 use crate::state;
 
@@ -63,6 +64,8 @@ pub struct Memory {
     pub saved: Option<i64>,
     /// Whether the database's state has been applied since the start.
     pub applied: bool,
+    /// What the last pass left held.
+    pub held: Vec<Ipv4Net>,
 }
 
 /// Connects, retrying on the timer. Meanwhile (a hub that boots during a database
@@ -192,9 +195,13 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
     );
 
     let keys_dir = config.keys_dir.clone();
-    let outcome = tokio::task::spawn_blocking(move || reconcile(&*runner, &compiled, &keys_dir))
-        .await
-        .context("reconcile task")?;
+    let previously_held = std::mem::take(&mut memory.held);
+    let outcome = tokio::task::spawn_blocking(move || {
+        reconcile_after(&*runner, &compiled, &keys_dir, &previously_held)
+    })
+    .await
+    .context("reconcile task")?;
+    memory.held = outcome.held;
     problems.extend(outcome.errors);
     for (network, key) in outcome.hub_keys {
         if memory.published.get(&network) == Some(&key) {

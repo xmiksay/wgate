@@ -8,7 +8,8 @@ use std::net::Ipv4Addr;
 
 use common::Netns;
 use wgate_core::{
-    DesiredState, compile, render_base, render_network_cutoff, render_network_removal, render_snat,
+    DesiredState, compile, render_base, render_network_cutoff, render_network_removal,
+    render_network_unmap, render_snat,
 };
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
@@ -48,6 +49,17 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
     ns.exec(&["nft", "-f", "-"], Some(golden));
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
     assert!(listed.contains("10.50.1.2 . "), "{listed}");
+
+    // A stale name of a live network loses its entries; the network keeps its chains.
+    ns.exec(
+        &["nft", "-f", "-"],
+        Some(&render_network_unmap(1, "wg-ghost")),
+    );
+    let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
+    assert!(
+        listed.contains("chain n1_from") && !listed.contains("wg-ghost"),
+        "{listed}"
+    );
 
     for (id, iface) in [(1, "wg-nexial"), (2, "wg-nexial-dev"), (3, "wg-krcmar")] {
         // Twice: a removal applies whatever is already gone.

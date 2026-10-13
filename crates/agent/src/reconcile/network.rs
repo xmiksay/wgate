@@ -39,7 +39,7 @@ pub(super) fn network(
         if let Err(e) = made {
             // Not made: a registration left from before must not stay on the name.
             let mut errors = vec![format!("{e:#}")];
-            unregister(r, &n.iface, n.id, &mut errors);
+            unregister(r, c, &n.iface, n.id, &mut errors);
             return (None, errors);
         }
     }

@@ -2,7 +2,9 @@
 //! compiled on them, and registrations (`from_net`) of such networks.
 
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, Id, render_network_cutoff, render_network_removal};
+use wgate_core::{
+    Compiled, Id, render_network_cutoff, render_network_removal, render_network_unmap,
+};
 
 use super::steps::{Link, SCRATCH, disarm, nft, run};
 use crate::runner::Runner;
@@ -71,7 +73,22 @@ pub(super) fn remove_gone_links(
 /// Takes `(iface, id)` out of the table: its map entries, chains and sets. Without
 /// the entries the base drops the interface's traffic. One that still fails has its
 /// chains cut off to `drop`, so its old rights never outlive it.
-pub(super) fn unregister(r: &dyn Runner, iface: &str, id: Id, errors: &mut Vec<String>) {
+pub(super) fn unregister(
+    r: &dyn Runner,
+    c: &Compiled,
+    iface: &str,
+    id: Id,
+    errors: &mut Vec<String>,
+) {
+    // A stale name of a network that lives on another interface: its chains are that
+    // network's, still in use; only the name's entries go.
+    if c.networks.iter().any(|n| n.id == id && n.iface != iface) {
+        let result = nft(r, &render_network_unmap(id, iface));
+        if let Err(e) = result {
+            errors.push(format!("{iface} (unmapping network {id}): {e:#}"));
+        }
+        return;
+    }
     match nft(r, &render_network_removal(id, iface)) {
         Ok(()) => tracing::info!(%iface, network = id, "unregistered"),
         Err(e) => {

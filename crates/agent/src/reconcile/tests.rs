@@ -84,6 +84,10 @@ impl Runner for Fake {
             None if cmd.starts_with("wg show") => Ok(String::new()),
             None if cmd.starts_with("ip -j") => Ok("[]".into()),
             None if cmd.starts_with("nft -j list map") => Ok(r#"{"nftables": []}"#.into()),
+            // The hook chains still hold the spoof guard unless answered otherwise.
+            None if cmd.starts_with("nft -j list chain inet wgate") => {
+                Ok(r#"{"nftables": [{"rule": {"expr": "@tenant_space"}}]}"#.into())
+            }
             // A network's last rules: empty unless answered (tenant_space is not).
             None if cmd.starts_with("nft -j list set inet wgate n") => {
                 Ok(r#"{"nftables": []}"#.into())

@@ -114,7 +114,7 @@ under sudo).
   2. apply the base, then SNAT as a transaction of its own; read the inventory
      (`ip -j link show type wireguard`, `nft -j list map … from_net`). A failed base
      still counts as guarding when the kernel's `tenant_space` covers the compiled
-     one. Otherwise, or without the full inventory
+     one and the prerouting and output rules that use it are there. Otherwise, or without the full inventory
      (links and registry), nothing grows (nothing made, no peer added), but peer and
      route revocations apply, and then the fragments, cut down to what the stale
      guard covers and to what is not held (`Compiled::within_guard`); with the
@@ -126,8 +126,9 @@ under sudo).
      merely invalid this pass: that one keeps its interface, unregistered), or an
      unmarked `wgtmp-*` scratch link, is deleted; one that would not go loses its
      peers, addresses and LAN routes, frees a wanted port and holds its name until
-     it goes. Registrations stay only for a network compiled on that name whose own
-     interface is there or about to be made; any other is removed (idempotently;
+     it goes. Map elements that are not wgate's are cleared, map by map. Registrations stay
+     only for a network compiled on that name whose own interface is there or about
+     to be made (a stale name of a network live elsewhere loses only its entries); any other is removed (idempotently;
      one that still fails has its chains cut off to `drop`), so nothing on that
      name keeps a network's rights. The list of links falls back to
      every link's details (`ip -j -d link show`); without either, the kernel is left

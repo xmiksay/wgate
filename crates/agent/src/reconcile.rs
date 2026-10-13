@@ -35,6 +35,9 @@ pub struct Outcome {
     /// The hub public key of every network whose key is in place.
     pub hub_keys: Vec<(Id, String)>,
     pub errors: Vec<String>,
+    /// What stayed held this pass (a failed release, what an unreadable or invalid
+    /// network may hold): the next pass still keeps it from others while it cannot see.
+    pub held: Vec<Ipv4Net>,
 }
 
 /// What one network's peers and LAN routes need, read once from the kernel.
@@ -47,6 +50,16 @@ struct Plan {
 const NOT_MADE: &str = "an interface wgate did not make holds the name; left alone";
 
 pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
+    reconcile_after(r, c, keys_dir, &[])
+}
+
+/// A reconcile that knows what the previous pass left held.
+pub fn reconcile_after(
+    r: &dyn Runner,
+    c: &Compiled,
+    keys_dir: &Path,
+    previously_held: &[Ipv4Net],
+) -> Outcome {
     let mut out = Outcome::default();
     let keys = &Keys::new(r, keys_dir);
     let base = nft(r, &render_base(c)).context("base");
@@ -69,12 +82,10 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         networks: registered,
         stray,
     } = registry.unwrap_or_default();
-    // An element that is not wgate's on a compiled network's name would keep that
-    // network's own entries out: it goes.
-    for (map, iface) in stray
-        .iter()
-        .filter(|(_, i)| c.networks.iter().any(|n| n.iface == *i))
-    {
+    // An element that is not wgate's has no place in wgate's table: on a network's
+    // name it would keep that network's own entries out, on any other it would let an
+    // interface past the dispatch unchecked.
+    for (map, iface) in &stray {
         let result = clear_stray(r, map, iface);
         note(
             result.with_context(|| format!("{iface}: element not wgate's")),
@@ -162,6 +173,11 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             &mut out.errors,
         );
     }
+    // An unreadable network may still hold what an earlier pass could not release (and
+    // so left out of its rules): that stays taken too.
+    if !unreadable.is_empty() {
+        taken.extend_from_slice(previously_held);
+    }
     // With what something may hold unknown (an unreadable network whose last rules
     // cannot be read either, a stuck interface whose leftovers cannot), nothing is
     // known to be free: nothing grows.
@@ -187,7 +203,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         let made = new.iter().filter(|_| grow);
         let kept = owned.iter().chain(&unknown).chain(made).any(pair);
         if !kept {
-            unregister(r, iface, *id, &mut out.errors);
+            unregister(r, c, iface, *id, &mut out.errors);
         }
     }
 
@@ -196,7 +212,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         // covers. With the guard unknown, the kernel is left as it is: the VPN keeps
         // running and revocations wait for a pass that can see.
         if let Some(unguarded) = unguarded {
-            let within = c.within_guard(&[unguarded, held].concat());
+            let within = c.within_guard(&[unguarded.as_slice(), &held].concat());
             for (n, _, _) in &active {
                 let result = nft(r, &render_network(&within, n));
                 if let Err(e) = result {
@@ -211,14 +227,21 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             }
         }
         warn_unknown(c, links.as_deref());
+        out.held = [held, taken].concat();
         return out;
     }
     // Also the ports of gone interfaces that would not go.
+    // An invalid network's kept interface gives up a wanted port too.
+    let invalid_links = links
+        .iter()
+        .flatten()
+        .filter(|l| l.owner.is_some_and(|id| c.invalid_networks.contains(&id)));
     let holders: Vec<&str> = active
         .iter()
         .filter(|(_, exists, _)| *exists)
         .map(|(n, _, _)| n.iface.as_str())
         .chain(stuck.iter().map(String::as_str))
+        .chain(invalid_links.map(|l| l.name.as_str()))
         .collect();
     free_ports(r, c, &holders, &mut out.errors);
 
@@ -235,6 +258,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     }
 
     warn_unknown(c, links.as_deref());
+    out.held = waits;
     out
 }
 
@@ -259,6 +283,17 @@ fn registered_addresses(r: &dyn Runner, id: Id) -> anyhow::Result<Vec<Ipv4Net>> 
 /// What of the compiled tenant space the kernel's `tenant_space` (the spoof guard's)
 /// leaves out; `None` when it cannot be read.
 fn unguarded_space(r: &dyn Runner, c: &Compiled) -> Option<Vec<Ipv4Net>> {
+    // The rules that use the set must be there too, not only the set.
+    let guarding = |chain: &str| {
+        r.run(
+            &["nft", "-j", "list", "chain", "inet", "wgate", chain],
+            None,
+        )
+        .is_ok_and(|json| json.contains("tenant_space"))
+    };
+    if !guarding("prerouting") || !guarding("output") {
+        return None;
+    }
     set_ranges(r, "tenant_space")
         .ok()
         .map(|kernel| subtract_nets(&c.tenant_space, &kernel))

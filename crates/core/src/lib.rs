@@ -21,8 +21,8 @@ pub use net::{
     overlaps_any,
 };
 pub use nft::{
-    network_of_chain, render_all, render_base, render_network, render_network_cutoff,
-    render_network_removal, render_snat,
+    DISPATCH, network_of_chain, render_all, render_base, render_network, render_network_cutoff,
+    render_network_removal, render_network_unmap, render_snat,
 };
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, merge_nets, subtract_nets};
 pub use rule::{PortRange, Proto, Rule, RuleError, Service};
