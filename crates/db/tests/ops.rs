@@ -264,3 +264,40 @@ async fn nobody_can_mute_or_rewind_the_revision() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn the_agent_records_hub_keys_and_its_status() {
+    let pg = pg("CREATE ROLE wgate_agent LOGIN PASSWORD 'agent'").await;
+    ok(&pg.db, BASE).await;
+    let agent = Database::connect(&as_agent(&pg.url))
+        .await
+        .expect("connect as agent");
+    wgate_db::agent::set_hub_key(&agent, 1, "pk1")
+        .await
+        .expect("hub key");
+    wgate_db::agent::set_hub_key(&agent, 1, "pk1")
+        .await
+        .expect("again");
+    wgate_db::agent::set_hub_key(&agent, 1, "pk2")
+        .await
+        .expect("rotated");
+    wgate_db::agent::record_status(&agent, 3, Some("wg-x: boom"))
+        .await
+        .expect("status");
+    wgate_db::agent::record_status(&agent, 4, None)
+        .await
+        .expect("status again");
+    let row = pg
+        .db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT k.public_key, s.applied_revision, s.error IS NULL AS clean
+             FROM hub_key k, agent_status s",
+        ))
+        .await
+        .expect("query")
+        .expect("row");
+    assert_eq!(row.try_get::<String>("", "public_key").expect("pk"), "pk2");
+    assert_eq!(row.try_get::<i64>("", "applied_revision").expect("rev"), 4);
+    assert!(row.try_get::<bool>("", "clean").expect("clean"));
+}

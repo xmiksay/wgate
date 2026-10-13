@@ -14,7 +14,14 @@ enum Command {
     /// Portal: REST API + UI (unprivileged)
     Server,
     /// Reconciler: wg interfaces, peers and `table inet wgate` (CAP_NET_ADMIN)
-    Agent,
+    Agent {
+        #[arg(
+            long,
+            env = "WGATE_AGENT_CONFIG",
+            default_value = "/etc/wgate/agent.toml"
+        )]
+        config: std::path::PathBuf,
+    },
     /// Apply database migrations (as the owner role, before the units restart)
     Migrate {
         /// Postgres URL; direct to Postgres, not through pgbouncer
@@ -34,7 +41,10 @@ async fn main() -> anyhow::Result<()> {
 
     match Cli::parse().command {
         Command::Server => anyhow::bail!("`wgate server` is not implemented yet"),
-        Command::Agent => anyhow::bail!("`wgate agent` is not implemented yet"),
+        Command::Agent { config } => {
+            let config = wgate_agent::Config::load(&config)?;
+            wgate_agent::run(config, wgate_agent::System::default()).await
+        }
         Command::Migrate { database_url } => migrate(&database_url).await,
     }
 }

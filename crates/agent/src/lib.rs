@@ -1,1 +1,16 @@
-//! Privileged reconciler: wg interfaces/peers over netlink and `table inet wgate` via `nft -f`.
+//! Privileged reconciler: wg interfaces/peers and `table inet wgate`, network by
+//! network, from the desired state in the database.
+
+pub mod config;
+mod keys;
+mod nftmap;
+mod reconcile;
+mod routes;
+pub mod run;
+pub mod runner;
+mod wg;
+
+pub use config::Config;
+pub use reconcile::{Outcome, reconcile};
+pub use run::{reconcile_once, run};
+pub use runner::{Runner, System};

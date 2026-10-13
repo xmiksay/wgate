@@ -1,0 +1,23 @@
+# Example unit; ansible (role wgate) installs the real one.
+[Unit]
+Description=wgate agent: WireGuard interfaces, peers and table inet wgate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/wgate agent --config /etc/wgate/agent.toml
+Restart=always
+RestartSec=5
+# Root, but only CAP_NET_ADMIN: enough for netlink and nft, nothing else.
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/wgate
+RestrictAddressFamilies=AF_NETLINK AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
