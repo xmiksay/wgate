@@ -7,4 +7,4 @@ pub mod migration;
 pub mod revision;
 
 pub use load::{Infra, Loaded, desired_state};
-pub use migration::Migrator;
+pub use migration::{migrate, migrate_url};

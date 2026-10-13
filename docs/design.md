@@ -109,8 +109,8 @@ user          id, tenant_id NULL (= global admin), email,
               oidc_sub NULL (bound on first login),
               role (global_admin | tenant_admin | user), disabled_at
 device        id, user_id, name
-peer          id, device_id, network_id, public_key (unique),
-              ip (unique, inside the network, not the hub address),
+peer          id, device_id, network_id, public_key (unique among active peers),
+              ip (unique among active peers, inside the network, not the hub address),
               created_at, revoked_at
 peer_route    id, peer_id, cidr                   # a router's LAN: inside routed_space,
                                                   # clear of pool/reserved, globally disjoint;
@@ -263,7 +263,7 @@ table inet wgate {
 
 | Action | Agent does |
 |---|---|
-| Revoke a peer | `wg set wg-<slug> peer <pk> remove` + remove its tuples and routes (the server deletes its `peer_route` rows, freeing the LANs) |
+| Revoke a peer | `wg set wg-<slug> peer <pk> remove` + remove its tuples and routes (a DB trigger deletes its `peer_route` rows, freeing the LANs; a revoked peer cannot get new ones) |
 | Remove a device / disable a user | the same for all their peers |
 | Change rules, ceilings, federations or inbound grants | recompile the sets (atomic replace) |
 | Disable a network | delete the interface `wg-<slug>` + its tuples |

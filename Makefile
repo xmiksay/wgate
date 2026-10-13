@@ -8,6 +8,10 @@ export CARGO_BUILD_JOBS
 NVM = export NVM_DIR="$$HOME/.nvm"; [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; nvm use >/dev/null 2>&1 || true;
 MUSL = x86_64-unknown-linux-musl
 
+# Local settings (WGATE_DATABASE_URL, …); see .env.example.
+-include .env
+export
+
 .PHONY: help
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

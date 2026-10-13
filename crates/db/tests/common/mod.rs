@@ -2,11 +2,9 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
-use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-use wgate_db::Migrator;
 
 /// A throwaway Postgres 17 (the production version), already migrated. Hold the
 /// container: dropping it stops the database.
@@ -28,7 +26,7 @@ pub async fn pg(before_migrate: &str) -> Pg {
     if !before_migrate.is_empty() {
         db.execute_unprepared(before_migrate).await.expect("setup");
     }
-    Migrator::up(&db, None).await.expect("migrate");
+    wgate_db::migrate(&db).await.expect("migrate");
     Pg {
         _container: container,
         url,

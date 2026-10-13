@@ -1,6 +1,5 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use sea_orm_migration::MigratorTrait;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -41,13 +40,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn migrate(database_url: &str) -> anyhow::Result<()> {
-    let db = sea_orm::Database::connect(database_url)
-        .await
-        .context("connect to the database")?;
-    wgate_db::Migrator::up(&db, None)
+    let applied = wgate_db::migrate_url(database_url)
         .await
         .context("apply migrations")?;
-    tracing::info!("migrations applied");
+    tracing::info!(?applied, "migrations up to date");
     Ok(())
 }
 
