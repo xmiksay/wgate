@@ -29,7 +29,8 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   (desired state → per-peer sets; `compile/valid.rs` decides what fails closed), nft
   + client-config rendering
 - `crates/db` — SeaORM entities, the SQL migration (`migration/m0001_init.sql`: exclusion
-  constraints own address ranges), revision + NOTIFY, `desired_state()` loader; shared by
+  constraints own address ranges; triggers bump the revision + NOTIFY), `desired_state()`
+  loader; shared by
   server and agent
 - `crates/server` — Axum + OIDC; unprivileged
 - `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener

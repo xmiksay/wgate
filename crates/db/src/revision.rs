@@ -1,30 +1,10 @@
-//! The state revision: bumped by every write transaction, which also NOTIFYs the
-//! agent. Postgres delivers a NOTIFY only on commit, so a rolled-back write never
-//! wakes the agent.
+//! The state revision. Triggers bump it and NOTIFY the agent on every statement that
+//! changes the desired state (see the migration), so writers need not remember to.
 
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement};
 
 /// The channel the agent LISTENs on; the payload is the new revision.
 pub const CHANNEL: &str = "wgate_changed";
-
-/// Call as part of every write transaction.
-pub async fn bump<C: ConnectionTrait>(txn: &C) -> Result<i64, DbErr> {
-    let row = txn
-        .query_one_raw(Statement::from_string(
-            DbBackend::Postgres,
-            "UPDATE state_revision SET revision = revision + 1 RETURNING revision",
-        ))
-        .await?
-        .ok_or_else(|| DbErr::RecordNotFound("state_revision".into()))?;
-    let revision: i64 = row.try_get("", "revision")?;
-    txn.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "SELECT pg_notify($1, $2)",
-        [CHANNEL.into(), revision.to_string().into()],
-    ))
-    .await?;
-    Ok(revision)
-}
 
 pub async fn current<C: ConnectionTrait>(db: &C) -> Result<i64, DbErr> {
     let row = db

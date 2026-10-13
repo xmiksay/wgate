@@ -17,7 +17,7 @@ CREATE TABLE tenant (
 
 -- Pool blocks the global admin assigned. Being inside the pool is checked by the
 -- API and by compile (the pool is configuration, not data).
--- Ownership columns never change after insert: the checks below read them from
+-- Ownership columns never change after insert (rewriting the same value is fine): the checks below read them from
 -- other rows, and a check against immutable data cannot race (unlike one that reads
 -- data a concurrent transaction may still change under the caller's snapshot).
 -- Moving something means delete + insert.
@@ -36,7 +36,8 @@ CREATE TABLE tenant_block (
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
 CREATE TRIGGER tenant_block_immutable BEFORE UPDATE OF tenant_id, cidr ON tenant_block
-    FOR EACH ROW EXECUTE FUNCTION immutable('tenant_id, cidr');
+    FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id OR OLD.cidr IS DISTINCT FROM NEW.cidr)
+    EXECUTE FUNCTION immutable('tenant_id, cidr');
 
 -- A network lies inside one block of its own tenant. The (block, tenant) foreign key
 -- keeps the block from disappearing under it at any isolation level (a tenant delete
@@ -57,7 +58,8 @@ CREATE TABLE network (
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
 CREATE TRIGGER network_immutable BEFORE UPDATE OF tenant_id, block_id, cidr ON network
-    FOR EACH ROW EXECUTE FUNCTION immutable('tenant_id, block_id, cidr');
+    FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id OR OLD.block_id IS DISTINCT FROM NEW.block_id OR OLD.cidr IS DISTINCT FROM NEW.cidr)
+    EXECUTE FUNCTION immutable('tenant_id, block_id, cidr');
 
 CREATE FUNCTION network_in_block() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -95,9 +97,11 @@ CREATE TABLE app_user (
 -- One account per email per tenant (NULL tenant = global admins), and a subject binds
 -- to one account per provider.
 CREATE TRIGGER app_user_immutable BEFORE UPDATE OF tenant_id ON app_user
-    FOR EACH ROW EXECUTE FUNCTION immutable('tenant_id');
-CREATE UNIQUE INDEX app_user_email ON app_user (coalesce(tenant_id, 0), lower(email));
-CREATE UNIQUE INDEX app_user_sub ON app_user (coalesce(tenant_id, 0), oidc_sub);
+    FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)
+    EXECUTE FUNCTION immutable('tenant_id');
+CREATE UNIQUE INDEX app_user_email ON app_user (tenant_id, lower(email)) NULLS NOT DISTINCT;
+CREATE UNIQUE INDEX app_user_sub ON app_user (tenant_id, oidc_sub) NULLS NOT DISTINCT
+    WHERE oidc_sub IS NOT NULL;
 
 CREATE TABLE device (
     id         bigserial PRIMARY KEY,
@@ -106,7 +110,8 @@ CREATE TABLE device (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TRIGGER device_immutable BEFORE UPDATE OF user_id ON device
-    FOR EACH ROW EXECUTE FUNCTION immutable('user_id');
+    FOR EACH ROW WHEN (OLD.user_id IS DISTINCT FROM NEW.user_id)
+    EXECUTE FUNCTION immutable('user_id');
 
 CREATE TABLE peer (
     id         bigserial PRIMARY KEY,
@@ -118,7 +123,8 @@ CREATE TABLE peer (
     revoked_at timestamptz
 );
 CREATE TRIGGER peer_immutable BEFORE UPDATE OF device_id, network_id, ip, public_key ON peer
-    FOR EACH ROW EXECUTE FUNCTION immutable('device_id, network_id, ip, public_key');
+    FOR EACH ROW WHEN (OLD.device_id IS DISTINCT FROM NEW.device_id OR OLD.network_id IS DISTINCT FROM NEW.network_id OR OLD.ip IS DISTINCT FROM NEW.ip OR OLD.public_key IS DISTINCT FROM NEW.public_key)
+    EXECUTE FUNCTION immutable('device_id, network_id, ip, public_key');
 
 -- A peer address is a host of its network other than the hub address (the first
 -- host), and only a global admin's device may join another tenant's network. Both
@@ -147,6 +153,19 @@ BEGIN
 END
 $$;
 CREATE TRIGGER peer_fits BEFORE INSERT ON peer FOR EACH ROW EXECUTE FUNCTION peer_fits();
+
+-- Revoking is final: un-revoking would bring back an old key without a new grant
+-- (its IP, key and LANs may already be someone else's). Disabling is the reversible
+-- switch.
+CREATE FUNCTION revocation_is_final() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'peer % is revoked; add a new peer instead', OLD.id
+        USING ERRCODE = 'check_violation';
+END
+$$;
+CREATE TRIGGER revocation_is_final BEFORE UPDATE OF revoked_at ON peer
+    FOR EACH ROW WHEN (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at)
+    EXECUTE FUNCTION revocation_is_final();
 
 -- An address and a key are free again once their peer is revoked; a device is a
 -- member of a network at most once.
@@ -291,12 +310,37 @@ CREATE INDEX ON federation (to_network_id);
 CREATE INDEX ON inbound (network_id);
 CREATE INDEX ON audit (actor_user_id);
 
--- Bumped by every write transaction, which also NOTIFYs wgate_changed with it.
+-- Every statement that changes the desired state bumps the revision and NOTIFYs the
+-- agent, from a trigger, so no write path can forget it. Postgres delivers a NOTIFY
+-- only on commit, so a rolled-back write never wakes the agent. The agent's own
+-- tables (hub_key, agent_status) and audit do not count.
 CREATE TABLE state_revision (
     id       boolean PRIMARY KEY DEFAULT true CHECK (id),
     revision bigint NOT NULL
 );
 INSERT INTO state_revision (revision) VALUES (0);
+
+CREATE FUNCTION state_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    rev bigint;
+BEGIN
+    UPDATE state_revision SET revision = revision + 1 RETURNING revision INTO rev;
+    PERFORM pg_notify('wgate_changed', rev::text);
+    RETURN NULL;
+END
+$$;
+DO $$
+DECLARE
+    t text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['tenant', 'tenant_block', 'network', 'app_user', 'device', 'peer',
+                             'peer_route', 'ceiling', 'rule', 'federation', 'inbound'] LOOP
+        EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON %I
+                        FOR EACH STATEMENT EXECUTE FUNCTION state_changed()',
+                       t || '_changed', t);
+    END LOOP;
+END
+$$;
 
 -- Written by the agent: what it last applied.
 CREATE TABLE agent_status (

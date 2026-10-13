@@ -25,7 +25,7 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
     .await?;
     // A schema newer than this binary (e.g. after a rollback) must stop the rollout,
     // not run with code that does not know it.
-    let known: Vec<&str> = MIGRATIONS.iter().map(|(name, _)| *name).collect();
+    let mut done = std::collections::HashSet::new();
     for row in txn
         .query_all_raw(sea_orm::Statement::from_string(
             sea_orm::DbBackend::Postgres,
@@ -34,23 +34,16 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
         .await?
     {
         let name: String = row.try_get("", "name")?;
-        if !known.contains(&name.as_str()) {
+        if !MIGRATIONS.iter().any(|(known, _)| *known == name) {
             return Err(DbErr::Migration(format!(
                 "database has migration {name}, which this wgate does not know (newer schema?)"
             )));
         }
+        done.insert(name);
     }
     let mut applied = Vec::new();
     for (name, sql) in MIGRATIONS {
-        let done = txn
-            .query_one_raw(sea_orm::Statement::from_sql_and_values(
-                sea_orm::DbBackend::Postgres,
-                "SELECT 1 FROM wgate_migration WHERE name = $1",
-                [(*name).into()],
-            ))
-            .await?
-            .is_some();
-        if !done {
+        if !done.contains(*name) {
             txn.execute_unprepared(sql).await?;
             txn.execute_raw(sea_orm::Statement::from_sql_and_values(
                 sea_orm::DbBackend::Postgres,
