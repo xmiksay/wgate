@@ -9,6 +9,8 @@ pub struct Model {
     pub device_id: i64,
     pub network_id: i64,
     pub public_key: String,
+    /// `server` or `pasted`.
+    pub key_source: String,
     #[sea_orm(column_type = "Inet")]
     pub ip: IpNetwork,
     pub created_at: DateTimeWithTimeZone,

@@ -4,6 +4,7 @@
 mod common;
 
 use common::{BASE, KEY, ok, pg, refused};
+use sea_orm::ConnectionTrait;
 
 #[tokio::test]
 async fn ranges_are_exclusive() {
@@ -138,15 +139,23 @@ async fn networks_stay_inside_their_tenants_blocks() {
     refused(&pg.db, &network(1, 2, "10.50.1.0/28")).await;
     refused(&pg.db, &network(1, 1, "10.50.9.0/28")).await;
     ok(&pg.db, &network(2, 2, "10.50.1.0/28")).await;
-    // A block cannot be removed under its networks, and blocks never change.
-    refused(&pg.db, "DELETE FROM tenant_block WHERE tenant_id = 2").await;
+    // Blocks never change; removing one takes its networks along.
     refused(
         &pg.db,
         "UPDATE tenant_block SET cidr = '10.50.1.128/25' WHERE tenant_id = 2",
     )
     .await;
-    ok(&pg.db, "DELETE FROM network WHERE tenant_id = 2").await;
     ok(&pg.db, "DELETE FROM tenant_block WHERE tenant_id = 2").await;
+    let left = pg
+        .db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT count(*) AS n FROM network WHERE tenant_id = 2",
+        ))
+        .await
+        .expect("query")
+        .expect("row");
+    assert_eq!(left.try_get::<i64>("", "n").expect("n"), 0);
 }
 
 #[tokio::test]
@@ -237,4 +246,51 @@ async fn routed_lans_and_tenant_blocks_never_overlap() {
         "INSERT INTO tenant_block (id, tenant_id, cidr) VALUES (9, 1, '192.168.0.0/16')",
     )
     .await;
+}
+
+#[tokio::test]
+async fn only_an_active_server_key_rotates_and_dns_takes_hosts() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    let other = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
+    ok(
+        &pg.db,
+        &format!(
+            "INSERT INTO device (id, user_id, name) VALUES (2, 1, 'phone');
+             INSERT INTO peer (id, device_id, network_id, public_key, key_source, ip)
+                 VALUES (1, 1, 1, '{KEY}', 'server', '10.50.0.2/32'),
+                        (2, 2, 1, '{other}', 'pasted', '10.50.0.3/32')"
+        ),
+    )
+    .await;
+    let rotated = "000000000000000000000000000000000000000001A=";
+    ok(
+        &pg.db,
+        &format!("UPDATE peer SET public_key = '{rotated}' WHERE id = 1"),
+    )
+    .await;
+    // A pasted key is the user's: never rotated; nor is a revoked peer's, nor the source.
+    refused(
+        &pg.db,
+        &format!("UPDATE peer SET public_key = '{rotated}' WHERE id = 2"),
+    )
+    .await;
+    refused(&pg.db, "UPDATE peer SET key_source = 'server' WHERE id = 2").await;
+    ok(&pg.db, "UPDATE peer SET revoked_at = now() WHERE id = 1").await;
+    refused(
+        &pg.db,
+        &format!("UPDATE peer SET public_key = '{KEY}' WHERE id = 1"),
+    )
+    .await;
+    ok(
+        &pg.db,
+        "UPDATE network SET dns = '{10.50.0.1, 1.1.1.1}' WHERE id = 1",
+    )
+    .await;
+    refused(
+        &pg.db,
+        "UPDATE network SET dns = '{10.50.0.0/24}' WHERE id = 1",
+    )
+    .await;
+    refused(&pg.db, "UPDATE network SET dns = '{::1}' WHERE id = 1").await;
 }

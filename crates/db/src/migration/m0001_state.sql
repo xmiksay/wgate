@@ -85,7 +85,7 @@ BEGIN
         ['network', 'yes', 'port, mesh, disabled_at'],
         ['app_user', 'no', 'disabled_at'],
         ['device', 'no', ''],
-        ['peer', 'yes', 'revoked_at'],
+        ['peer', 'yes', 'revoked_at, public_key'],
         ['peer_route', 'yes', 'peer_id, active, cidr'],
         ['ceiling', 'yes', 'tenant_id, proto, dst, port_from, port_to'],
         ['rule', 'yes', 'tenant_id, network_id, proto, port_from, port_to, dst, target_network_id'],
