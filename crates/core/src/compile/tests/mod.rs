@@ -43,6 +43,8 @@ pub(super) fn state() -> DesiredState {
     a.inbound = rule_set(&["tcp 10.244.0.0/16 8080"]);
     DesiredState {
         pool: vec![net("10.50.0.0/16")],
+        snat_source: ip("172.19.9.10"),
+        node_cidrs: vec![net("172.19.9.0/24")],
         routed_space: vec![net("10.0.0.0/8"), net("192.168.0.0/16")],
         reserved: vec![],
         tenants: vec![

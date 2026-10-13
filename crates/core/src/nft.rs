@@ -1,26 +1,12 @@
 //! Rendering of `table inet wgate` (design.md → Enforcement on the hub).
 
 use std::fmt::Write;
-use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
 use crate::compile::{Compiled, CompiledPeer};
 use crate::rights::{AddrRange, RuleSet, subtract_nets};
 use crate::rule::Service;
-
-#[derive(Clone, Debug)]
-pub struct NftState {
-    /// Hub address peers are SNATed to towards `node_cidrs`.
-    pub snat_source: Ipv4Addr,
-    /// Networks whose hosts have no route back to tenant space.
-    pub node_cidrs: Vec<Ipv4Net>,
-    /// One [`crate::compile`] run: its peers (a missing peer has no access) and
-    /// tenant space belong together, and its peers' addresses are disjoint, which
-    /// nft requires (it rejects overlapping elements, and with them the whole
-    /// transaction).
-    pub compiled: Compiled,
-}
 
 /// Set elements, keyed `peer . addr . proto . port` (outbound) and
 /// `addr . peer . proto . port` (inbound), so a packet's
@@ -88,17 +74,17 @@ fn push(quads: &mut Vec<String>, pairs: &mut Vec<String>, service: Service, [s, 
 /// A complete `nft -f` script. It creates the table if missing, then deletes and
 /// redefines it, so applying it is one atomic transaction that replaces the whole
 /// table whether or not it existed.
-pub fn render_nft(state: &NftState) -> String {
-    let mut peers: Vec<&CompiledPeer> = state.compiled.peers.iter().collect();
+pub fn render_nft(compiled: &Compiled) -> String {
+    let mut peers: Vec<&CompiledPeer> = compiled.peers.iter().collect();
     peers.sort_by_key(|p| p.ip);
     let mut sets = Sets::default();
     for p in peers {
         sets.add(p);
     }
-    let tenant_space = &state.compiled.tenant_space;
+    let tenant_space = &compiled.tenant_space;
 
     // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
-    let node_cidrs = subtract_nets(&state.node_cidrs, tenant_space);
+    let node_cidrs = subtract_nets(&compiled.node_cidrs, tenant_space);
     let snat = if node_cidrs.is_empty() {
         String::new()
     } else {
@@ -106,7 +92,7 @@ pub fn render_nft(state: &NftState) -> String {
         format!(
             "\t\tip saddr @peer_addrs ip daddr {{ {} }} snat ip to {}\n",
             nodes.join(", "),
-            state.snat_source
+            compiled.snat_source
         )
     };
     let quad = "ipv4_addr . ipv4_addr . inet_proto . inet_service";
@@ -141,7 +127,7 @@ pub fn render_nft(state: &NftState) -> String {
     // for a tracked flow pass unchecked. Untracked or invalid packets hit the drops.
     let fwd = "ip saddr . ip daddr . meta l4proto . th dport";
     let rev = "ip daddr . ip saddr . meta l4proto . th sport";
-    let script = format!(
+    format!(
         "table inet wgate {{}}
 delete table inet wgate
 
@@ -221,8 +207,7 @@ table inet wgate {{
 {snat}\t}}
 }}
 "
-    );
-    script
+    )
 }
 
 fn set(name: &str, ty: &str, elements: &[String]) -> String {

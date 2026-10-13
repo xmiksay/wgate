@@ -37,8 +37,8 @@ under sudo).
     over the pool or `reserved` infrastructure, or overlapping another routed subnet
   - every conflict (tenant blocks, network ranges and slugs, peer addresses): the
     lowest id keeps it, only the newcomer fails closed
-- `compile(&DesiredState) -> Compiled { peers, skipped, dropped_routes, tenant_space }`:
-  per peer
+- `compile(&DesiredState) -> Compiled { peers, invalid_networks, skipped,
+  dropped_routes, tenant_space, snat_source, node_cidrs }`: per peer
   `addrs`, `outbound`, `inbound` exactly per design.md → Rights (ceiling ∩ external
   rules − tenant space, rules between networks, federation, mesh, inbound grants
   clipped to outside sources + hub addresses). Peers with an unknown/invalid network,
@@ -48,8 +48,9 @@ under sudo).
   tenant's (winning) blocks, with a known tenant, at most /30, and with a range and
   slug no older network holds.
 - Rendering:
-  - `render_nft(&NftState) -> String`: the whole `table inet wgate` per design.md
-    from compiled peers and `tenant_space` (compile guarantees disjoint addresses)
+  - `render_nft(&Compiled) -> String`: the whole `table inet wgate` per design.md
+    from one compile run (disjoint peer addresses, tenant space, SNAT source and
+    node networks all come from it)
   - `render_client_config(&ClientConfig { address, hub_address, private_key,
     hub_public_key, endpoint, outbound, inbound }) -> String`
 - Tests: unit tests for every function; proptest (set ops match pointwise semantics,

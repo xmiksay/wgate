@@ -11,8 +11,8 @@ use common::py::{ECHO, PROBE, SPOOF, STREAM};
 use common::{Background, Netns};
 use ipnet::Ipv4Net;
 use wgate_core::{
-    Claim, DesiredState, Federation, NetRule, Network, NftState, Peer, PortRange, RuleSet, Service,
-    Tenant, compile, render_nft,
+    Claim, DesiredState, Federation, NetRule, Network, Peer, PortRange, RuleSet, Service, Tenant,
+    compile, render_nft,
 };
 
 const A: &str = "10.50.0.2"; // tenant 1, network 1
@@ -23,13 +23,14 @@ const NODE: &str = "172.19.9.11";
 /// hub ─ wg-n1 ─ a, wg-n2 ─ b, wg-n3 ─ c, eth-node ─ node (no route back to the
 /// pool: needs SNAT), eth-pod ─ pod (outside the pool).
 struct Lab {
+    // Fields drop in order: the servers die before their namespaces are deleted.
+    _servers: Vec<Background>,
     hub: Netns,
     a: Netns,
     b: Netns,
     c: Netns,
     _node: Netns,
     pod: Netns,
-    _servers: Vec<Background>,
 }
 
 impl Lab {
@@ -128,11 +129,7 @@ impl Lab {
     fn apply(&self, state: &DesiredState) {
         let compiled = compile(state);
         assert!(compiled.skipped.is_empty(), "{:?}", compiled.skipped);
-        let script = render_nft(&NftState {
-            snat_source: "172.19.9.10".parse().expect("addr"),
-            node_cidrs: vec![net("172.19.9.0/24")],
-            compiled,
-        });
+        let script = render_nft(&compiled);
         self.hub.exec(&["nft", "-f", "-"], Some(&script));
     }
 }
@@ -178,6 +175,8 @@ fn state() -> DesiredState {
     };
     DesiredState {
         pool: vec![net("10.50.0.0/16")],
+        snat_source: "172.19.9.10".parse().expect("addr"),
+        node_cidrs: vec![net("172.19.9.0/24")],
         routed_space: vec![],
         reserved: vec![],
         tenants: vec![

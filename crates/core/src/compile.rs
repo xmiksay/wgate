@@ -13,15 +13,19 @@ pub type Id = i64;
 
 /// Everything active: disabled tenants, networks and revoked peers are left out by
 /// the caller.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DesiredState {
     pub pool: Vec<Ipv4Net>,
+    /// Hub address peers are SNATed to towards `node_cidrs`.
+    pub snat_source: Ipv4Addr,
+    /// Networks whose hosts have no route back to tenant space (the k8s nodes).
+    pub node_cidrs: Vec<Ipv4Net>,
     /// Where routed LANs may lie (global admin): private ranges minus the pool and
     /// infrastructure. A LAN becomes tenant space, which the hub drops as a source
     /// on non-wg interfaces, so it must never cover anything else.
     pub routed_space: Vec<Ipv4Net>,
-    /// Infrastructure no routed LAN may cover (node networks, the SNAT source),
-    /// whatever `routed_space` says.
+    /// Further infrastructure no routed LAN may cover (e.g. wg0), on top of
+    /// `node_cidrs` and `snat_source`, whatever `routed_space` says.
     pub reserved: Vec<Ipv4Net>,
     pub tenants: Vec<Tenant>,
     pub networks: Vec<Network>,
@@ -120,20 +124,27 @@ pub enum Problem {
     RoutedNotAllowed,
 }
 
-#[derive(Clone, Debug, Default)]
+/// One compile run; render it with [`crate::render_nft`]. Its peers' addresses are
+/// disjoint, which nft requires (it rejects overlapping elements, and with them the
+/// whole transaction).
+#[derive(Clone, Debug)]
 pub struct Compiled {
     pub peers: Vec<CompiledPeer>,
+    /// Networks that failed validation (their peers are in `skipped`); no interface
+    /// may be brought up for them.
+    pub invalid_networks: Vec<Id>,
     pub skipped: Vec<(Id, Problem)>,
     /// Routes left out (their peer still compiles), by route claim id.
     pub dropped_routes: Vec<(Id, Problem)>,
     /// The pool plus the routed LANs of compiled peers, merged: what nft treats as
     /// tenant space.
     pub tenant_space: Vec<Ipv4Net>,
+    pub snat_source: Ipv4Addr,
+    pub node_cidrs: Vec<Ipv4Net>,
 }
 
 pub fn compile(state: &DesiredState) -> Compiled {
     let (networks, invalid) = valid::networks(state);
-    let tenants: HashMap<Id, &Tenant> = state.tenants.iter().map(|t| (t.id, t)).collect();
     let valid::Peers {
         valid,
         skipped,
@@ -160,17 +171,25 @@ pub fn compile(state: &DesiredState) -> Compiled {
     // that is no peer is a hub address (hub-opened connections).
     let hubs: Vec<Ipv4Net> = networks
         .values()
-        .map(|n| Ipv4Net::from(hub_address(n.cidr)))
+        .map(|n| Ipv4Net::from(hub_address(n.net.cidr)))
         .collect();
     let not_grantable = RuleSet::everything(&subtract_nets(&tenant_nets, &hubs));
 
     // Per network first; every member then only loses its own addresses.
-    let mut per_network: HashMap<Id, (RuleSet, RuleSet)> = HashMap::new();
-    for n in networks.values() {
-        let same_tenant = |id: Id| networks.get(&id).is_some_and(|m| m.tenant == n.tenant);
+    let mut by_network: HashMap<Id, Vec<valid::ValidPeer>> = HashMap::new();
+    for v in valid {
+        by_network.entry(v.peer.network).or_default().push(v);
+    }
+    let mut peers = Vec::new();
+    for (&id, n) in &networks {
+        let same_tenant = |other: Id| {
+            networks
+                .get(&other)
+                .is_some_and(|m| m.net.tenant == n.net.tenant)
+        };
         let mut outbound = RuleSet::new();
         let mut external = Vec::new();
-        for rule in &n.rules {
+        for rule in &n.net.rules {
             match rule {
                 NetRule::External(r) => external.push(*r),
                 NetRule::To { network, service } if same_tenant(*network) => {
@@ -179,63 +198,57 @@ pub fn compile(state: &DesiredState) -> Compiled {
                 NetRule::To { .. } => {}
             }
         }
-        // Eligibility guarantees the tenant exists.
-        let empty = RuleSet::new();
-        let ceiling = tenants.get(&n.tenant).map_or(&empty, |t| &t.ceiling);
         let external = RuleSet::from_rules(&external)
-            .intersect(ceiling)
+            .intersect(n.ceiling)
             .difference(&tenant_space);
         outbound = outbound.union(&external);
 
-        let mut inbound = n.inbound.difference(&not_grantable);
-        for m in networks.values() {
-            if m.tenant != n.tenant {
-                continue;
-            }
-            for rule in &m.rules {
+        let mut inbound = n.net.inbound.difference(&not_grantable);
+        for m in networks.values().filter(|m| m.net.tenant == n.net.tenant) {
+            for rule in &m.net.rules {
                 if let NetRule::To { network, service } = rule
-                    && *network == n.id
+                    && *network == id
                 {
-                    inbound = inbound.union(&RuleSet::for_nets(members_of(m.id), *service));
+                    inbound = inbound.union(&RuleSet::for_nets(members_of(m.net.id), *service));
                 }
             }
         }
         for f in &state.federations {
-            if f.from == n.id && networks.contains_key(&f.to) {
+            if f.from == id && networks.contains_key(&f.to) {
                 outbound = outbound.union(&RuleSet::for_nets(members_of(f.to), f.service));
             }
-            if f.to == n.id && networks.contains_key(&f.from) {
+            if f.to == id && networks.contains_key(&f.from) {
                 inbound = inbound.union(&RuleSet::for_nets(members_of(f.from), f.service));
             }
         }
-        if n.mesh {
-            let all = RuleSet::everything(members_of(n.id));
+        if n.net.mesh {
+            let all = RuleSet::everything(members_of(id));
             outbound = outbound.union(&all);
             inbound = inbound.union(&all);
         }
-        per_network.insert(n.id, (outbound, inbound));
-    }
-
-    let peers = valid
-        .into_iter()
-        .filter_map(|v| {
-            let (outbound, inbound) = per_network.get(&v.peer.network)?;
+        for v in by_network.remove(&id).unwrap_or_default() {
             let own = RuleSet::everything(&v.addrs);
-            Some(CompiledPeer {
+            peers.push(CompiledPeer {
                 id: v.peer.id,
                 ip: v.peer.ip,
-                iface: networks.get(&v.peer.network)?.slug.iface(),
+                iface: n.net.slug.iface(),
                 outbound: outbound.difference(&own),
                 inbound: inbound.difference(&own),
                 addrs: v.addrs,
-            })
-        })
-        .collect();
+            });
+        }
+    }
+    peers.sort_by_key(|p| p.id);
+    let mut invalid_networks: Vec<Id> = invalid.into_iter().collect();
+    invalid_networks.sort_unstable();
     Compiled {
         peers,
+        invalid_networks,
         skipped,
         dropped_routes,
         tenant_space: tenant_nets,
+        snat_source: state.snat_source,
+        node_cidrs: state.node_cidrs.clone(),
     }
 }
 

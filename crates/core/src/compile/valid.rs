@@ -9,12 +9,21 @@ use ipnet::Ipv4Net;
 
 use super::{DesiredState, Id, Network, Peer, Problem};
 use crate::net::{MAX_NETWORK_PREFIX, first_overlap, is_inside, is_peer_ip};
+use crate::rights::RuleSet;
 use crate::rights::merge_nets;
+
+/// A network that compiles, with its tenant's ceiling.
+pub(super) struct ValidNetwork<'a> {
+    pub net: &'a Network,
+    pub ceiling: &'a RuleSet,
+}
 
 /// Valid networks by id, plus the ids of the invalid ones: outside their tenant's
 /// valid blocks, unknown tenant, host bits, longer than /30, or a range or slug an
 /// older network already holds.
-pub(super) fn networks(state: &DesiredState) -> (HashMap<Id, &Network>, HashSet<Id>) {
+pub(super) fn networks(state: &DesiredState) -> (HashMap<Id, ValidNetwork<'_>>, HashSet<Id>) {
+    let ceilings: HashMap<Id, &RuleSet> =
+        state.tenants.iter().map(|t| (t.id, &t.ceiling)).collect();
     let pool = merge_nets(&state.pool);
     // Blocks compete one by one, so a single bad block costs only itself.
     let mut blocks: Vec<(Id, Id, Ipv4Net)> = state
@@ -47,12 +56,15 @@ pub(super) fn networks(state: &DesiredState) -> (HashMap<Id, &Network>, HashSet<
             && owned.get(&n.tenant).is_some_and(|b| is_inside(n.cidr, b))
             && first_overlap(n.cidr, &ranges).is_none()
             && !slugs.contains(n.slug.as_str());
-        if ok {
-            ranges.push(n.cidr);
-            slugs.insert(n.slug.as_str());
-            valid.insert(n.id, n);
-        } else {
-            invalid.insert(n.id);
+        match ceilings.get(&n.tenant) {
+            Some(ceiling) if ok => {
+                ranges.push(n.cidr);
+                slugs.insert(n.slug.as_str());
+                valid.insert(n.id, ValidNetwork { net: n, ceiling });
+            }
+            _ => {
+                invalid.insert(n.id);
+            }
         }
     }
     (valid, invalid)
@@ -75,7 +87,7 @@ pub(super) struct Peers<'a> {
 
 pub(super) fn peers<'a>(
     state: &'a DesiredState,
-    networks: &HashMap<Id, &Network>,
+    networks: &HashMap<Id, ValidNetwork<'_>>,
     invalid: &HashSet<Id>,
 ) -> Peers<'a> {
     let mut out = Peers {
@@ -91,7 +103,7 @@ pub(super) fn peers<'a>(
         let problem = match networks.get(&p.network) {
             None if invalid.contains(&p.network) => Some(Problem::InvalidNetwork),
             None => Some(Problem::UnknownNetwork),
-            Some(n) if !is_peer_ip(n.cidr, p.ip) => Some(Problem::InvalidIp),
+            Some(n) if !is_peer_ip(n.net.cidr, p.ip) => Some(Problem::InvalidIp),
             // Networks are disjoint, so a duplicate is always an older peer's address.
             Some(_) if !ips.insert(p.ip) => Some(Problem::Overlap),
             Some(_) => None,
@@ -135,9 +147,17 @@ pub(super) fn peers<'a>(
 }
 
 /// Whether a routed LAN is acceptable: a network address, inside `routed_space`,
-/// clear of the pool and of reserved infrastructure.
+/// clear of the pool and of infrastructure (node networks, the SNAT source,
+/// `reserved`).
 fn routable(state: &DesiredState) -> impl Fn(Ipv4Net) -> bool {
     let space = merge_nets(&state.routed_space);
-    let forbidden: Vec<Ipv4Net> = state.pool.iter().chain(&state.reserved).copied().collect();
+    let forbidden: Vec<Ipv4Net> = state
+        .pool
+        .iter()
+        .chain(&state.reserved)
+        .chain(&state.node_cidrs)
+        .copied()
+        .chain([Ipv4Net::from(state.snat_source)])
+        .collect();
     move |r| r == r.trunc() && is_inside(r, &space) && first_overlap(r, &forbidden).is_none()
 }
