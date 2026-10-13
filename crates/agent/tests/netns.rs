@@ -8,8 +8,8 @@ use std::net::Ipv4Addr;
 
 use common::Netns;
 use wgate_core::{
-    DesiredState, compile, render_base, render_network_cutoff, render_network_removal,
-    render_network_unmap, render_snat,
+    DesiredState, compile, render_base, render_network_cutoff, render_network_purge,
+    render_network_removal, render_snat,
 };
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
@@ -53,7 +53,11 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
     // A stale name of a live network loses its entries; the network keeps its chains.
     ns.exec(
         &["nft", "-f", "-"],
-        Some(&render_network_unmap(1, "wg-ghost")),
+        Some("add element inet wgate from_net { \"wg-ghost\" : jump n1_from }\n"),
+    );
+    ns.exec(
+        &["nft", "-f", "-"],
+        Some("delete element inet wgate from_net { \"wg-ghost\" }\n"),
     );
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
     assert!(
@@ -70,12 +74,15 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
             );
         }
     }
-    // A cutoff, then a removal, of a network that never existed.
+    // A cutoff, then a removal and a purge (twice), of a network that never existed.
     ns.exec(&["nft", "-f", "-"], Some(&render_network_cutoff(9)));
     ns.exec(
         &["nft", "-f", "-"],
         Some(&render_network_removal(9, "wg-gone")),
     );
+    for _ in 0..2 {
+        ns.exec(&["nft", "-f", "-"], Some(&render_network_purge(9)));
+    }
     let empty = compile(&DesiredState {
         pool: vec![],
         snat_source: Ipv4Addr::new(172, 19, 9, 10),

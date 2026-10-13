@@ -15,6 +15,15 @@ use super::{Plan, note};
 use crate::keys::Keys;
 use crate::runner::Runner;
 
+/// What one network's pass needs to know of the others.
+#[derive(Clone, Copy)]
+pub(super) struct Around<'a> {
+    /// What is still held elsewhere: no peer or route of this network takes it.
+    pub held: &'a [Ipv4Net],
+    /// Every dispatch map element, to take this network's off if it is not made.
+    pub entries: &'a [(&'a str, String)],
+}
+
 /// Brings one network to its compiled state, after its peers lost what they lose.
 /// `c` holds its rights (with what is still held elsewhere left out).
 /// Every step is attempted even when an earlier one failed, except the hub key and
@@ -27,8 +36,9 @@ pub(super) fn network(
     keys: &Keys,
     exists: bool,
     plan: Plan,
-    held: &[Ipv4Net],
+    around: &Around,
 ) -> (Option<String>, Vec<String>) {
+    let Around { held, entries } = *around;
     let iface = n.iface.as_str();
     // Before the interface: one that is never keyed must not be left behind.
     let key = hub_key(r, keys, n, exists);
@@ -41,7 +51,7 @@ pub(super) fn network(
         if let Err(e) = made {
             // Not made: a registration left from before must not stay on the name.
             let mut errors = vec![format!("{e:#}")];
-            unregister(r, c, &n.iface, n.id, &mut errors);
+            unregister(r, c, entries, &n.iface, n.id, &mut errors);
             return (None, errors);
         }
     }

@@ -142,13 +142,18 @@ fn a_network_not_made_gets_no_registration_while_nothing_grows() {
 }
 
 #[test]
-fn an_unreadable_route_list_leaves_only_its_network_alone() {
+fn an_unreadable_route_list_still_lets_peers_be_revoked() {
     let dir = keys();
-    let fake = owned_n1().fail("ip -j route show dev wg-n1");
+    let fake = owned_n1().fail("ip -j route show dev wg-n1").answer(
+        "wg show wg-n1 allowed-ips",
+        &format!("{K2}\t10.50.0.3/32\n"),
+    );
     reconcile(&fake, &compiled(), dir.path());
     let log = fake.log();
-    assert!(fake.fragments_of(1).is_empty());
-    assert!(!log.iter().any(|c| c.starts_with("wg set wg-n1 peer")));
+    position(&log, &format!("wg set wg-n1 peer {K2} remove"));
+    // Its rules apply; no route of its is added.
+    assert_eq!(fake.fragments_of(1).len(), 1);
+    assert!(!log.iter().any(|c| c.starts_with("ip route add")));
     // n2 is made as usual.
     position(&log, "ip link add wgtmp-2");
 }

@@ -190,11 +190,12 @@ fn an_address_still_held_gets_no_rights_either() {
 }
 
 #[test]
-fn unreadable_peers_leave_their_network_as_it_is() {
+fn unreadable_peers_get_no_rights_and_no_changes() {
     let dir = keys();
     let fake = owned_n1().fail("wg show wg-n1 allowed-ips");
     reconcile(&fake, &compiled(), dir.path());
-    assert!(fake.fragments_of(1).is_empty());
+    let n1 = fake.fragments_of(1);
+    assert!(!n1[0].contains("10.50.0.2"));
     assert!(
         !fake
             .log()

@@ -2,9 +2,7 @@
 //! compiled on them, and registrations (`from_net`) of such networks.
 
 use ipnet::Ipv4Net;
-use wgate_core::{
-    Compiled, Id, render_network_cutoff, render_network_removal, render_network_unmap,
-};
+use wgate_core::{Compiled, Id, render_network_cutoff, render_network_purge};
 
 use super::steps::{Link, SCRATCH, disarm, nft, run};
 use crate::runner::Runner;
@@ -70,26 +68,31 @@ pub(super) fn remove_gone_links(
     gone
 }
 
-/// Takes `(iface, id)` out of the table: its map entries, chains and sets. Without
-/// the entries the base drops the interface's traffic. One that still fails has its
-/// chains cut off to `drop`, so its old rights never outlive it.
+/// Takes `iface`'s entries out of the dispatch maps, each on its own (only those
+/// there: one that is not is no reason to keep the others), then network `id`'s chains
+/// and sets unless the network lives on elsewhere. Without the entries the base drops
+/// the interface's traffic; chains that will not go are cut off to `drop`, so old
+/// rights never outlive their network.
 pub(super) fn unregister(
     r: &dyn Runner,
     c: &Compiled,
+    entries: &[(&str, String)],
     iface: &str,
     id: Id,
     errors: &mut Vec<String>,
 ) {
-    // A stale name of a network that lives on another interface: its chains are that
-    // network's, still in use; only the name's entries go.
-    if c.networks.iter().any(|n| n.id == id && n.iface != iface) {
-        let result = nft(r, &render_network_unmap(id, iface));
-        if let Err(e) = result {
-            errors.push(format!("{iface} (unmapping network {id}): {e:#}"));
+    for (map, _) in entries.iter().filter(|(_, i)| i == iface) {
+        let script = format!("delete element inet wgate {map} {{ \"{iface}\" }}\n");
+        if let Err(e) = nft(r, &script) {
+            errors.push(format!(
+                "{iface} (unregistering network {id}): {map}: {e:#}"
+            ));
         }
+    }
+    if c.networks.iter().any(|n| n.id == id) {
         return;
     }
-    match nft(r, &render_network_removal(id, iface)) {
+    match nft(r, &render_network_purge(id)) {
         Ok(()) => tracing::info!(%iface, network = id, "unregistered"),
         Err(e) => {
             errors.push(format!("{iface} (unregistering network {id}): {e:#}"));

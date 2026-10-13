@@ -189,19 +189,20 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
 /// transaction also succeeds when some are already gone (nft before 1.0.8 has no
 /// `destroy`).
 pub fn render_network_removal(id: Id, iface: &str) -> String {
-    let mut out = render_network_unmap(id, iface);
-    delete_parts(&mut out, id);
-    out
-}
-
-/// Takes only an interface's map entries off (each added first, so it applies whatever
-/// is already gone): for a stale name whose network is live on another interface.
-pub fn render_network_unmap(id: Id, iface: &str) -> String {
     let mut out = ensure_parts(id);
     register(&mut out, id, iface);
     for (map, _) in DISPATCH {
         let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
     }
+    delete_parts(&mut out, id);
+    out
+}
+
+/// A network's chains and sets alone (each added first, so it applies whatever is
+/// already gone); fails while a map element still jumps to them.
+pub fn render_network_purge(id: Id) -> String {
+    let mut out = ensure_parts(id);
+    delete_parts(&mut out, id);
     out
 }
 

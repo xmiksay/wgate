@@ -226,7 +226,11 @@ fn a_name_taken_again_after_removal_is_not_deleted() {
             .any(|c| c.starts_with("ip link del") || c.starts_with("wg set wg-old"))
     );
     // Its registration still goes.
-    assert_eq!(nft_runs(&log), 4, "base, removal, both fragments");
+    assert_eq!(
+        nft_runs(&log),
+        5,
+        "base, its entry, its chains, both fragments"
+    );
 }
 
 #[test]
