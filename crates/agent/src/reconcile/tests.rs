@@ -285,7 +285,7 @@ fn revocations_come_before_additions_and_stale_routes_go() {
 }
 
 #[test]
-fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
+fn a_failing_read_stops_growth_but_not_the_rules() {
     let dir = keys();
     let fake = Fake::default()
         .answer(
@@ -301,9 +301,11 @@ fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
         "{:?}",
         out.errors
     );
-    // Its fragment (every revocation of a right) still went in, and n2 was applied.
+    // Both networks' rules (every revocation of a right) still went in, n1's without
+    // its peers' addresses; nothing was added anywhere, as nothing is known free.
     assert_eq!(nft_runs(&fake.log()), 3, "base + both networks");
-    assert_eq!(out.hub_keys.len(), 2);
+    assert!(!fake.fragments_of(1)[0].contains("10.50.0.2"));
+    assert!(!fake.log().iter().any(|c| c.contains(" allowed-ips ")));
 }
 
 #[test]
@@ -372,6 +374,7 @@ fn what_a_peer_loses_goes_before_the_rules_change() {
     assert!(narrow < nft_run(&log, 1));
 }
 
+mod cutoff;
 mod failures;
 mod ownership;
 mod ports;

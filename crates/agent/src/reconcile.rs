@@ -10,7 +10,8 @@ use std::path::Path;
 use anyhow::Context;
 use ipnet::Ipv4Net;
 use wgate_core::{
-    Compiled, CompiledNetwork, Id, render_base, render_network, render_snat, subtract_nets,
+    Compiled, CompiledNetwork, Id, render_base, render_network, render_network_cutoff, render_snat,
+    subtract_nets,
 };
 
 use crate::keys::Keys;
@@ -74,27 +75,18 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // is gone, free or registered.
     let grow = guarded && complete && registry.is_some();
     let registered = registry.unwrap_or_default();
-    let (stuck, gone_pairs) = match &mut links {
+    let (stuck, gone_pairs, stuck_held) = match &mut links {
         Some(links) if complete => remove_gone_links(r, c, links, &mut out.errors),
-        _ => (vec![], vec![]),
+        _ => (vec![], vec![], vec![]),
     };
 
     let mut owned = vec![];
     let mut new = vec![];
     for n in &c.networks {
-        match iface_of(r, n, links.as_deref().filter(|_| complete), &stuck) {
-            // Read on its own, wgate's interface is managed (revocations included).
-            Ok(None)
-                if links
-                    .iter()
-                    .flatten()
-                    .any(|l| l.name == n.iface && l.owner == Some(n.id)) =>
-            {
-                owned.push(n)
-            }
-            Ok(Some(true)) => owned.push(n),
-            Ok(Some(false)) => new.push(n),
-            Ok(None) => {}
+        match iface_of(r, n, links.as_deref(), complete, &stuck) {
+            Ok(Iface::Owned) => owned.push(n),
+            Ok(Iface::New) => new.push(n),
+            Ok(Iface::Unknown) => {}
             Err(why) => out.errors.push(format!("{}: {why}", n.iface)),
         }
     }
@@ -125,7 +117,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // grow: an address or LAN moving between peers or networks is never held twice.
     // What failed to be released stays held, and is nobody's this pass: no peer, no
     // route and no right takes it.
-    let mut held = vec![];
+    let mut held = stuck_held;
     for (n, _, plan) in &active {
         let (result, still) = match &plan.peers {
             Ok(d) => removals(r, &n.iface, d),
@@ -140,27 +132,33 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             result.with_context(|| format!("{}: peers", n.iface)),
             &mut out.errors,
         );
-        if let Ok((_, del)) = &plan.routes {
-            let (result, still) = route_deletions(r, n, del);
-            held.extend(still);
-            note(
-                result.with_context(|| format!("{}: routes", n.iface)),
-                &mut out.errors,
-            );
-        }
+        let (result, still) = match &plan.routes {
+            Ok((_, del)) => route_deletions(r, &n.iface, del),
+            Err(e) => (Err(anyhow::anyhow!("{e:#}")), vec![]),
+        };
+        held.extend(still);
+        note(
+            result.with_context(|| format!("{}: routes", n.iface)),
+            &mut out.errors,
+        );
     }
 
+    // With some network's peers unknown, nothing is known to be free.
+    let grow = grow && active.iter().all(|(_, _, plan)| plan.peers.is_ok());
     if !grow {
-        // Rights revoked in a fragment still apply, cut down to what the guard covers.
-        if let Some(unguarded) = unguarded {
-            let within = c.within_guard(&[unguarded, held].concat());
-            for (n, _, _) in &active {
-                let result = nft(r, &render_network(&within, n));
-                note(
-                    result.with_context(|| format!("{}: nft", n.iface)),
-                    &mut out.errors,
-                );
-            }
+        // Rights revoked in a fragment still apply, cut down to what the guard covers;
+        // with the guard unknown, every network is cut off.
+        let within = unguarded.map(|unguarded| c.within_guard(&[unguarded, held].concat()));
+        for (n, _, _) in &active {
+            let script = match &within {
+                Some(within) => render_network(within, n),
+                None => render_network_cutoff(n.id),
+            };
+            let result = nft(r, &script);
+            note(
+                result.with_context(|| format!("{}: nft", n.iface)),
+                &mut out.errors,
+            );
         }
         return out;
     }
@@ -204,27 +202,39 @@ fn unguarded_space(r: &dyn Runner, c: &Compiled) -> Option<Vec<Ipv4Net>> {
     .map(|kernel| subtract_nets(&c.tenant_space, &kernel))
 }
 
-/// Whether the network's interface is wgate's (`Some(true)`) or to be made
-/// (`Some(false)`); `None` without the list of links; `Err` is why it is left alone.
+/// What a compiled network's interface is to the agent.
+enum Iface {
+    /// It exists and carries the network's mark.
+    Owned,
+    /// No link has its name: the agent may make it.
+    New,
+    /// Its link could not be read.
+    Unknown,
+}
+
+/// Decided once, from the links read (`complete` when they are all of them); `Err`
+/// is why it is left alone.
 fn iface_of(
     r: &dyn Runner,
     n: &CompiledNetwork,
     links: Option<&[Link]>,
+    complete: bool,
     stuck: &[String],
-) -> Result<Option<bool>, String> {
+) -> Result<Iface, String> {
     let Some(links) = links else {
-        return Ok(None);
+        return Ok(Iface::Unknown);
     };
     if stuck.contains(&n.iface) {
         return Err("waits for the gone network's interface to be removed".into());
     }
     match links.iter().find(|l| l.name == n.iface) {
-        Some(l) if l.owner == Some(n.id) => Ok(Some(true)),
+        Some(l) if l.owner == Some(n.id) => Ok(Iface::Owned),
         Some(_) => Err(NOT_MADE.into()),
+        None if !complete => Ok(Iface::Unknown),
         None if link_exists(r, &n.iface) => {
             Err("the name is taken by a link that is not WireGuard; left alone".into())
         }
-        None => Ok(Some(false)),
+        None => Ok(Iface::New),
     }
 }
 

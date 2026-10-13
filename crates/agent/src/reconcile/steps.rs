@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, CompiledNetwork, Id, overlaps};
+use wgate_core::{Compiled, CompiledNetwork, Id, first_overlap};
 
 use crate::routes;
 use crate::runner::Runner;
@@ -33,13 +33,9 @@ pub(super) fn removals(
     iface: &str,
     d: &PeerDiff,
 ) -> (anyhow::Result<()>, Vec<Ipv4Net>) {
-    let losing = |key: &str| {
-        d.losing
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, lost)| lost.clone())
-            .unwrap_or_default()
-    };
+    let lost: std::collections::HashMap<&str, &Vec<Ipv4Net>> =
+        d.losing.iter().map(|(k, l)| (k.as_str(), l)).collect();
+    let losing = |key: &str| lost.get(key).map(|l| (*l).clone()).unwrap_or_default();
     let remove = d.remove.iter().map(|key| {
         (
             argv(&["wg", "set", iface, "peer", key, "remove"]),
@@ -80,7 +76,7 @@ pub(super) fn additions(
 
 /// Whether any of `nets` overlaps any of `held`.
 pub(super) fn touches(nets: &[Ipv4Net], held: &[Ipv4Net]) -> bool {
-    nets.iter().any(|a| held.iter().any(|h| overlaps(*a, *h)))
+    nets.iter().any(|n| first_overlap(*n, held).is_some())
 }
 
 /// Runs each command, also after one fails; what a failed one was to release stays
@@ -109,12 +105,12 @@ fn release(
 /// Stale LAN route deletions; returns, besides the outcome, the LANs still routed.
 pub(super) fn route_deletions(
     r: &dyn Runner,
-    n: &CompiledNetwork,
+    iface: &str,
     del: &[Ipv4Net],
 ) -> (anyhow::Result<()>, Vec<Ipv4Net>) {
     let commands = del
         .iter()
-        .map(|lan| (route("del", lan, &n.iface), vec![*lan]))
+        .map(|lan| (route("del", lan, iface), vec![*lan]))
         .collect();
     release(r, commands)
 }
@@ -249,8 +245,15 @@ pub(super) fn links_of(
     let mut read_any = false;
     let mut found = vec![];
     for n in &c.networks {
-        let Ok(json) = r.run(&["ip", "-j", "-d", "link", "show", "dev", &n.iface], None) else {
-            continue;
+        let json = match r.run(&["ip", "-j", "-d", "link", "show", "dev", &n.iface], None) {
+            Ok(json) => json,
+            Err(e) => {
+                errors.push(format!(
+                    "{}: no revocations without its link: {e:#}",
+                    n.iface
+                ));
+                continue;
+            }
         };
         let shown: Vec<Shown> = match serde_json::from_str(&json) {
             Ok(shown) => shown,
@@ -289,17 +292,39 @@ pub(super) fn link_exists(r: &dyn Runner, iface: &str) -> bool {
 
 /// Takes everything a gone network's interface carries away (peers, addresses, LAN
 /// routes) when the interface itself would not go.
-pub(super) fn disarm(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
-    let peers =
-        current_peers(r, iface).and_then(|current| removals(r, iface, &wg::diff(&current, &[])).0);
-    let rest = all(
-        r,
+/// Returns, besides the outcome, what it still holds.
+pub(super) fn disarm(r: &dyn Runner, iface: &str) -> (anyhow::Result<()>, Vec<Ipv4Net>) {
+    let mut held = vec![];
+    let peers = current_peers(r, iface).and_then(|current| {
+        let (result, still) = removals(r, iface, &wg::diff(&current, &[]));
+        held.extend(still);
+        result
+    });
+    let routes = current_routes(r, iface).and_then(|current| {
+        let (result, still) = route_deletions(r, iface, &current);
+        held.extend(still);
+        result
+    });
+    let addresses = run(r, &["ip", "addr", "flush", "dev", iface]);
+    (peers.and(routes).and(addresses), held)
+}
+
+/// The LAN routes (wgate's protocol) via an interface.
+pub(super) fn current_routes(r: &dyn Runner, iface: &str) -> anyhow::Result<Vec<Ipv4Net>> {
+    let json = r.run(
         &[
-            argv(&["ip", "addr", "flush", "dev", iface]),
-            argv(&["ip", "route", "flush", "dev", iface, "proto", routes::PROTO]),
+            "ip",
+            "-j",
+            "route",
+            "show",
+            "dev",
+            iface,
+            "proto",
+            routes::PROTO,
         ],
-    );
-    peers.and(rest)
+        None,
+    )?;
+    routes::parse(&json)
 }
 
 /// The peers an interface has, read with `allowed-ips`, never `dump` (that carries

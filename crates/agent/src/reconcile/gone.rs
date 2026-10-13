@@ -1,6 +1,7 @@
 //! What is gone: interfaces wgate made (by their mark) for a network no longer
 //! compiled on them, and registrations (`from_net`) of such networks.
 
+use ipnet::Ipv4Net;
 use wgate_core::{Compiled, Id, render_network_cutoff, render_network_removal};
 
 use super::steps::{Link, SCRATCH, disarm, nft, run};
@@ -9,14 +10,16 @@ use crate::runner::Runner;
 /// Deletes the interfaces wgate made whose network is not compiled under that name,
 /// and unmarked scratch leftovers of a creation that crashed. Returns the ones that
 /// would not go (disarmed instead; their names are not reused until they do), and the
-/// `(name, network)` of every marked one, to be unregistered too.
+/// `(name, network)` of every marked one, to be unregistered too, and what the ones
+/// that would not go still hold.
 pub(super) fn remove_gone_links(
     r: &dyn Runner,
     c: &Compiled,
     links: &mut Vec<Link>,
     errors: &mut Vec<String>,
-) -> (Vec<String>, Vec<(String, Id)>) {
+) -> (Vec<String>, Vec<(String, Id)>, Vec<Ipv4Net>) {
     let mut stuck = vec![];
+    let mut held = vec![];
     let mut gone_pairs = vec![];
     for link in links.clone() {
         let gone = match link.owner {
@@ -40,14 +43,16 @@ pub(super) fn remove_gone_links(
             Err(e) => {
                 errors.push(format!("{} (gone): {e:#}", link.name));
                 // Still there: it must at least stop carrying the gone network.
-                if let Err(e) = disarm(r, &link.name) {
+                let (result, still) = disarm(r, &link.name);
+                held.extend(still);
+                if let Err(e) = result {
                     errors.push(format!("{} (gone): disarm: {e:#}", link.name));
                 }
                 stuck.push(link.name);
             }
         }
     }
-    (stuck, gone_pairs)
+    (stuck, gone_pairs, held)
 }
 
 /// Takes `(iface, id)` out of the table: its map entries, chains and sets. Without

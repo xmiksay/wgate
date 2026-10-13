@@ -1,7 +1,7 @@
 //! WireGuard peers: `wg show <if> allowed-ips` (never `dump`: it carries private and
 //! preshared keys) and the diff against the compiled peers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, bail};
 use ipnet::Ipv4Net;
@@ -92,10 +92,16 @@ pub fn diff(current: &[WgPeer], desired: &[WgPeer]) -> PeerDiff {
             }
         }
     }
+    let removed: HashSet<&str> = d.remove.iter().map(String::as_str).collect();
+    let narrowed: HashMap<&str, &WgPeer> = d
+        .narrow
+        .iter()
+        .map(|n| (n.public_key.as_str(), n))
+        .collect();
     for w in desired {
-        let narrowed = d.narrow.iter().find(|n| n.public_key == w.public_key);
+        let narrowed = narrowed.get(w.public_key.as_str());
         let now = match (narrowed, have.get(w.public_key.as_str())) {
-            _ if d.remove.contains(&w.public_key) => None,
+            _ if removed.contains(w.public_key.as_str()) => None,
             (Some(n), _) => Some(n.allowed.clone()),
             (None, Some(h)) => Some(sorted(&h.allowed)),
             (None, None) => None,
