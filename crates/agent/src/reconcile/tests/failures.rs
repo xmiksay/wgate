@@ -75,7 +75,7 @@ fn a_gone_network_whose_key_cannot_be_read_is_not_deleted() {
 }
 
 #[test]
-fn a_registered_name_with_someone_elses_key_is_refused() {
+fn a_registered_name_with_someone_elses_key_gets_only_its_rules() {
     let dir = keys();
     let fake = Fake::default()
         .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
@@ -86,11 +86,79 @@ fn a_registered_name_with_someone_elses_key_is_refused() {
         .answer("wg show wg-n1 public-key", "someone-elses\n");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
-        out.errors.contains(&format!("wg-n1: {NOT_MADE}")),
+        out.errors
+            .iter()
+            .any(|e| e.starts_with("wg-n1: carries a key")
+                && e.ends_with("only its rules are applied")),
         "{:?}",
         out.errors
     );
-    assert!(!fake.log().iter().any(|c| c.starts_with("wg set wg-n1")));
+    let log = fake.log();
+    assert!(
+        !log.iter()
+            .any(|c| c.starts_with("wg set wg-n1") || c.ends_with("dev wg-n1"))
+    );
+    assert_eq!(nft_runs(&log), 3, "base + n1's rules + n2");
+}
+
+#[test]
+fn a_damaged_key_still_lets_revocations_in_the_rules_apply() {
+    let dir = keys();
+    std::fs::write(dir.path().join("n1.key"), "garbage").unwrap();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "nft -j list map",
+            &registered(r#"["wg-n1", {"jump": {"target": "n1_from"}}]"#),
+        );
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.iter().any(|e| e.contains("not a WireGuard key")),
+        "{:?}",
+        out.errors
+    );
+    assert_eq!(nft_runs(&fake.log()), 3, "n1's rules still applied");
+}
+
+#[test]
+fn a_gone_network_is_unregistered_even_when_its_interface_stays() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
+        .answer(
+            "nft -j list map",
+            &registered(r#"["wg-old", {"jump": {"target": "n9_from"}}]"#),
+        )
+        .fail("ip link del wg-old");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    let log = fake.log();
+    // Disarmed, and its registration still went.
+    position(&log, "ip addr flush dev wg-old");
+    assert!(nft_run(&log, 1) > position(&log, "ip link del wg-old"));
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.starts_with("wg-old (removing network 9)"))
+    );
+}
+
+#[test]
+fn a_gone_interface_whose_key_cannot_be_checked_is_left_alone() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
+        .answer(
+            "nft -j list map",
+            &registered(r#"["wg-old", {"jump": {"target": "n9_from"}}]"#),
+        )
+        .answer("wg show wg-old public-key", "some-key\n");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.iter().any(|e| e.contains("key file is missing")),
+        "{:?}",
+        out.errors
+    );
+    assert!(!fake.log().iter().any(|c| c.starts_with("ip link del")));
 }
 
 #[test]

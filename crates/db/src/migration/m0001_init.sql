@@ -57,7 +57,7 @@ CREATE TABLE network (
     UNIQUE (id, tenant_id),
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
--- The slug too: `wg-<slug>` is the interface and keys the network's nft chains.
+-- The slug too: `wg-<slug>` is the interface (the nft chains go by the network id).
 CREATE TRIGGER network_immutable BEFORE UPDATE OF tenant_id, block_id, cidr, slug ON network
     FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id OR OLD.block_id IS DISTINCT FROM NEW.block_id OR OLD.cidr IS DISTINCT FROM NEW.cidr OR OLD.slug IS DISTINCT FROM NEW.slug)
     EXECUTE FUNCTION immutable('tenant_id, block_id, cidr, slug');

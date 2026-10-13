@@ -45,9 +45,8 @@ pub(super) struct Blocked {
 /// Takes away the registered networks that are not compiled under the same interface
 /// *and* id, so a new network that reuses a slug starts on a fresh interface. The
 /// interface goes before the map entry: deleting it cuts the traffic at once, and the
-/// entry stays as the marker that retries a removal that failed halfway. Without the
-/// list of links only the entry goes (that alone cuts the traffic; the interface is
-/// found by its key later).
+/// entry goes as well (that alone cuts the traffic). Without the list of links only
+/// the entry goes; a wgate interface left behind is found by its key later.
 pub(super) fn remove_gone(
     r: &dyn Runner,
     c: &Compiled,
@@ -61,16 +60,22 @@ pub(super) fn remove_gone(
         if c.networks.iter().any(|n| n.iface == *iface && n.id == *id) {
             continue;
         }
-        let present = links.as_ref().is_none_or(|l| l.contains(iface));
         // The name may have been taken again after wgate's interface went: one with
-        // another key is left alone. Without the key file the registration decides.
+        // another key, or with a key that cannot be checked, is left alone.
         let ours = match links.as_ref().map(|l| l.contains(iface)) {
             Some(false) => false,
             _ => match carried(r, keys, iface, *id) {
-                Ok(Carried::Its | Carried::Nothing | Carried::Unverified) => true,
+                Ok(Carried::Its | Carried::Nothing) => true,
                 Ok(Carried::Other) => {
                     errors.push(format!(
                         "{iface}: carries a key that is not network {id}'s; left alone"
+                    ));
+                    false
+                }
+                Ok(Carried::Unverified) => {
+                    errors.push(format!(
+                        "{iface}: network {id}'s key file is missing, so whose key it \
+                         carries cannot be told; left alone"
                     ));
                     false
                 }
@@ -78,45 +83,41 @@ pub(super) fn remove_gone(
                 Err(_) if links.is_none() => false,
                 Err(e) => {
                     errors.push(format!("{iface} (removing network {id}): {e:#}"));
-                    blocked.push(Blocked {
-                        iface: iface.clone(),
-                        ours: false,
-                    });
-                    continue;
+                    false
                 }
             },
         };
-        let removed = match links.as_deref_mut() {
+        // The interface first (deleting it cuts the traffic at once); the registration
+        // goes whatever became of it, as without it the base drops the interface's
+        // traffic. A wgate interface left behind is found again by its key.
+        let deleted = match links.as_deref_mut() {
             Some(links) if ours => {
-                run(r, &["ip", "link", "del", iface]).map(|()| links.retain(|l| l != iface))
+                Some(run(r, &["ip", "link", "del", iface]).map(|()| links.retain(|l| l != iface)))
             }
-            _ => Ok(()),
+            _ => None,
+        };
+        let unregistered = nft(r, &render_network_removal(*id, iface));
+        let mut done = true;
+        if let Some(Err(e)) = &deleted {
+            done = false;
+            errors.push(format!("{iface} (removing network {id}): {e:#}"));
+            // Still there: it must at least stop carrying the gone network.
+            if let Err(e) = disarm(r, iface) {
+                errors.push(format!("{iface} (removing network {id}): disarm: {e:#}"));
+            }
         }
-        .and_then(|()| nft(r, &render_network_removal(*id, iface)));
-        match removed {
-            Ok(()) if links.is_none() && present && ours => {
-                // Unregistered; its interface goes once the links can be listed.
-                blocked.push(Blocked {
-                    iface: iface.clone(),
-                    ours,
-                });
-            }
-            Ok(()) => tracing::info!(%iface, network = id, "network removed"),
-            Err(e) => {
-                errors.push(format!("{iface} (removing network {id}): {e:#}"));
-                // Still there: it must at least stop carrying the gone network.
-                let still = links.as_ref().is_some_and(|l| l.contains(iface));
-                if ours
-                    && still
-                    && let Err(e) = disarm(r, iface)
-                {
-                    errors.push(format!("{iface} (removing network {id}): disarm: {e:#}"));
-                }
-                blocked.push(Blocked {
-                    iface: iface.clone(),
-                    ours,
-                });
-            }
+        if let Err(e) = &unregistered {
+            done = false;
+            errors.push(format!("{iface} (removing network {id}): {e:#}"));
+        }
+        // Without the links an interface of ours may still be there.
+        if !done || (links.is_none() && ours) {
+            blocked.push(Blocked {
+                iface: iface.clone(),
+                ours,
+            });
+        } else {
+            tracing::info!(%iface, network = id, "network removed");
         }
     }
     blocked
