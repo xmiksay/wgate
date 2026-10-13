@@ -104,8 +104,6 @@ pub struct CompiledPeer {
     pub network: Id,
     pub ip: Ipv4Addr,
     pub public_key: String,
-    /// The interface its packets must arrive on.
-    pub iface: String,
     /// `ip/32` plus routed subnets: the hub-side `AllowedIPs`.
     pub addrs: Vec<Ipv4Net>,
     /// What the peer (and its routed LANs) may open; addresses = destinations.
@@ -265,7 +263,6 @@ pub fn compile(state: &DesiredState) -> Compiled {
                 network: id,
                 ip: v.peer.ip,
                 public_key: v.peer.public_key.clone(),
-                iface: n.net.slug.iface(),
                 outbound: outbound.difference(&own),
                 inbound: inbound.difference(&own),
                 addrs: v.addrs,

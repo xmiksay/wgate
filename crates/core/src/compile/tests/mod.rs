@@ -142,11 +142,6 @@ fn inbound_mirrors_rules_mesh_federation_and_grants() {
 }
 
 #[test]
-fn compiled_peers_know_their_interface() {
-    assert_eq!(get(&compile(&state()), 21).iface, "wg-n2");
-}
-
-#[test]
 fn only_the_losing_route_is_dropped() {
     let mut s = state();
     s.tenants[0].ceiling = rule_set(&["tcp 192.168.0.0/16 80"]);

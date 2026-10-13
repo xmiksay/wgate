@@ -18,7 +18,15 @@ const CHAINS: [(&str, &str); 3] = [
     ("from_net", "from"),
     ("to_net", "to"),
 ];
-const SETS: [&str; 5] = ["peers", "allow", "allow_icmp", "inbound", "inbound_icmp"];
+/// A network's sets (`n<id>_<name>`) and their types; created, filled and removed
+/// from this one list.
+const SETS: [(&str, &str); 5] = [
+    ("peers", "ipv4_addr"),
+    ("allow", QUAD),
+    ("allow_icmp", PAIR),
+    ("inbound", QUAD),
+    ("inbound_icmp", PAIR),
+];
 
 /// The base: global sets, the dispatch maps and the hook chains. Idempotent: it creates
 /// what is missing and refills only what it owns, never the networks' map entries, so
@@ -104,16 +112,7 @@ pub fn render_base(c: &Compiled) -> String {
 pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
     let p = prefix(n.id);
     let mut out = format!("add table {TABLE}\n");
-    let _ = writeln!(
-        out,
-        "add set {TABLE} {p}_peers {{ type ipv4_addr; flags interval; }}"
-    );
-    for (set, ty) in [
-        ("allow", QUAD),
-        ("allow_icmp", PAIR),
-        ("inbound", QUAD),
-        ("inbound_icmp", PAIR),
-    ] {
+    for (set, ty) in SETS {
         let _ = writeln!(
             out,
             "add set {TABLE} {p}_{set} {{ type {ty}; flags interval; }}"
@@ -127,11 +126,16 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
     for peer in c.peers.iter().filter(|peer| peer.network == n.id) {
         sets.add(peer);
     }
-    fill(&mut out, &format!("{p}_peers"), &sets.peers);
-    fill(&mut out, &format!("{p}_allow"), &sets.allow);
-    fill(&mut out, &format!("{p}_allow_icmp"), &sets.allow_icmp);
-    fill(&mut out, &format!("{p}_inbound"), &sets.inbound);
-    fill(&mut out, &format!("{p}_inbound_icmp"), &sets.inbound_icmp);
+    let elements = [
+        &sets.peers,
+        &sets.allow,
+        &sets.allow_icmp,
+        &sets.inbound,
+        &sets.inbound_icmp,
+    ];
+    for ((set, _), elements) in SETS.iter().zip(elements) {
+        fill(&mut out, &format!("{p}_{set}"), elements);
+    }
 
     let fwd = "ip saddr . ip daddr . meta l4proto . th dport";
     let rev = "ip daddr . ip saddr . meta l4proto . th sport";
@@ -191,7 +195,7 @@ pub fn render_network_removal(id: Id, iface: &str) -> String {
     for (_, chain) in CHAINS {
         let _ = writeln!(out, "delete chain {TABLE} {p}_{chain}");
     }
-    for set in SETS {
+    for (set, _) in SETS {
         let _ = writeln!(out, "delete set {TABLE} {p}_{set}");
     }
     out

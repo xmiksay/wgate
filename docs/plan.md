@@ -109,20 +109,24 @@ under sudo).
   `Compiled` lists its networks (interface, range, hub address, port).
 - Loop (`LISTEN wgate_changed` or a tick):
   1. load the desired state, `core::compile` it
-  2. apply the base (if it fails, nothing else is touched)
-  3. networks registered in the `from_net` map (interface + network id) that are no
-     longer compiled under that pair: interface deleted, then the nft fragment
-     removed (the map entry is the retry marker); skipped when the inventory
-     (`nft -j list map`, `ip -j link`) cannot be read
-  4. ports another network wants are freed (`listen-port 0`); stale LAN routes of
-     every network are deleted before any is added (a LAN can move networks)
-  5. **network by network**, every step attempted: interface (`ip link add … type
-     wireguard`); key `n<id>.key` in `keys_dir` (generated with `wg genkey` if
-     missing or invalid, never deleted; its public key goes to `hub_key`); `ip addr
-     replace` hub/prefix; `wg set … listen-port … private-key …`; up; peer removals
-     (diffed against `wg show <if> dump`); the network's nft fragment; peer additions
-     (`wg set … peer K allowed-ips …`, `AllowedIPs` = `addrs(peer)`); LAN routes
-     (`ip route add … proto 150`, never taking over another's route)
+  2. apply the base; read the inventory (`nft -j list map … from_net`, `ip -j link`).
+     Without the inventory only peer revocations apply; without the base also the
+     removal of gone networks, but nothing is built and no fragment changes
+  3. networks registered in `from_net` (interface + network id) that are no longer
+     compiled under that pair: interface deleted, then the nft fragment removed (the
+     map entry is the retry marker; until it goes, the interface is not reused)
+  4. ports another network wants are freed (`listen-port 0`). An existing interface
+     is managed only if registered or carrying the network's hub key; a non-WireGuard
+     link with the name is refused. Then, for **every** network: peer removals and
+     narrowings (diffed against `wg show <if> dump`) and stale LAN route deletions
+     — before any network grows, so nothing is held twice while it moves
+  5. **network by network**, every step attempted: a new network's nft fragment goes
+     in *before* `ip link add … type wireguard` (a failed create stops it); key
+     `n<id>.key` in `keys_dir` (generated if missing, never deleted; a damaged one is
+     an error, not rotated; its public key goes to `hub_key`); `ip addr replace`
+     hub/prefix; `wg set … private-key`, then `listen-port`; up; the fragment; peer
+     additions (`AllowedIPs` = `addrs(peer)`); LAN routes (`ip route add … proto
+     150`, never taking over another's route)
   6. `agent_status` (applied revision, and everything `Compiled` rejected — blocks,
      networks, peers, routes — plus per-network failures as errors)
 - Tools: `ip` (iproute2), `wg` (wireguard-tools), `nft`; commands go through one
