@@ -77,7 +77,8 @@ fn a_gone_interface_that_would_not_go_is_disarmed_and_holds_its_name() {
     position(&log, "ip route flush dev wg-n1 proto 150");
     assert!(nft_runs(&log) >= 2);
     assert!(
-        position(&log, "wg set wg-n1 listen-port 0") < position(&log, "wg set wg-n2 listen-port")
+        position(&log, "wg set wg-n1 listen-port 51900")
+            < position(&log, "wg set wg-n2 listen-port")
     );
     // Network 1 is not built on it.
     assert!(

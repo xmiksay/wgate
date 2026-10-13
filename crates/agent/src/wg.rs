@@ -1,4 +1,5 @@
-//! WireGuard peers: `wg show <if> dump` and the diff against the compiled peers.
+//! WireGuard peers: `wg show <if> allowed-ips` (never `dump`: it carries private and
+//! preshared keys) and the diff against the compiled peers.
 
 use std::collections::HashMap;
 
@@ -51,6 +52,9 @@ pub struct PeerDiff {
     pub narrow: Vec<WgPeer>,
     /// Peers to add or whose `AllowedIPs` grow; applied after the rules.
     pub set: Vec<WgPeer>,
+    /// What each removed or narrowed peer gives up: still held while its command
+    /// fails, so nobody else may take it.
+    pub losing: Vec<(String, Vec<Ipv4Net>)>,
 }
 
 pub fn diff(current: &[WgPeer], desired: &[WgPeer]) -> PeerDiff {
@@ -60,6 +64,7 @@ pub fn diff(current: &[WgPeer], desired: &[WgPeer]) -> PeerDiff {
     for p in current {
         let Some(w) = want.get(p.public_key.as_str()) else {
             d.remove.push(p.public_key.clone());
+            d.losing.push((p.public_key.clone(), p.allowed.clone()));
             continue;
         };
         if p.foreign || p.allowed.iter().any(|a| !w.allowed.contains(a)) {
@@ -69,6 +74,13 @@ pub fn diff(current: &[WgPeer], desired: &[WgPeer]) -> PeerDiff {
                 .filter(|a| w.allowed.contains(a))
                 .copied()
                 .collect();
+            let lost = p
+                .allowed
+                .iter()
+                .filter(|a| !kept.contains(a))
+                .copied()
+                .collect();
+            d.losing.push((p.public_key.clone(), lost));
             if kept.is_empty() {
                 // Re-added with its new addresses by `set`.
                 d.remove.push(p.public_key.clone());
@@ -95,6 +107,7 @@ pub fn diff(current: &[WgPeer], desired: &[WgPeer]) -> PeerDiff {
     d.remove.sort();
     d.narrow.sort_by(|a, b| a.public_key.cmp(&b.public_key));
     d.set.sort_by(|a, b| a.public_key.cmp(&b.public_key));
+    d.losing.sort();
     d
 }
 
@@ -112,6 +125,10 @@ mod tests {
         "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=\t10.50.0.2/32 fd00::/64 192.168.1.0/24
 yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\t(none)
 ";
+
+    fn nets(s: &[&str]) -> Vec<Ipv4Net> {
+        s.iter().map(|n| n.parse().unwrap()).collect()
+    }
 
     fn peer(key: &str, allowed: &[&str]) -> WgPeer {
         WgPeer {
@@ -157,6 +174,7 @@ yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\t(none)
                 remove: vec!["gone".into()],
                 narrow: vec![],
                 set: vec![peer("c", &["10.50.0.5/32"])],
+                losing: vec![("gone".into(), nets(&["10.50.0.4/32"]))],
             }
         );
     }
@@ -178,6 +196,10 @@ yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\t(none)
                 remove: vec!["b".into()],
                 narrow: vec![peer("a", &["10.50.0.2/32"])],
                 set: vec![peer("b", &["10.50.0.9/32", "192.168.1.0/24"])],
+                losing: vec![
+                    ("a".into(), nets(&["192.168.1.0/24"])),
+                    ("b".into(), nets(&["10.50.0.3/32"])),
+                ],
             }
         );
         // Growing needs no narrowing; foreign entries always go.

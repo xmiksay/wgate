@@ -32,7 +32,7 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
 - `crates/db` — SeaORM entities, the SQL migration (`migration/m0001_init.sql`: tables,
   exclusion constraints own address ranges, ownership checks; `m0001_state.sql`: the
   revision + NOTIFY triggers), `grants.sql` (agent role), `desired_state()`
-  loader; shared by
+  loader, `agent` (the agent's only writes: `hub_key`, `agent_status`); shared by
   server and agent
 - `crates/server` — Axum + OIDC; unprivileged
 - `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener; reconciles network

@@ -18,10 +18,14 @@ pub fn parse(json: &str) -> anyhow::Result<Vec<(String, Id)>> {
             continue;
         };
         for e in elems {
-            let iface = e[0].as_str().context("map key")?;
-            let target = e[1]["jump"]["target"].as_str().context("map verdict")?;
-            let id = network_of_chain(target).with_context(|| format!("chain {target}"))?;
-            out.push((iface.to_owned(), id));
+            // One element that is not wgate's (added by hand) must not hide the rest.
+            let parsed = e[0]
+                .as_str()
+                .zip(e[1]["jump"]["target"].as_str().and_then(network_of_chain));
+            match parsed {
+                Some((iface, id)) => out.push((iface.to_owned(), id)),
+                None => tracing::warn!(element = %e, "unknown from_net element skipped"),
+            }
         }
     }
     Ok(out)
@@ -66,6 +70,8 @@ mod tests {
         let empty =
             r#"{"nftables": [{"metainfo": {}}, {"map": {"name": "from_net", "map": "verdict"}}]}"#;
         assert!(parse(empty).unwrap().is_empty());
+        let odd = r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-x", "accept"], ["wg-a", {"jump": {"target": "n1_from"}}]]}}]}"#;
+        assert_eq!(parse(odd).unwrap(), [("wg-a".into(), 1)]);
     }
 
     #[test]
