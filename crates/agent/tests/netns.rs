@@ -54,7 +54,7 @@ fn rendered_ruleset_loads_and_replaces() {
         tenant_space: vec![],
         peers: vec![],
     });
-    ns.exec(&["nft", "-f", "-"], Some(&empty.script));
+    ns.exec(&["nft", "-f", "-"], Some(&empty));
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
     assert!(
         !listed.contains("10.50.1."),

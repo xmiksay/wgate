@@ -39,11 +39,13 @@ under sudo).
   `addrs`, `outbound`, `inbound` exactly per design.md → Rights (ceiling ∩ external
   rules − tenant space, rules between networks, federation, mesh, inbound grants
   clipped to outside sources + hub addresses). Peers with an unknown/invalid network,
-  an invalid IP, a routed LAN in the pool, or an address an older peer already holds
-  are skipped with a `Problem`.
+  an invalid IP, a routed LAN outside `routed_space`, or an address an older peer
+  already holds are skipped with a `Problem`. A network is valid only inside its
+  tenant's blocks (and the pool), with a known tenant, at most /30 and not
+  overlapping an older network.
 - Rendering:
-  - `render_nft(&NftState) -> NftRender { script, skipped }`: the whole
-    `table inet wgate` per design.md from compiled peers and `tenant_space`
+  - `render_nft(&NftState) -> String`: the whole `table inet wgate` per design.md
+    from compiled peers and `tenant_space` (compile guarantees disjoint addresses)
   - `render_client_config(&ClientConfig { address, hub_address, private_key,
     hub_public_key, endpoint, outbound, inbound }) -> String`
 - Tests: unit tests for every function; proptest (set ops match pointwise semantics,
@@ -77,7 +79,7 @@ under sudo).
      delete a disabled one); routes for routed subnets via their interface
   5. diff peers → `remove` first, then `add`/`update` (`AllowedIPs` = `addrs(peer)`)
   6. `nft -f -` with the rendered table (atomic)
-  7. `agent_status` (incl. `Compiled.skipped` and `NftRender.skipped` peers as errors)
+  7. `agent_status` (incl. `Compiled.skipped` peers as errors)
 - Only manages interfaces with the `wg-` prefix it has in its state; it never touches
   `wg0`. An unknown `wg-*` interface → warn, do not delete.
 - An error in one network does not block the others; the error goes to `agent_status`

@@ -69,6 +69,9 @@ fn state() -> impl Strategy<Value = DesiredState> {
                 .enumerate()
                 .map(|(id, rules)| Tenant {
                     id: id as i64,
+                    blocks: vec![
+                        Ipv4Net::new(Ipv4Addr::new(10, 50, 2 * id as u8, 0), 23).expect("prefix"),
+                    ],
                     ceiling: RuleSet::from_rules(rules),
                 })
                 .collect(),

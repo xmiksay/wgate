@@ -31,6 +31,15 @@ pub struct AddrRange {
     pub hi: Ipv4Addr,
 }
 
+impl From<Ipv4Net> for AddrRange {
+    fn from(net: Ipv4Net) -> Self {
+        Self {
+            lo: net.network(),
+            hi: net.broadcast(),
+        }
+    }
+}
+
 impl AddrRange {
     pub fn contains(&self, addr: Ipv4Addr) -> bool {
         (self.lo..=self.hi).contains(&addr)

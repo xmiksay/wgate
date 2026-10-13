@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::compile::{CompiledPeer, Id, conflicting};
+use crate::compile::CompiledPeer;
 use crate::rights::{AddrRange, RuleSet, merge_nets, subtract_nets};
 use crate::rule::Service;
 
@@ -19,16 +19,6 @@ pub struct NftState {
     pub tenant_space: Vec<Ipv4Net>,
     /// From [`crate::compile`]; a missing peer has no access.
     pub peers: Vec<CompiledPeer>,
-}
-
-/// The rendered script plus the peers left out of it.
-#[derive(Clone, Debug)]
-pub struct NftRender {
-    pub script: String,
-    /// Peers whose addresses overlap an older peer's (compile already drops those;
-    /// this guards the transaction, which nft would reject whole, revocations
-    /// included).
-    pub skipped: Vec<Id>,
 }
 
 /// Set elements, keyed `peer . addr . proto . port` (outbound) and
@@ -81,11 +71,7 @@ impl Sets {
 
 /// In the same element syntax as `RuleSet` elements.
 fn range(net: Ipv4Net) -> String {
-    AddrRange {
-        lo: net.network(),
-        hi: net.broadcast(),
-    }
-    .to_string()
+    AddrRange::from(net).to_string()
 }
 
 /// `saddr . daddr` plus `. proto . port` for tcp/udp, into the matching set.
@@ -101,26 +87,17 @@ fn push(quads: &mut Vec<String>, pairs: &mut Vec<String>, service: Service, [s, 
 /// A complete `nft -f` script. It creates the table if missing, then deletes and
 /// redefines it, so applying it is one atomic transaction that replaces the whole
 /// table whether or not it existed.
-pub fn render_nft(state: &NftState) -> NftRender {
+///
+/// Peers must come from [`crate::compile`], which guarantees disjoint addresses; nft
+/// rejects overlapping elements and with them the whole transaction.
+pub fn render_nft(state: &NftState) -> String {
     let mut peers: Vec<&CompiledPeer> = state.peers.iter().collect();
     peers.sort_by_key(|p| p.ip);
-    let skipped = conflicting(
-        &peers
-            .iter()
-            .map(|p| (p.id, p.addrs.clone()))
-            .collect::<Vec<_>>(),
-    );
     let mut sets = Sets::default();
-    let mut tenant_space = state.tenant_space.clone();
-    for p in peers
-        .iter()
-        .filter(|p| skipped.binary_search(&p.id).is_err())
-    {
+    for p in peers {
         sets.add(p);
-        // Already in compile's tenant space; repeated in case peers came from elsewhere.
-        tenant_space.extend(p.addrs.iter().copied());
     }
-    let tenant_space = merge_nets(&tenant_space);
+    let tenant_space = merge_nets(&state.tenant_space);
 
     // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
     let node_cidrs = subtract_nets(&state.node_cidrs, &tenant_space);
@@ -247,7 +224,7 @@ table inet wgate {{
 }}
 "
     );
-    NftRender { script, skipped }
+    script
 }
 
 fn set(name: &str, ty: &str, elements: &[String]) -> String {

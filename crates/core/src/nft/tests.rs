@@ -30,6 +30,7 @@ fn sample_state() -> NftState {
         tenants: vec![
             Tenant {
                 id: 1,
+                blocks: vec![net("10.50.0.0/23")],
                 ceiling: rule_set(&[
                     "tcp 172.16.16.1/32 6443",
                     "icmp 172.19.9.0/24",
@@ -38,6 +39,7 @@ fn sample_state() -> NftState {
             },
             Tenant {
                 id: 3,
+                blocks: vec![net("10.50.2.0/24")],
                 ceiling: rule_set(&["tcp 172.16.16.1/32 6443"]),
             },
         ],
@@ -99,28 +101,14 @@ fn sample_state() -> NftState {
 
 #[test]
 fn ruleset_golden() {
-    let out = render_nft(&sample_state());
-    assert!(out.skipped.is_empty());
-    assert_golden("ruleset.nft", &out.script);
+    assert_golden("ruleset.nft", &render_nft(&sample_state()));
 }
 
 #[test]
 fn router_lans_are_keyed_like_the_router() {
-    let script = render_nft(&sample_state()).script;
+    let script = render_nft(&sample_state());
     assert!(script.contains("192.168.10.0-192.168.10.255 . 172.16.16.1 . tcp . 6443"));
     assert!(script.contains("192.168.10.0-192.168.10.255 . 10.50.1.2 . tcp . 22"));
-}
-
-#[test]
-fn overlapping_peers_are_left_out() {
-    let mut state = sample_state();
-    let mut twin = state.peers[0].clone();
-    twin.id = 99;
-    state.peers.push(twin);
-    let out = render_nft(&state);
-    // The older peer keeps its address; only the twin is left out.
-    assert_eq!(out.skipped, [99]);
-    assert!(out.script.contains(&format!("{} . ", state.peers[0].ip)));
 }
 
 #[test]
@@ -135,7 +123,7 @@ fn node_cidrs_are_merged_without_tenant_space() {
     .iter()
     .map(|n| net(n))
     .collect();
-    let script = render_nft(&state).script;
+    let script = render_nft(&state);
     assert!(
         script.contains("ip daddr { 10.48.0.0/15, 10.51.0.0/16, 172.19.0.0/16 } snat"),
         "{script}"
@@ -149,8 +137,7 @@ fn empty_state_has_no_elements_or_snat() {
         node_cidrs: vec![],
         tenant_space: vec![],
         peers: vec![],
-    })
-    .script;
+    });
     assert!(!script.contains("elements"));
     assert!(!script.contains("snat"));
     assert!(script.contains("counter drop"));
