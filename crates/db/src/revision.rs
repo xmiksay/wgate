@@ -25,3 +25,7 @@ pub async fn listener(database_url: &str) -> Result<sqlx::postgres::PgListener, 
     listener.listen(CHANNEL).await?;
     Ok(listener)
 }
+
+/// The LISTEN connection type, so callers need no sqlx dependency of their own.
+pub type Listener = sqlx::postgres::PgListener;
+pub use sqlx::Error as ListenError;

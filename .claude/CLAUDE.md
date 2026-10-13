@@ -13,7 +13,8 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
   start Postgres 17 containers, so Docker must be running)
 - `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns*.rs`
   (kernel accepts the golden ruleset; real packets vs. the rendered ruleset over veth
-  links named `wg-*`, python3 endpoints);
+  links named `wg-*`, python3 endpoints; the agent end to end against Postgres in
+  Docker with real wg interfaces);
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
 - `make migrate` — `wgate migrate` with `WGATE_DATABASE_URL` (`.env.example`)
@@ -34,7 +35,9 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   loader; shared by
   server and agent
 - `crates/server` — Axum + OIDC; unprivileged
-- `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener
+- `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener; reconciles network
+  by network through `ip`/`wg`/`nft` behind a `Runner` (faked in unit tests); config
+  `agent.example.toml`, unit `deploy/wgate-agent.service`
 - `crates/wgate` — binary, `server | agent | migrate`
 - `web/` — Vue UI, embedded into the binary
 

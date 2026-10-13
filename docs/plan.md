@@ -101,7 +101,7 @@ under sudo).
 - `wgate migrate` subcommand (run by ansible before the units restart).
 
 ### 1.4 `agent`
-- Config `/etc/wgate/agent.toml`: `database_url`, `public_ip`, `snat_source`
+- Config `/etc/wgate/agent.toml` (`crates/agent/agent.example.toml`): `database_url`, `snat_source`
   (172.19.9.10), `node_cidrs` (172.19.9.0/24), `pool`, `routed_space`, `reserved`
   (as the server's), `keys_dir`, `reconcile_interval = 60s`.
 - Core: the nft rendering splits into `render_base` + `render_network` (one fragment

@@ -40,6 +40,10 @@ make help        # all targets
 | Variable | Used by | What |
 |---|---|---|
 | `WGATE_DATABASE_URL` | `wgate migrate` | Postgres URL of the owner role, direct to Postgres (not pgbouncer) |
+| `WGATE_AGENT_CONFIG` | `wgate agent` | Path of the agent config (default `/etc/wgate/agent.toml`, see `crates/agent/agent.example.toml`) |
+
+The agent needs `ip` (iproute2), `wg` (wireguard-tools) and `nft` on the hub; an example
+systemd unit is `deploy/wgate-agent.service`.
 
 See `.env.example`. `make migrate` applies the migrations with it.
 
