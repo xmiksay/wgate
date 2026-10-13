@@ -4,7 +4,7 @@
 use anyhow::Context;
 use wgate_core::{Compiled, Id, render_network_removal};
 
-use super::steps::{nft, run, strip_peers};
+use super::steps::{disarm, nft, run};
 use crate::keys::Keys;
 use crate::runner::Runner;
 
@@ -34,28 +34,39 @@ pub(super) fn carried(r: &dyn Runner, keys: &Keys, iface: &str, id: Id) -> anyho
     })
 }
 
+/// An interface whose network is gone but whose removal did not finish: not reused
+/// until it does.
+pub(super) struct Blocked {
+    pub iface: String,
+    /// Confirmed wgate's (so it may be touched, e.g. to free a port).
+    pub ours: bool,
+}
+
 /// Takes away the registered networks that are not compiled under the same interface
 /// *and* id, so a new network that reuses a slug starts on a fresh interface. The
 /// interface goes before the map entry: deleting it cuts the traffic at once, and the
-/// entry stays as the marker that retries a removal that failed halfway. Returns the
-/// interfaces whose removal failed: they are not reused until it succeeds.
+/// entry stays as the marker that retries a removal that failed halfway. Without the
+/// list of links only the entry goes (that alone cuts the traffic; the interface is
+/// found by its key later).
 pub(super) fn remove_gone(
     r: &dyn Runner,
     c: &Compiled,
     keys: &Keys,
     registered: &[(String, Id)],
-    links: &mut Vec<String>,
+    mut links: Option<&mut Vec<String>>,
     errors: &mut Vec<String>,
-) -> Vec<String> {
+) -> Vec<Blocked> {
     let mut blocked = vec![];
     for (iface, id) in registered {
         if c.networks.iter().any(|n| n.iface == *iface && n.id == *id) {
             continue;
         }
+        let present = links.as_ref().is_none_or(|l| l.contains(iface));
         // The name may have been taken again after wgate's interface went: one with
         // another key is left alone. Without the key file the registration decides.
-        let ours = links.contains(iface)
-            && match carried(r, keys, iface, *id) {
+        let ours = match links.as_ref().map(|l| l.contains(iface)) {
+            Some(false) => false,
+            _ => match carried(r, keys, iface, *id) {
                 Ok(Carried::Its | Carried::Nothing | Carried::Unverified) => true,
                 Ok(Carried::Other) => {
                     errors.push(format!(
@@ -63,30 +74,48 @@ pub(super) fn remove_gone(
                     ));
                     false
                 }
+                // Without the list of links a failed read is most likely no link.
+                Err(_) if links.is_none() => false,
                 Err(e) => {
                     errors.push(format!("{iface} (removing network {id}): {e:#}"));
-                    blocked.push(iface.clone());
+                    blocked.push(Blocked {
+                        iface: iface.clone(),
+                        ours: false,
+                    });
                     continue;
                 }
-            };
-        let removed = if ours {
-            run(r, &["ip", "link", "del", iface]).map(|()| links.retain(|l| l != iface))
-        } else {
-            Ok(())
+            },
+        };
+        let removed = match links.as_deref_mut() {
+            Some(links) if ours => {
+                run(r, &["ip", "link", "del", iface]).map(|()| links.retain(|l| l != iface))
+            }
+            _ => Ok(()),
         }
         .and_then(|()| nft(r, &render_network_removal(*id, iface)));
         match removed {
+            Ok(()) if links.is_none() && present && ours => {
+                // Unregistered; its interface goes once the links can be listed.
+                blocked.push(Blocked {
+                    iface: iface.clone(),
+                    ours,
+                });
+            }
             Ok(()) => tracing::info!(%iface, network = id, "network removed"),
             Err(e) => {
                 errors.push(format!("{iface} (removing network {id}): {e:#}"));
                 // Still there: it must at least stop carrying the gone network.
+                let still = links.as_ref().is_some_and(|l| l.contains(iface));
                 if ours
-                    && links.contains(iface)
-                    && let Err(e) = strip_peers(r, iface)
+                    && still
+                    && let Err(e) = disarm(r, iface)
                 {
-                    errors.push(format!("{iface} (removing network {id}): peers: {e:#}"));
+                    errors.push(format!("{iface} (removing network {id}): disarm: {e:#}"));
                 }
-                blocked.push(iface.clone());
+                blocked.push(Blocked {
+                    iface: iface.clone(),
+                    ours,
+                });
             }
         }
     }

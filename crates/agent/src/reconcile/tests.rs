@@ -144,16 +144,19 @@ fn position(log: &[String], needle: &str) -> usize {
         .unwrap_or_else(|| panic!("no `{needle}` in {log:#?}"))
 }
 
+/// nft transactions other than SNAT (always the second, right after the base).
 fn nft_runs(log: &[String]) -> usize {
-    log.iter().filter(|c| c.as_str() == "nft -f -").count()
+    log.iter().filter(|c| c.as_str() == "nft -f -").count() - 1
 }
 
-/// Where the `n`th (from 0) nft transaction ran: the base, then fragments in order.
+/// Where the `n`th (from 0) nft transaction ran: the base, then fragments (and
+/// removals) in order.
 fn nft_run(log: &[String], n: usize) -> usize {
     log.iter()
         .enumerate()
         .filter(|(_, c)| c.as_str() == "nft -f -")
-        .nth(n)
+        // Past SNAT, the second.
+        .nth(if n == 0 { 0 } else { n + 1 })
         .unwrap_or_else(|| panic!("no nft run {n} in {log:#?}"))
         .0
 }
@@ -259,12 +262,7 @@ fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
         out.errors
     );
     // Its fragment (every revocation of a right) still went in, and n2 was applied.
-    let fragments = fake
-        .log()
-        .iter()
-        .filter(|c| c.as_str() == "nft -f -")
-        .count();
-    assert_eq!(fragments, 3, "base + both networks");
+    assert_eq!(nft_runs(&fake.log()), 3, "base + both networks");
     assert_eq!(out.hub_keys.len(), 2);
 }
 

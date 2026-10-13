@@ -53,7 +53,7 @@ fn a_reused_slug_gets_a_fresh_network() {
 }
 
 #[test]
-fn without_an_inventory_nothing_is_removed() {
+fn without_the_links_a_gone_network_is_only_unregistered() {
     let dir = keys();
     let fake = Fake::default().fail("ip -j link show").answer(
         "nft -j list map",
@@ -65,7 +65,10 @@ fn without_an_inventory_nothing_is_removed() {
         "{:?}",
         out.errors
     );
-    assert!(!fake.log().iter().any(|c| c.contains("wg-old")));
+    let log = fake.log();
+    // Its map entries go (that cuts it off); its interface waits for the links.
+    assert!(!log.iter().any(|c| c.starts_with("ip link del")));
+    assert!(nft_runs(&log) >= 2, "base + removal: {log:#?}");
 }
 
 #[test]
@@ -82,7 +85,7 @@ fn without_the_base_only_revocations_apply() {
     assert!(out.errors[0].starts_with("base: "), "{:?}", out.errors);
     let log = fake.log();
     position(&log, &format!("wg set wg-n1 peer {K2} remove"));
-    assert_eq!(log.iter().filter(|c| c.as_str() == "nft -f -").count(), 1);
+    assert_eq!(nft_runs(&log), 1, "the base only (SNAT apart)");
     assert!(
         !log.iter()
             .any(|c| c.contains(" allowed-ips ") || c.starts_with("ip link add"))
@@ -108,10 +111,17 @@ fn a_failed_removal_holds_back_the_network_reusing_its_interface() {
         out.errors
     );
     let log = fake.log();
+    // Network 1 is not built on it; network 9's leftovers are taken off it.
     assert!(
         !log.iter()
-            .any(|c| c.contains("dev wg-n1") || c.starts_with("wg set wg-n1"))
+            .any(|c| c.starts_with("ip addr replace") && c.ends_with("dev wg-n1"))
     );
+    assert!(
+        !log.iter()
+            .any(|c| c.starts_with("wg set wg-n1") && !c.ends_with(" remove"))
+    );
+    position(&log, "ip addr flush dev wg-n1");
+    position(&log, "ip route flush dev wg-n1 proto 150");
     position(&log, "ip link add wg-n2");
 }
 

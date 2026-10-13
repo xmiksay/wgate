@@ -91,6 +91,14 @@ pub fn render_base(c: &Compiled) -> String {
             "oifname vmap @to_net",
         ],
     );
+    out
+}
+
+/// SNAT of tenant traffic to the node networks, a transaction of its own: a broken
+/// SNAT setting must not hold back the spoof guard and the revocations behind it.
+/// Needs the base.
+pub fn render_snat(c: &Compiled) -> String {
+    let mut out = String::new();
     // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
     let nodes = subtract_nets(&c.node_cidrs, &c.tenant_space);
     let snat: Vec<String> = if nodes.is_empty() {
@@ -201,9 +209,10 @@ pub fn render_network_removal(id: Id, iface: &str) -> String {
     out
 }
 
-/// The base and every network's fragment as one script (tests, a first install).
+/// The base, SNAT and every network's fragment as one script (tests, a first install).
 pub fn render_all(c: &Compiled) -> String {
     let mut out = render_base(c);
+    out.push_str(&render_snat(c));
     for n in &c.networks {
         out.push('\n');
         out.push_str(&render_network(c, n));

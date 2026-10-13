@@ -110,3 +110,40 @@ fn a_stuck_gone_interface_lets_go_of_a_wanted_port() {
         position(&log, "wg set wg-old listen-port 0") < position(&log, "wg set wg-n1 listen-port")
     );
 }
+
+#[test]
+fn a_blocked_interface_wgate_does_not_own_keeps_its_port() {
+    let dir = keys();
+    std::fs::write(dir.path().join("n9.key"), hub_private(9)).unwrap();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-x"}]"#)
+        .answer(
+            "nft -j list map",
+            &registered(r#"["wg-x", {"jump": {"target": "n9_from"}}]"#),
+        )
+        .answer("wg show wg-x public-key", "someone-elses\n")
+        .answer("wg show all listen-port", "wg-x\t51801\n")
+        .fail_input("delete chain inet wgate n9_");
+    reconcile(&fake, &compiled(), dir.path());
+    assert!(!fake.log().iter().any(|c| c.starts_with("wg set wg-x")));
+}
+
+#[test]
+fn a_freed_port_landing_on_a_wanted_one_is_picked_again() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
+        )
+        .answer("wg show all listen-port", "wg-n1\t51802\n")
+        // The kernel keeps handing out a port network 2 wants.
+        .answer("wg show wg-n1 listen-port", "51802\n");
+    reconcile(&fake, &compiled(), dir.path());
+    let picks = fake
+        .log()
+        .iter()
+        .filter(|c| *c == "wg set wg-n1 listen-port 0")
+        .count();
+    assert_eq!(picks, 5, "bounded retries");
+}
