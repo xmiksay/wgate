@@ -27,7 +27,7 @@ mod steps;
 use gone::{remove_gone_links, unregister};
 use network::{free_ports, network};
 use steps::{
-    Link, current_routes, desired_peers, lans, link_exists, links, links_of, nft, peer_diff,
+    Link, SCRATCH, current_routes, desired_peers, lans, link_exists, links, nft, peer_diff,
     registered, removals, route_deletions,
 };
 
@@ -61,15 +61,8 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let guarded = unguarded.as_ref().is_some_and(Vec::is_empty);
     note(base, &mut out.errors);
     note(nft(r, &render_snat(c)).context("snat"), &mut out.errors);
-    // Without the full list, each network's own interface is read: enough to keep
-    // revoking on wgate's, not to tell what is gone or free.
-    let (mut links, complete) = match links(r).context("inventory") {
-        Ok(links) => (Some(links), true),
-        Err(e) => {
-            out.errors.push(format!("{e:#}"));
-            (links_of(r, c, &mut out.errors), false)
-        }
-    };
+    let mut links = note(links(r).context("inventory"), &mut out.errors);
+    let complete = links.is_some();
     let registry = note(registered(r).context("inventory"), &mut out.errors);
     // Nothing grows where spoofed sources may not be dropped, nor without knowing what
     // is gone, free or registered.
@@ -90,18 +83,6 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             Ok(Iface::New) => new.push(n),
             Ok(Iface::Unknown) => unknown.push(n),
             Err(why) => out.errors.push(format!("{}: {why}", n.iface)),
-        }
-    }
-    // A registration stays only for a network compiled on that interface whose own
-    // interface is there or about to be made (or that cannot be told, without the
-    // links): otherwise nothing on that name keeps its rights.
-    // A deleted interface's own pair too: its chains may have outlived its registration.
-    let extra = gone.deleted.into_iter().filter(|p| !registered.contains(p));
-    for (iface, id) in &registered.iter().cloned().chain(extra).collect::<Vec<_>>() {
-        let pair = |n: &&CompiledNetwork| n.iface == *iface && n.id == *id;
-        let kept = owned.iter().chain(&new).chain(&unknown).any(pair);
-        if !kept {
-            unregister(r, iface, *id, &mut out.errors);
         }
     }
 
@@ -148,11 +129,41 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         && active
             .iter()
             .all(|(_, _, plan)| plan.peers.is_ok() && plan.routes.is_ok());
+    // A registration stays only for a network compiled on that interface whose own
+    // interface is there or about to be made (or that cannot be told, without the
+    // links): otherwise nothing on that name keeps its rights.
+    // A deleted interface's own pair too: its chains may have outlived its
+    // registration (never a scratch one's: it was never registered).
+    let extra = gone
+        .deleted
+        .iter()
+        .filter(|(name, _)| !name.starts_with(SCRATCH))
+        .filter(|p| !registered.contains(p))
+        .cloned();
+    for (iface, id) in &registered.iter().cloned().chain(extra).collect::<Vec<_>>() {
+        let pair = |n: &&CompiledNetwork| n.iface == *iface && n.id == *id;
+        // A network not made this pass keeps no registration.
+        let made = new.iter().filter(|_| grow);
+        let kept = owned.iter().chain(&unknown).chain(made).any(pair);
+        if !kept {
+            unregister(r, iface, *id, &mut out.errors);
+        }
+    }
+
     if !grow {
         // Rights revoked in a fragment still apply, cut down to what the guard covers;
-        // with the guard unknown, every network is cut off.
-        let within = unguarded.map(|unguarded| c.within_guard(&[unguarded, held].concat()));
-        for (n, _, _) in active.iter().filter(|(_, exists, _)| *exists) {
+        // with the guard unknown, every network is cut off. A network whose link could
+        // not be read holds all its peers' addresses: who holds what on it is unknown.
+        let blind: Vec<Ipv4Net> = unknown
+            .iter()
+            .flat_map(|n| c.peers_of(n.id).flat_map(|p| p.addrs.clone()))
+            .collect();
+        let within = unguarded.map(|unguarded| c.within_guard(&[unguarded, held, blind].concat()));
+        let existing = active
+            .iter()
+            .filter(|(_, exists, _)| *exists)
+            .map(|(n, _, _)| *n);
+        for n in existing.chain(unknown.iter().copied()) {
             let script = match &within {
                 Some(within) => render_network(within, n),
                 None => render_network_cutoff(n.id),

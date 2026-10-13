@@ -118,6 +118,7 @@ fn without_the_links_only_registrations_go() {
     let dir = keys();
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
+        .fail("ip -j -d link show")
         .answer("nft -j list map", &registry(&[("wg-old", 9), ("wg-n1", 1)]));
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
@@ -127,12 +128,20 @@ fn without_the_links_only_registrations_go() {
     );
     let log = fake.log();
     // The gone network's registration goes (that cuts it off); nothing is deleted,
-    // made or built, and network 1's registration stays.
+    // made or built, and network 1's registration stays (failing closed).
     assert!(
         !log.iter()
             .any(|c| c.starts_with("ip link") || c.starts_with("wg set"))
     );
-    assert_eq!(nft_runs(&log), 2, "base + the removal: {log:#?}");
+    let removal = "delete element inet wgate from_net { \"wg-old\" }";
+    assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
+    assert!(
+        !fake
+            .inputs
+            .borrow()
+            .iter()
+            .any(|i| i.contains("delete element inet wgate from_net { \"wg-n1\" }"))
+    );
 }
 
 #[test]

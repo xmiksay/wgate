@@ -177,6 +177,9 @@ pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors:
         // that nothing listed listens on.
         let parked = SPARE_PORTS
             .filter(|spare| !in_use.contains(spare))
+            // Free by the listing: a few tries are plenty, more would only repeat
+            // whatever else fails.
+            .take(3)
             .find(|spare| run(r, &["wg", "set", iface, "listen-port", &spare.to_string()]).is_ok());
         if let Some(spare) = parked {
             in_use.push(spare);

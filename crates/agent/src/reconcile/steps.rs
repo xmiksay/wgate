@@ -59,7 +59,7 @@ pub(super) fn additions(
 ) -> anyhow::Result<()> {
     let (free, waiting): (Vec<_>, Vec<_>) = d.set.iter().partition(|p| !touches(&p.allowed, held));
     let commands: Vec<_> = free.iter().map(|p| allowed_ips(&n.iface, p)).collect();
-    let added = all(r, &commands);
+    let added = all(r, commands);
     if waiting.is_empty() {
         return added;
     }
@@ -148,7 +148,7 @@ pub(super) fn route_commands(
     lans: &[Ipv4Net],
 ) -> anyhow::Result<()> {
     let commands: Vec<_> = lans.iter().map(|lan| route(verb, lan, &n.iface)).collect();
-    all(r, &commands)
+    all(r, commands)
 }
 
 /// `ip route <verb> <lan> dev <iface> proto 150`.
@@ -168,8 +168,8 @@ fn route(verb: &str, lan: &Ipv4Net, iface: &str) -> Vec<String> {
 
 /// Runs every command, also after one fails (one stuck peer must not keep the other
 /// revocations from applying); reports all failures.
-pub(super) fn all(r: &dyn Runner, commands: &[Vec<String>]) -> anyhow::Result<()> {
-    release(r, commands.iter().map(|c| (c.clone(), vec![])).collect()).0
+pub(super) fn all(r: &dyn Runner, commands: Vec<Vec<String>>) -> anyhow::Result<()> {
+    release(r, commands.into_iter().map(|c| (c, vec![])).collect()).0
 }
 
 pub(super) fn argv(parts: &[&str]) -> Vec<String> {
@@ -228,56 +228,27 @@ impl From<Shown> for Link {
     }
 }
 
-/// The kernel's WireGuard interfaces.
+/// The kernel's WireGuard interfaces; when the type filter fails, from every link
+/// with its details (its kind).
 pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<Link>> {
-    let json = r.run(&["ip", "-j", "link", "show", "type", "wireguard"], None)?;
-    let shown: Vec<Shown> = serde_json::from_str(&json).context("ip -j link")?;
-    Ok(shown.into_iter().map(Link::from).collect())
-}
-
-/// The compiled networks' own interfaces, each read on its own: those that exist and
-/// are WireGuard. `None` when not one could be read.
-pub(super) fn links_of(
-    r: &dyn Runner,
-    c: &Compiled,
-    errors: &mut Vec<String>,
-) -> Option<Vec<Link>> {
-    let mut read_any = false;
-    let mut found = vec![];
-    for n in &c.networks {
-        let json = match r.run(&["ip", "-j", "-d", "link", "show", "dev", &n.iface], None) {
-            Ok(json) => json,
-            // Not made yet: nothing to revoke on it.
-            Err(e) if format!("{e:#}").contains("does not exist") => {
-                read_any = true;
-                continue;
-            }
-            Err(e) => {
-                errors.push(format!(
-                    "{}: no revocations without its link: {e:#}",
-                    n.iface
-                ));
-                continue;
-            }
-        };
-        let shown: Vec<Shown> = match serde_json::from_str(&json) {
-            Ok(shown) => shown,
-            Err(e) => {
-                errors.push(format!("{}: ip -j link: {e}", n.iface));
-                continue;
-            }
-        };
-        read_any = true;
-        found.extend(
-            shown
-                .into_iter()
+    let filtered = r
+        .run(&["ip", "-j", "link", "show", "type", "wireguard"], None)
+        .and_then(|json| Ok(serde_json::from_str::<Vec<Shown>>(&json)?));
+    let shown = match filtered {
+        Ok(shown) => shown,
+        Err(first) => {
+            let json = r
+                .run(&["ip", "-j", "-d", "link", "show"], None)
+                .with_context(|| format!("{first:#}"))?;
+            let all: Vec<Shown> = serde_json::from_str(&json).context("ip -j -d link")?;
+            all.into_iter()
                 .filter(|l| {
                     l.linkinfo.as_ref().and_then(|i| i.info_kind.as_deref()) == Some("wireguard")
                 })
-                .map(Link::from),
-        );
-    }
-    read_any.then_some(found)
+                .collect()
+        }
+    };
+    Ok(shown.into_iter().map(Link::from).collect())
 }
 
 /// The interfaces registered in the `from_net` map, with their network.
