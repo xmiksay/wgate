@@ -18,7 +18,7 @@ mod steps;
 
 use steps::{
     additions, desired_peers, lans, link_exists, links, nft, peer_diff, registered, removals,
-    route_commands, run,
+    route_commands, run, strip_peers,
 };
 
 #[derive(Debug, Default)]
@@ -38,53 +38,59 @@ struct Plan {
 pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let mut out = Outcome::default();
     let base = nft(r, &render_base(c)).context("base");
-    let links = links(r).context("inventory");
-    let registered = registered(r).context("inventory");
     let ready = base.is_ok();
     report(base, &mut out.errors);
-    let (mut links, registered) = match (links, registered) {
-        (Ok(links), Ok(registered)) => (links, registered),
-        (links, registered) => {
-            let links = links.map_err(|e| out.errors.push(format!("{e:#}"))).ok();
-            report(registered.map(drop), &mut out.errors);
-            // A gone network cannot be told from a live one, so nothing is built or
-            // removed, but peer revocations need no inventory.
-            revoke_peers(r, c, links.as_deref(), &mut out.errors);
-            return out;
-        }
+    let mut links = links(r)
+        .context("inventory")
+        .map_err(|e| out.errors.push(format!("{e:#}")))
+        .ok();
+    let registered = registered(r)
+        .context("inventory")
+        .map_err(|e| out.errors.push(format!("{e:#}")))
+        .ok();
+    // A gone network can only be told from a live one with both inventories.
+    let blocked = match (&mut links, &registered) {
+        (Some(links), Some(registered)) => remove_gone(r, c, registered, links, &mut out.errors),
+        _ => vec![],
     };
-    // Taking a gone network away needs only the inventory.
-    let blocked = remove_gone(r, c, &registered, &mut links, &mut out.errors);
-    if !ready {
-        // A stale base may lack a new block's spoof guard, so nothing is built and
-        // no fragment changes; rights revoked inside a fragment wait for the base.
-        revoke_peers(r, c, Some(&links), &mut out.errors);
-        return out;
-    }
-    free_ports(r, c, &mut out.errors);
-
-    let mut active = vec![];
+    let mut owned = vec![];
+    let mut new = vec![];
     for n in &c.networks {
-        let exists = links.contains(&n.iface);
-        let mine = registered
-            .iter()
-            .any(|(i, id)| *i == n.iface && *id == n.id);
-        let refused = if blocked.contains(&n.iface) {
-            Some("waits for the previous network on it to be removed")
-        } else if exists && !mine && !carries_its_key(r, n, keys_dir) {
-            // Registered networks lose their map entries only with the table (a
-            // flush); their interfaces still carry the network's key.
-            Some("an interface wgate did not make; left alone")
-        } else if !exists && link_exists(r, &n.iface) {
-            Some("the name is taken by a link that is not WireGuard; left alone")
-        } else {
-            None
-        };
-        match refused {
-            Some(why) => out.errors.push(format!("{}: {why}", n.iface)),
-            None => active.push((n, exists, plan(r, c, n, exists))),
+        match iface_of(
+            r,
+            n,
+            keys_dir,
+            links.as_deref(),
+            registered.as_deref(),
+            &blocked,
+        ) {
+            Ok(Iface::Owned) => owned.push(n),
+            Ok(Iface::New) => new.push(n),
+            Ok(Iface::Unknown) => {}
+            Err(why) => out.errors.push(format!("{}: {why}", n.iface)),
         }
     }
+    let (true, Some(links)) = (ready && registered.is_some(), links) else {
+        // Without the inventory nothing is built; a stale base may lack a new block's
+        // spoof guard, so nothing grows on it either and rights revoked inside a
+        // fragment wait for it. Peer revocations need neither.
+        for n in owned {
+            let result = peer_diff(r, c, n).and_then(|d| removals(r, n, &d));
+            report(
+                result.with_context(|| format!("{}: revocations", n.iface)),
+                &mut out.errors,
+            );
+        }
+        return out;
+    };
+    free_ports(r, c, &owned, &mut out.errors);
+
+    let active: Vec<_> = owned
+        .into_iter()
+        .map(|n| (n, true))
+        .chain(new.into_iter().map(|n| (n, false)))
+        .map(|(n, exists)| (n, exists, plan(r, c, n, exists)))
+        .collect();
     // What anyone loses, in every network, goes before any network grows: an address
     // or LAN moving between peers or networks is never held twice.
     for (n, _, plan) in &active {
@@ -114,13 +120,60 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     }
 
     for link in &links {
-        let known = c.networks.iter().any(|n| n.iface == *link);
+        let known = c.networks.iter().any(|n| n.iface == *link) || blocked.contains(link);
         if link.starts_with("wg-") && !known {
             // Not ours to delete; its traffic is dropped (an unknown wg-*).
             tracing::warn!(%link, "unknown wg- interface left alone");
         }
     }
     out
+}
+
+/// What a compiled network's interface is to the agent.
+enum Iface {
+    /// It exists and is wgate's: registered for this network, or carrying its hub key
+    /// (map entries are lost only with the table, the key stays on the interface).
+    Owned,
+    /// No link has its name: the agent may create it.
+    New,
+    /// Without the list of links, a network neither registered nor keyed.
+    Unknown,
+}
+
+/// Decided once, before anything touches an interface; `Err` is why it is left alone.
+fn iface_of(
+    r: &dyn Runner,
+    n: &CompiledNetwork,
+    keys_dir: &Path,
+    links: Option<&[String]>,
+    registered: Option<&[(String, Id)]>,
+    blocked: &[String],
+) -> Result<Iface, String> {
+    if blocked.contains(&n.iface) {
+        return Err("waits for the previous network on it to be removed".into());
+    }
+    let exists = links.map(|l| l.contains(&n.iface));
+    if exists == Some(false) {
+        return if link_exists(r, &n.iface) {
+            Err("the name is taken by a link that is not WireGuard; left alone".into())
+        } else {
+            Ok(Iface::New)
+        };
+    }
+    let mine = registered.is_some_and(|reg| reg.iter().any(|(i, id)| *i == n.iface && *id == n.id));
+    if mine {
+        return Ok(Iface::Owned);
+    }
+    let (_, public) =
+        keys::ensure(r, keys_dir, &key_name(n)).map_err(|e| format!("hub key: {e:#}"))?;
+    let carried = r
+        .run(&["wg", "show", &n.iface, "public-key"], None)
+        .is_ok_and(|key| key.trim() == public);
+    match (carried, exists) {
+        (true, _) => Ok(Iface::Owned),
+        (false, Some(true)) => Err("an interface wgate did not make; left alone".into()),
+        (false, _) => Ok(Iface::Unknown),
+    }
 }
 
 /// Takes away the registered networks that are not compiled under the same interface
@@ -151,6 +204,12 @@ fn remove_gone(
             Ok(()) => tracing::info!(%iface, network = id, "network removed"),
             Err(e) => {
                 errors.push(format!("{iface} (removing network {id}): {e:#}"));
+                // Still there: it must at least stop carrying the gone network.
+                if links.contains(iface)
+                    && let Err(e) = strip_peers(r, iface)
+                {
+                    errors.push(format!("{iface} (removing network {id}): peers: {e:#}"));
+                }
                 blocked.push(iface.clone());
             }
         }
@@ -161,9 +220,10 @@ fn remove_gone(
 /// Ports can swap: an interface holding the port another network wants lets go of it
 /// (it gets its own in its turn). Port 0 is random and can land on a port a later
 /// network wants; that network then fails until the next reconcile frees it again.
-fn free_ports(r: &dyn Runner, c: &Compiled, errors: &mut Vec<String>) {
-    let Ok(ports) = r.run(&["wg", "show", "all", "listen-port"], None) else {
-        return;
+fn free_ports(r: &dyn Runner, c: &Compiled, owned: &[&CompiledNetwork], errors: &mut Vec<String>) {
+    let ports = match r.run(&["wg", "show", "all", "listen-port"], None) {
+        Ok(ports) => ports,
+        Err(e) => return errors.push(format!("ports: {e:#}")),
     };
     for line in ports.lines() {
         let Some((iface, port)) = line.split_once('\t') else {
@@ -174,35 +234,12 @@ fn free_ports(r: &dyn Runner, c: &Compiled, errors: &mut Vec<String>) {
             .iter()
             .any(|n| n.iface != iface && n.port.to_string() == port.trim());
         if wanted_elsewhere
-            && c.networks.iter().any(|n| n.iface == iface)
+            && owned.iter().any(|n| n.iface == iface)
             && let Err(e) = run(r, &["wg", "set", iface, "listen-port", "0"])
         {
             errors.push(format!("{iface}: free port: {e:#}"));
         }
     }
-}
-
-/// Peer removals and narrowings on every compiled network's existing interface (all
-/// of them when the interfaces are unknown).
-fn revoke_peers(r: &dyn Runner, c: &Compiled, links: Option<&[String]>, errors: &mut Vec<String>) {
-    for n in &c.networks {
-        if links.is_some_and(|l| !l.contains(&n.iface)) {
-            continue;
-        }
-        if let Err(e) = peer_diff(r, c, n).and_then(|d| removals(r, n, &d)) {
-            errors.push(format!("{}: revocations: {e:#}", n.iface));
-        }
-    }
-}
-
-/// Whether an existing interface carries the network's hub key (made by wgate, its
-/// registration lost).
-fn carries_its_key(r: &dyn Runner, n: &CompiledNetwork, keys_dir: &Path) -> bool {
-    let Ok((_, public)) = keys::ensure(r, keys_dir, &key_name(n)) else {
-        return false;
-    };
-    r.run(&["wg", "show", &n.iface, "public-key"], None)
-        .is_ok_and(|key| key.trim() == public)
 }
 
 /// By network id, not interface: a disabled network keeps its key for when it comes

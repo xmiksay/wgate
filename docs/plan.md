@@ -118,7 +118,8 @@ under sudo).
   4. ports another network wants are freed (`listen-port 0`). An existing interface
      is managed only if registered or carrying the network's hub key; a non-WireGuard
      link with the name is refused. Then, for **every** network: peer removals and
-     narrowings (diffed against `wg show <if> dump`) and stale LAN route deletions
+     narrowings (diffed against `wg show <if> allowed-ips`, never `dump`: it carries
+     private and preshared keys) and stale LAN route deletions
      — before any network grows, so nothing is held twice while it moves
   5. **network by network**, every step attempted: a new network's nft fragment goes
      in *before* `ip link add … type wireguard` (a failed create stops it); key

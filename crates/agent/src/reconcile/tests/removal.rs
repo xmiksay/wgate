@@ -77,8 +77,8 @@ fn without_the_base_only_revocations_apply() {
         .fail("nft -f -")
         .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
         .answer(
-            "wg show wg-n1 dump",
-            &format!("priv\tpub\t51801\toff\n{K2}\t(none)\t(none)\t10.50.0.3/32\t0\t0\t0\toff\n"),
+            "wg show wg-n1 allowed-ips",
+            &format!("{K2}\t10.50.0.3/32\n"),
         );
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors[0].starts_with("base: "), "{:?}", out.errors);
@@ -87,7 +87,7 @@ fn without_the_base_only_revocations_apply() {
     assert_eq!(log.iter().filter(|c| c.as_str() == "nft -f -").count(), 1);
     assert!(
         !log.iter()
-            .any(|c| c.contains("allowed-ips") || c.starts_with("ip link add"))
+            .any(|c| c.contains(" allowed-ips ") || c.starts_with("ip link add"))
     );
     assert!(out.hub_keys.is_empty());
 }

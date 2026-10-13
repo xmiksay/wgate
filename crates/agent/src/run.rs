@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use sea_orm::{Database, DatabaseConnection};
@@ -52,16 +53,19 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
 
 /// Waits for a notification. A lost connection (`try_recv` → `None`; sqlx then
 /// reconnects) also wakes us: notifications sent meanwhile are gone, so reconcile now
-/// rather than at the next tick. Whatever else is already queued is drained, so a
-/// burst of changes costs one reconcile.
+/// rather than at the next tick. Whatever else is already queued is drained (for at
+/// most a second), so a burst of changes costs one reconcile.
 async fn next(listener: &mut Option<Listener>) -> Result<(), ListenError> {
     let Some(l) = listener else {
         return std::future::pending().await;
     };
     l.try_recv().await?;
-    while let Ok(Ok(Some(_))) =
-        tokio::time::timeout(std::time::Duration::from_millis(50), l.try_recv()).await
-    {}
+    // Bounded: a steady stream of changes must not hold every reconcile off.
+    let until = tokio::time::Instant::now() + Duration::from_secs(1);
+    while tokio::time::Instant::now() < until
+        && let Ok(Ok(Some(_))) = tokio::time::timeout(Duration::from_millis(50), l.try_recv()).await
+    {
+    }
     Ok(())
 }
 

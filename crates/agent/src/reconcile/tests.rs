@@ -59,7 +59,7 @@ impl Runner for Fake {
             None if cmd.starts_with("wg pubkey") => Ok("hubpub\n".into()),
             // Existing interfaces carry their network's key (the fake pubkey).
             None if cmd.ends_with(" public-key") => Ok("hubpub\n".into()),
-            None if cmd.starts_with("wg show") => Ok("iface\tpub\t1\toff\n".into()),
+            None if cmd.starts_with("wg show") => Ok(String::new()),
             None if cmd.starts_with("ip -j") => Ok("[]".into()),
             None if cmd.starts_with("nft -j list map") => Ok(r#"{"nftables": []}"#.into()),
             None => Ok(String::new()),
@@ -195,12 +195,12 @@ fn revocations_come_before_additions_and_stale_routes_go() {
             r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
         )
         .answer(
-            "wg show wg-n1 dump",
-            &format!("priv\tpub\t51801\toff\n{K2}\t(none)\t(none)\t10.50.0.3/32\t0\t0\t0\toff\n"),
+            "wg show wg-n1 allowed-ips",
+            &format!("{K2}\t10.50.0.3/32\n"),
         )
         .answer(
-            "wg show wg-n2 dump",
-            &format!("priv\tpub\t51802\toff\n{K3}\t(none)\t(none)\t10.50.1.9/32\t0\t0\t0\toff\n"),
+            "wg show wg-n2 allowed-ips",
+            &format!("{K3}\t10.50.1.9/32\n"),
         )
         .answer(
             "ip -j route show dev wg-n1",
@@ -229,7 +229,7 @@ fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
             "ip -j link show type wireguard",
             r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
         )
-        .fail("wg show wg-n1 dump")
+        .fail("wg show wg-n1 allowed-ips")
         .fail("ip -j route show dev wg-n1");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert_eq!(out.errors.len(), 2, "{:?}", out.errors);
@@ -280,14 +280,14 @@ fn a_port_nobody_else_wants_is_not_freed() {
 #[test]
 fn one_failing_revocation_does_not_keep_the_others() {
     let dir = keys();
-    let stale = |k: &str, ip: &str| format!("{k}\t(none)\t(none)\t{ip}\t0\t0\t0\toff\n");
+    let stale = |k: &str, ip: &str| format!("{k}\t{ip}\n");
     let k3 = format!("{:0>42}A=", 3);
     let fake = Fake::default()
         .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
         .answer(
-            "wg show wg-n1 dump",
+            "wg show wg-n1 allowed-ips",
             &format!(
-                "priv\tpub\t51801\toff\n{}{}",
+                "{}{}",
                 stale(K2, "10.50.0.3/32"),
                 stale(&k3, "10.50.0.4/32")
             ),
@@ -324,10 +324,8 @@ fn what_a_peer_loses_goes_before_the_rules_change() {
     let fake = Fake::default()
         .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
         .answer(
-            "wg show wg-n1 dump",
-            &format!(
-                "priv\tpub\t51801\toff\n{K1}\t(none)\t(none)\t10.50.0.2/32,192.168.1.0/24,192.168.7.0/24\t0\t0\t0\toff\n"
-            ),
+            "wg show wg-n1 allowed-ips",
+            &format!("{K1}\t10.50.0.2/32 192.168.1.0/24 192.168.7.0/24\n"),
         );
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);

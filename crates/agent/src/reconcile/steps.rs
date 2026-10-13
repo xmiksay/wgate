@@ -25,7 +25,7 @@ pub(super) fn peer_diff(
     c: &Compiled,
     n: &CompiledNetwork,
 ) -> anyhow::Result<PeerDiff> {
-    let current = wg::parse_dump(&r.run(&["wg", "show", &n.iface, "dump"], None)?)?;
+    let current = wg::parse_allowed_ips(&r.run(&["wg", "show", &n.iface, "allowed-ips"], None)?)?;
     Ok(wg::diff(&current, &desired_peers(c, n)))
 }
 
@@ -149,4 +149,14 @@ pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Vec<(String, wgate_co
 pub(super) fn link_exists(r: &dyn Runner, iface: &str) -> bool {
     r.run(&["ip", "-j", "link", "show", "dev", iface], None)
         .is_ok_and(|json| json.trim() != "[]")
+}
+
+/// Removes every peer of an interface (a gone network whose interface would not go).
+pub(super) fn strip_peers(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
+    let current = wg::parse_allowed_ips(&r.run(&["wg", "show", iface, "allowed-ips"], None)?)?;
+    let commands: Vec<_> = current
+        .iter()
+        .map(|p| argv(&["wg", "set", iface, "peer", &p.public_key, "remove"]))
+        .collect();
+    all(r, &commands)
 }

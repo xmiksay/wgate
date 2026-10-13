@@ -14,24 +14,22 @@ pub struct WgPeer {
     pub foreign: bool,
 }
 
-/// The peers of `wg show <if> dump` (its first line is the interface itself).
-pub fn parse_dump(dump: &str) -> anyhow::Result<Vec<WgPeer>> {
-    dump.lines()
-        .skip(1)
+/// The peers of `wg show <if> allowed-ips` (`<key>\t<ip> <ip>…` or `(none)`). Not
+/// `dump`: that carries the hub's private key and the peers' preshared keys.
+pub fn parse_allowed_ips(out: &str) -> anyhow::Result<Vec<WgPeer>> {
+    out.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
-            let fields: Vec<&str> = line.split('\t').collect();
-            let (Some(key), Some(allowed)) = (fields.first(), fields.get(3)) else {
-                // Not the line itself: its second field is the preshared key.
-                bail!("unexpected wg dump line ({} fields)", fields.len());
+            let Some((key, allowed)) = line.split_once('\t') else {
+                bail!("unexpected wg allowed-ips line: {line}");
             };
-            let entries: Vec<&str> = match *allowed {
+            let entries: Vec<&str> = match allowed.trim() {
                 "(none)" => vec![],
-                list => list.split(',').collect(),
+                list => list.split([' ', ',']).filter(|a| !a.is_empty()).collect(),
             };
             let (v6, v4): (Vec<&str>, Vec<&str>) = entries.iter().partition(|a| a.contains(':'));
             Ok(WgPeer {
-                public_key: (*key).to_owned(),
+                public_key: key.to_owned(),
                 allowed: v4
                     .iter()
                     .map(|a| a.parse().with_context(|| format!("allowed ip {a}")))
@@ -110,9 +108,9 @@ fn sorted(nets: &[Ipv4Net]) -> Vec<Ipv4Net> {
 mod tests {
     use super::*;
 
-    const DUMP: &str = "KBYZNCjZpIdMSbByMkpfXquYSPRjaE0rXT5NzgGWtXM=\tUmQVw2/HRh5qyJf64Am2w7Ra1R6mY9PaAu1w6F3MQnE=\t51900\toff
-HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=\t(none)\t(none)\t10.50.0.2/32,fd00::/64,192.168.1.0/24\t0\t0\t0\toff
-yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\t(none)\t1.2.3.4:5\t(none)\t0\t0\t0\toff
+    const SHOWN: &str =
+        "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=\t10.50.0.2/32 fd00::/64 192.168.1.0/24
+yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\t(none)
 ";
 
     fn peer(key: &str, allowed: &[&str]) -> WgPeer {
@@ -124,20 +122,21 @@ yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\t(none)\t1.2.3.4:5\t(none)\t0\t0\t0
     }
 
     #[test]
-    fn parses_a_dump() {
+    fn parses_allowed_ips() {
         let mut router = peer(
             "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=",
             &["10.50.0.2/32", "192.168.1.0/24"],
         );
         router.foreign = true;
         assert_eq!(
-            parse_dump(DUMP).unwrap(),
+            parse_allowed_ips(SHOWN).unwrap(),
             [
                 router,
                 peer("yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=", &[])
             ]
         );
-        assert!(parse_dump("iface\nbroken").is_err());
+        assert!(parse_allowed_ips("broken").is_err());
+        assert!(parse_allowed_ips("").unwrap().is_empty());
     }
 
     #[test]
