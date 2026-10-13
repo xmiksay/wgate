@@ -2,22 +2,33 @@
 
 use super::*;
 
+fn gone_n9_on(iface: &str) -> Fake {
+    Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[(iface, Some(9))]),
+        )
+        .answer("nft -j list map", &registry(&[(iface, 9)]))
+}
+
 #[test]
 fn a_network_that_is_gone_is_removed_and_unknown_links_are_left_alone() {
     let dir = keys();
     let fake = Fake::default()
         .answer(
             "ip -j link show type wireguard",
-            r#"[{"ifname":"wg-n1"},{"ifname":"wg-old"},{"ifname":"wg-stray"},{"ifname":"wg0"}]"#,
+            &wg_links(&[
+                ("wg-n1", Some(1)),
+                ("wg-old", Some(9)),
+                ("wg-stray", None),
+                ("wg0", None),
+            ]),
         )
-        .answer(
-            "nft -j list map",
-            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n1_from"}}], ["wg-old", {"jump": {"target": "n9_from"}}]]}}]}"#,
-        );
+        .answer("nft -j list map", &registry(&[("wg-n1", 1), ("wg-old", 9)]));
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let log = fake.log();
-    // The interface goes first; the map entry stays until the fragment removal.
+    // The interface goes first (that cuts its traffic at once), then its registration.
     assert!(position(&log, "ip link del wg-old") < nft_run(&log, 1));
     assert!(
         !log.iter()
@@ -28,38 +39,81 @@ fn a_network_that_is_gone_is_removed_and_unknown_links_are_left_alone() {
 #[test]
 fn a_reused_slug_gets_a_fresh_network() {
     let dir = keys();
-    let old_key = format!("{:0>42}A=", 9);
-    std::fs::write(dir.path().join("n9.key"), &old_key).unwrap();
-    let fake = Fake::default()
-        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
-        .answer("wg show wg-n1 public-key", &format!("pub-{old_key}\n"))
-        .answer(
-            "nft -j list map",
-            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n9_from"}}]]}}]}"#,
-        );
+    let fake = gone_n9_on("wg-n1");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let log = fake.log();
-    // Network 9 used wg-n1 before: its interface goes before network 1 is built, on
+    // Network 9 used wg-n1 before: its interface goes before network 1's is made, on
     // a key of its own; network 9 keeps its key should it come back.
-    let del = position(&log, "ip link del wg-n1");
-    let add = position(&log, "ip link add wg-n1 type wireguard");
-    assert!(del < add);
+    assert!(position(&log, "ip link del wg-n1") < position(&log, "ip link add wgtmp-1"));
     assert!(out.hub_keys.contains(&(1, hub_pub(1))));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("n9.key")).unwrap(),
-        old_key
+        hub_private(9)
     );
 }
 
 #[test]
-fn without_the_links_a_gone_network_still_goes() {
-    let registry = r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-old", {"jump": {"target": "n9_from"}}]]}}]}"#;
-    // Its key read proves the interface is there: deleted, and unregistered.
+fn a_gone_interface_that_would_not_go_is_disarmed_and_holds_its_name() {
+    let dir = keys();
+    let fake = gone_n9_on("wg-n1")
+        .fail("ip link del wg-n1")
+        .answer(
+            "wg show wg-n1 allowed-ips",
+            &format!("{K2}\t10.50.9.2/32\n"),
+        )
+        .answer("wg show all listen-port", "wg-n1\t51802\n");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.iter().any(|e| e.starts_with("wg-n1: waits")),
+        "{:?}",
+        out.errors
+    );
+    let log = fake.log();
+    // Its peers, addresses and LAN routes go; its registration too; and the port n2
+    // wants comes free.
+    position(&log, &format!("wg set wg-n1 peer {K2} remove"));
+    position(&log, "ip addr flush dev wg-n1");
+    position(&log, "ip route flush dev wg-n1 proto 150");
+    assert!(nft_runs(&log) >= 2);
+    assert!(
+        position(&log, "wg set wg-n1 listen-port 0") < position(&log, "wg set wg-n2 listen-port")
+    );
+    // Network 1 is not built on it.
+    assert!(
+        !log.iter()
+            .any(|c| c.starts_with("ip addr replace") && c.ends_with("dev wg-n1"))
+    );
+    position(&log, "ip link add wgtmp-2");
+}
+
+#[test]
+fn a_registration_that_will_not_go_is_cut_off() {
+    let dir = keys();
+    let fake = gone_n9_on("wg-old").fail_input("delete element inet wgate wg_ifaces");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.starts_with("wg-old (unregistering network 9)")),
+        "{:?}",
+        out.errors
+    );
+    assert!(
+        !out.errors.iter().any(|e| e.contains("cutoff")),
+        "{:?}",
+        out.errors
+    );
+    // base, snat, removal, cutoff, then both networks.
+    assert_eq!(nft_runs(&fake.log()), 5);
+}
+
+#[test]
+fn without_the_links_only_registrations_go() {
     let dir = keys();
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
-        .answer("nft -j list map", registry);
+        .answer("nft -j list map", &registry(&[("wg-old", 9), ("wg-n1", 1)]));
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("inventory: ")),
@@ -67,17 +121,13 @@ fn without_the_links_a_gone_network_still_goes() {
         out.errors
     );
     let log = fake.log();
-    assert!(position(&log, "ip link del wg-old") < nft_run(&log, 1));
-
-    // Its key cannot be read (most likely no interface): only unregistered.
-    let fake = Fake::default()
-        .fail("ip -j link show type wireguard")
-        .fail("wg show wg-old public-key")
-        .answer("nft -j list map", registry);
-    reconcile(&fake, &compiled(), dir.path());
-    let log = fake.log();
-    assert!(!log.iter().any(|c| c.starts_with("ip link del")));
-    assert!(nft_runs(&log) >= 2, "base + removal: {log:#?}");
+    // The gone network's registration goes (that cuts it off); nothing is deleted,
+    // made or built, and network 1's registration stays.
+    assert!(
+        !log.iter()
+            .any(|c| c.starts_with("ip link") || c.starts_with("wg set"))
+    );
+    assert_eq!(nft_runs(&log), 2, "base + the removal: {log:#?}");
 }
 
 #[test]
@@ -85,7 +135,10 @@ fn without_the_base_only_revocations_apply() {
     let dir = keys();
     let fake = Fake::default()
         .fail("nft -f -")
-        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1))]),
+        )
         .answer(
             "wg show wg-n1 allowed-ips",
             &format!("{K2}\t10.50.0.3/32\n"),
@@ -94,57 +147,9 @@ fn without_the_base_only_revocations_apply() {
     assert!(out.errors[0].starts_with("base: "), "{:?}", out.errors);
     let log = fake.log();
     position(&log, &format!("wg set wg-n1 peer {K2} remove"));
-    assert_eq!(nft_runs(&log), 1, "the base only (SNAT apart)");
     assert!(
         !log.iter()
             .any(|c| c.contains(" allowed-ips ") || c.starts_with("ip link add"))
     );
     assert!(out.hub_keys.is_empty());
-}
-
-#[test]
-fn a_failed_removal_holds_back_the_network_reusing_its_interface() {
-    let dir = keys();
-    let fake = Fake::default()
-        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
-        .answer(
-            "nft -j list map",
-            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n9_from"}}]]}}]}"#,
-        )
-        .answer("wg show wg-n1 public-key", &hub_pub(9))
-        .fail("ip link del wg-n1");
-    let out = reconcile(&fake, &compiled(), dir.path());
-    assert!(
-        out.errors.iter().any(|e| e.starts_with("wg-n1: waits")),
-        "{:?}",
-        out.errors
-    );
-    let log = fake.log();
-    // Network 1 is not built on it; network 9's leftovers are taken off it.
-    assert!(
-        !log.iter()
-            .any(|c| c.starts_with("ip addr replace") && c.ends_with("dev wg-n1"))
-    );
-    assert!(
-        !log.iter()
-            .any(|c| c.starts_with("wg set wg-n1") && !c.ends_with(" remove"))
-    );
-    position(&log, "ip addr flush dev wg-n1");
-    position(&log, "ip route flush dev wg-n1 proto 150");
-    position(&log, "ip link add wg-n2");
-}
-
-#[test]
-fn an_unregistered_network_gets_no_interface() {
-    let dir = keys();
-    // n1's fragment fails; n2's applies.
-    let fake = Fake {
-        fail_input: Some("chain inet wgate n1_from".into()),
-        ..Fake::default()
-    };
-    let out = reconcile(&fake, &compiled(), dir.path());
-    assert_eq!(out.errors, ["wg-n1: nft: boom"]);
-    let log = fake.log();
-    assert!(!log.iter().any(|c| c.starts_with("ip link add wg-n1")));
-    assert!(log.iter().any(|c| c.starts_with("ip link add wg-n2")));
 }

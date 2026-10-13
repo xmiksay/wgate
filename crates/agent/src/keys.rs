@@ -71,17 +71,6 @@ impl<'a> Keys<'a> {
         Ok(found)
     }
 
-    /// The network whose key is `public`.
-    pub fn owner_of(&self, public: &str) -> Option<Id> {
-        let entries = fs::read_dir(self.dir).ok()?;
-        entries.flatten().find_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
-            let id = name.strip_prefix('n')?.strip_suffix(".key")?.parse().ok()?;
-            let (_, key) = self.load(id).ok()??;
-            (key == public).then_some(id)
-        })
-    }
-
     fn path(&self, id: Id) -> PathBuf {
         self.dir.join(format!("n{id}.key"))
     }
@@ -160,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_without_issuing_and_finds_a_keys_network() {
+    fn loads_without_issuing() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("keys");
         let tools = Tools::default();
@@ -170,7 +159,6 @@ mod tests {
         let (_, four) = keys.ensure(4).unwrap();
         let (_, seven) = keys.ensure(7).unwrap();
         assert_eq!(keys.load(4).unwrap().unwrap().1, four);
-        assert_eq!(Keys::new(&tools, &dir).owner_of(&seven), Some(7));
-        assert_eq!(keys.owner_of("unknown"), None);
+        assert_ne!(seven, four);
     }
 }

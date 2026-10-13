@@ -8,8 +8,7 @@ use std::net::Ipv4Addr;
 
 use common::Netns;
 use wgate_core::{
-    DesiredState, compile, render_base, render_network_cutoff, render_network_purge,
-    render_network_removal, render_snat,
+    DesiredState, compile, render_base, render_network_cutoff, render_network_removal, render_snat,
 };
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
@@ -59,10 +58,12 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
             );
         }
     }
-    // A cutoff, then a purge, of a network that never existed.
+    // A cutoff, then a removal, of a network that never existed.
     ns.exec(&["nft", "-f", "-"], Some(&render_network_cutoff(9)));
-    ns.exec(&["nft", "-f", "-"], Some(&render_network_purge(9)));
-    ns.exec(&["nft", "-f", "-"], Some(&render_network_purge(9)));
+    ns.exec(
+        &["nft", "-f", "-"],
+        Some(&render_network_removal(9, "wg-gone")),
+    );
     let empty = compile(&DesiredState {
         pool: vec![],
         snat_source: Ipv4Addr::new(172, 19, 9, 10),

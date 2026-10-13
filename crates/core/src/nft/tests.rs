@@ -174,23 +174,28 @@ fn a_network_fragment_holds_only_its_own_peers() {
 }
 
 #[test]
-fn a_purge_is_the_removal_without_map_entries() {
-    let purge = render_network_purge(7);
-    assert!(!purge.contains("element"));
-    assert!(purge.contains("delete chain inet wgate n7_from"));
-    assert!(purge.contains("delete set inet wgate n7_inbound_icmp"));
-    // Both add what they delete first, so either applies whatever is already gone.
+fn a_removal_adds_what_it_deletes_first() {
+    // So it applies whatever is already gone.
     let removal = render_network_removal(7, "wg-x");
-    for script in [&purge, &removal] {
-        let add = script.find("add chain inet wgate n7_from").unwrap();
-        assert!(add < script.find("delete chain inet wgate n7_from").unwrap());
+    for (added, deleted) in [
+        (
+            "add chain inet wgate n7_from",
+            "delete chain inet wgate n7_from",
+        ),
+        (
+            "add set inet wgate n7_inbound_icmp",
+            "delete set inet wgate n7_inbound_icmp",
+        ),
+        (
+            "add element inet wgate from_net { \"wg-x\" : jump n7_from }",
+            "delete element inet wgate from_net { \"wg-x\" }",
+        ),
+    ] {
+        assert!(
+            removal.find(added).unwrap() < removal.find(deleted).unwrap(),
+            "{added}"
+        );
     }
-    let deletes = purge
-        .lines()
-        .filter(|l| l.starts_with("delete"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(removal.trim_end().ends_with(&deletes));
 }
 
 #[test]

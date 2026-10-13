@@ -104,6 +104,10 @@ async fn the_agent_builds_updates_and_tears_down_a_network() {
     );
     let hub_key: String = status.try_get("", "public_key").expect("hub key");
     assert!(
+        hub.output(&["ip", "-j", "link", "show", "dev", "wg-n1"])
+            .contains(r#""ifalias":"wgate:n1""#)
+    );
+    assert!(
         hub.output(&["wg", "show", "wg-n1", "public-key"])
             .contains(&hub_key)
     );
@@ -145,6 +149,12 @@ async fn the_agent_builds_updates_and_tears_down_a_network() {
         "{table}"
     );
     assert!(hub.output(&["wg", "show", "wg-n1", "public-key"]).trim() != hub_key);
+    // Marked as network 2's, and no scratch link left behind.
+    let links = hub.output(&["ip", "-j", "link", "show", "type", "wireguard"]);
+    assert!(
+        links.contains(r#""ifalias":"wgate:n2""#) && !links.contains("wgtmp-"),
+        "{links}"
+    );
     let addrs = hub.output(&["ip", "-4", "addr", "show", "dev", "wg-n1"]);
     assert!(
         addrs.contains("10.50.0.1/25") && !addrs.contains("/24"),

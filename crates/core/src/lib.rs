@@ -20,7 +20,7 @@ pub use net::{
 };
 pub use nft::{
     network_of_chain, render_all, render_base, render_network, render_network_cutoff,
-    render_network_purge, render_network_removal, render_snat,
+    render_network_removal, render_snat,
 };
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, merge_nets, subtract_nets};
 pub use rule::{PortRange, Proto, Rule, RuleError, Service};

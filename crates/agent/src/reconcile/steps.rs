@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, CompiledNetwork};
+use wgate_core::{Compiled, CompiledNetwork, Id};
 
 use crate::routes;
 use crate::runner::Runner;
@@ -119,19 +119,47 @@ pub(super) fn run(r: &dyn Runner, argv: &[&str]) -> anyhow::Result<()> {
     r.run(argv, None).map(drop)
 }
 
+/// The mark of an interface wgate made, in its alias: `wgate:n<network id>`. Kept on
+/// the interface itself, it survives a flushed table and a lost key file.
+pub(super) fn owner_mark(id: Id) -> String {
+    format!("wgate:n{id}")
+}
+
+/// A new interface is made under this name, marked, then renamed: a crash in between
+/// leaves a link that is plainly wgate's.
+pub(super) const SCRATCH: &str = "wgtmp-";
+
+/// A WireGuard interface and the network that made it, if wgate did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Link {
+    pub name: String,
+    pub owner: Option<Id>,
+}
+
 /// The kernel's WireGuard interfaces.
-pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<String>> {
+pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<Link>> {
     #[derive(serde::Deserialize)]
-    struct Link {
+    struct Shown {
         ifname: String,
+        ifalias: Option<String>,
     }
     let json = r.run(&["ip", "-j", "link", "show", "type", "wireguard"], None)?;
-    let links: Vec<Link> = serde_json::from_str(&json).context("ip -j link")?;
-    Ok(links.into_iter().map(|l| l.ifname).collect())
+    let shown: Vec<Shown> = serde_json::from_str(&json).context("ip -j link")?;
+    Ok(shown
+        .into_iter()
+        .map(|l| Link {
+            owner: l
+                .ifalias
+                .as_deref()
+                .and_then(|a| a.strip_prefix("wgate:n"))
+                .and_then(|id| id.parse().ok()),
+            name: l.ifname,
+        })
+        .collect())
 }
 
 /// The interfaces registered in the `from_net` map, with their network.
-pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Vec<(String, wgate_core::Id)>> {
+pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Vec<(String, Id)>> {
     let json = r.run(
         &["nft", "-j", "list", "map", "inet", "wgate", "from_net"],
         None,
