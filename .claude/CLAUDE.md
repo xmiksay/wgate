@@ -16,6 +16,7 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
   links named `wg-*`, python3 endpoints);
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
+- `make migrate` — `wgate migrate` with `WGATE_DATABASE_URL` (`.env.example`)
 - Golden files live in `crates/core/tests/golden/`; `make golden` rewrites
   them (review the diff). `ruleset.nft` is also loaded into a kernel by `make test-netns`.
 

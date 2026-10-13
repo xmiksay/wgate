@@ -5,7 +5,10 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 use sea_orm::prelude::IpNetwork;
-use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter};
+use sea_orm::{
+    AccessMode, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    IsolationLevel, QueryFilter, TransactionTrait,
+};
 use wgate_core::{
     Claim, DesiredState, Federation, NetRule, Network, Peer, PortRange, Proto, Rule, RuleSet,
     Service, Slug, Tenant,
@@ -32,12 +35,31 @@ pub struct Infra {
 #[derive(Clone, Debug)]
 pub struct Loaded {
     pub state: DesiredState,
+    /// The revision this state is; record it as applied, not a later one.
+    pub revision: i64,
     pub warnings: Vec<String>,
 }
 
 /// Active rows only: disabled tenants/networks/users and revoked peers have no
 /// access, so they are simply not part of the desired state.
-pub async fn desired_state<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr> {
+///
+/// Everything, the revision included, is read in one read-only snapshot: a change
+/// committed halfway through (a revocation, a disabled user) must not be half seen
+/// and then counted as applied.
+pub async fn desired_state(db: &DatabaseConnection, infra: &Infra) -> Result<Loaded, DbErr> {
+    let txn = db
+        .begin_with_config(
+            Some(IsolationLevel::RepeatableRead),
+            Some(AccessMode::ReadOnly),
+        )
+        .await?;
+    let loaded = load(&txn, infra).await?;
+    txn.commit().await?;
+    Ok(loaded)
+}
+
+async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr> {
+    let revision = crate::revision::current(db).await?;
     let mut warnings = Vec::new();
     let mut warn =
         |table: &str, id: i64, why: String| warnings.push(format!("{table} {id}: {why}"));
@@ -119,20 +141,23 @@ pub async fn desired_state<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<
         }
     }
 
-    let users: HashSet<i64> = app_user::Entity::find()
+    // user id → tenant (None = a global admin, who may hold peers anywhere).
+    let users: HashMap<i64, Option<i64>> = app_user::Entity::find()
         .filter(app_user::Column::DisabledAt.is_null())
         .all(db)
         .await?
         .into_iter()
-        .map(|u| u.id)
+        .map(|u| (u.id, u.tenant_id))
         .collect();
-    let devices: HashSet<i64> = device::Entity::find()
+    // device id → owner's tenant, for active owners.
+    let devices: HashMap<i64, Option<i64>> = device::Entity::find()
         .all(db)
         .await?
         .into_iter()
-        .filter(|d| users.contains(&d.user_id))
-        .map(|d| d.id)
+        .filter_map(|d| Some((d.id, *users.get(&d.user_id)?)))
         .collect();
+    let network_tenant: HashMap<i64, i64> =
+        state_networks.iter().map(|n| (n.id, n.tenant)).collect();
     let mut routes: HashMap<i64, Vec<Claim>> = HashMap::new();
     for r in peer_route::Entity::find().all(db).await? {
         match v4(r.cidr) {
@@ -149,7 +174,16 @@ pub async fn desired_state<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<
         .all(db)
         .await?
     {
-        if !devices.contains(&p.device_id) {
+        // Inactive owner or network: no access, nothing to report.
+        let (Some(owner), Some(net_tenant)) =
+            (devices.get(&p.device_id), network_tenant.get(&p.network_id))
+        else {
+            continue;
+        };
+        // Defense in depth: only a global admin's device may join another tenant's
+        // network; anything else would be cross-tenant access without federation.
+        if owner.is_some_and(|t| t != *net_tenant) {
+            warn("peer", p.id, "its device belongs to another tenant".into());
             continue;
         }
         match v4(p.ip) {
@@ -193,7 +227,11 @@ pub async fn desired_state<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<
         peers,
         federations,
     };
-    Ok(Loaded { state, warnings })
+    Ok(Loaded {
+        state,
+        revision,
+        warnings,
+    })
 }
 
 /// For `inet` (a peer IP) the address part is the host address; `cidr` values have

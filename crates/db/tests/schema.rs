@@ -6,7 +6,7 @@ mod common;
 use std::time::Duration;
 
 use common::{ok, pg, refused};
-use sea_orm::{Database, TransactionTrait};
+use sea_orm::{ConnectionTrait, Database, TransactionTrait};
 use sea_orm_migration::MigratorTrait;
 use wgate_db::{Migrator, revision};
 
@@ -190,4 +190,68 @@ async fn the_agent_role_reads_everything_and_writes_only_its_tables() {
     refused(&agent, "UPDATE network SET mesh = true").await;
     refused(&agent, "DELETE FROM hub_key").await;
     refused(&agent, "UPDATE state_revision SET revision = 9").await;
+    // Tables later migrations add (as the owner) are readable too.
+    ok(&pg.db, "CREATE TABLE later (x int)").await;
+    ok(&agent, "SELECT * FROM later").await;
+}
+
+#[tokio::test]
+async fn the_migration_is_recorded_under_its_own_name() {
+    let pg = pg("").await;
+    let row = pg
+        .db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT version FROM seaql_migrations",
+        ))
+        .await
+        .expect("query")
+        .expect("one migration");
+    assert_eq!(
+        row.try_get::<String>("", "version").expect("version"),
+        "m0001_init"
+    );
+}
+
+#[tokio::test]
+async fn revoking_a_peer_frees_its_key_and_lans() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    let insert = |id: u32, ip: &str| {
+        format!(
+            "INSERT INTO peer (id, device_id, network_id, public_key, ip) VALUES ({id}, 1, 1, '{KEY}', '{ip}')"
+        )
+    };
+    ok(&pg.db, &insert(1, "10.50.0.2")).await;
+    ok(
+        &pg.db,
+        "INSERT INTO peer_route (peer_id, cidr) VALUES (1, '192.168.1.0/24')",
+    )
+    .await;
+    refused(&pg.db, &insert(2, "10.50.0.3")).await;
+    ok(&pg.db, "UPDATE peer SET revoked_at = now() WHERE id = 1").await;
+    ok(&pg.db, &insert(2, "10.50.0.3")).await;
+    ok(
+        &pg.db,
+        "INSERT INTO peer_route (peer_id, cidr) VALUES (2, '192.168.1.0/24')",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn tenants_may_share_an_identity_provider() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        "INSERT INTO oidc_provider (tenant_id, issuer, client_id) VALUES
+            (1, 'https://accounts.google.com', 'a'), (2, 'https://accounts.google.com', 'b'),
+            (NULL, 'https://accounts.google.com', 'admin')",
+    )
+    .await;
+    refused(
+        &pg.db,
+        "INSERT INTO oidc_provider (tenant_id, issuer, client_id) VALUES (NULL, 'https://x', 'y')",
+    )
+    .await;
 }
