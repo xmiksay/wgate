@@ -116,12 +116,13 @@ under sudo).
      spoofed sources may pass)
   3. networks registered in `from_net` (interface + network id) that are no longer
      compiled under that pair: interface deleted (only if it carries that network's
-     key, or none; without the list of links only unregistered), then the nft
-     fragment removed (the map entry is the retry marker;
-     until it goes, the interface is not reused, loses its peers, addresses and LAN
-     routes, and frees a wanted port). A failed key read never counts as "no key". Unregistered
-     `wg-*` interfaces carrying the key of a network not compiled on them (a flushed
-     table) are deleted too
+     key, or none; never on a failed or unverifiable key read), then the nft fragment
+     removed whatever became of the interface (unregistered, its traffic is dropped).
+     An interface that would not go loses its peers, addresses and LAN routes, frees
+     a wanted port and is not reused until its removal finishes. Unregistered `wg-*`
+     interfaces carrying the key of a network not compiled on them (a flushed table)
+     are deleted too. A registered network whose interface cannot be confirmed gets
+     its rules only, so revocations still hold
   4. ports another network wants are freed (`listen-port 0`). An existing interface
      is managed only if registered or carrying the network's hub key; a non-WireGuard
      link with the name is refused. Then, for **every** network: peer removals and

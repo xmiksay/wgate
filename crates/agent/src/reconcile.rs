@@ -62,6 +62,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     }
     let mut owned = vec![];
     let mut new = vec![];
+    let mut rules_only = vec![];
     for n in &c.networks {
         match iface_of(
             r,
@@ -74,6 +75,11 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             Ok(Iface::Owned) => owned.push(n),
             Ok(Iface::New) => new.push(n),
             Ok(Iface::Unknown) => {}
+            Ok(Iface::RulesOnly(why)) => {
+                out.errors
+                    .push(format!("{}: {why}; only its rules are applied", n.iface));
+                rules_only.push(n);
+            }
             Err(why) => out.errors.push(format!("{}: {why}", n.iface)),
         }
     }
@@ -96,6 +102,13 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         .chain(blocked.iter().filter(|b| b.ours).map(|b| b.iface.as_str()))
         .collect();
     free_ports(r, c, &holders, &mut out.errors);
+    for n in rules_only {
+        let result = nft(r, &render_network(c, n));
+        note(
+            result.with_context(|| format!("{}: nft", n.iface)),
+            &mut out.errors,
+        );
+    }
 
     let active: Vec<_> = owned
         .into_iter()
@@ -163,6 +176,9 @@ enum Iface {
     New,
     /// Without the list of links, a network neither registered nor keyed.
     Unknown,
+    /// Registered, but whose interface it is cannot be confirmed (the reason): only
+    /// its rules, in wgate's own table, are kept up to date, so revocations still hold.
+    RulesOnly(String),
 }
 
 /// Decided once, before anything touches an interface; `Err` is why it is left alone.
@@ -188,6 +204,7 @@ fn iface_of(
     let mine = registered.is_some_and(|reg| reg.iter().any(|(i, id)| *i == n.iface && *id == n.id));
     let carried = match carried(r, keys, &n.iface, n.id) {
         Ok(carried) => carried,
+        Err(e) if mine => return Ok(Iface::RulesOnly(format!("{e:#}"))),
         Err(e) if exists == Some(true) => return Err(format!("{e:#}")),
         // Without the list of links a failed read is most likely a missing interface.
         Err(_) => return Ok(Iface::Unknown),
@@ -197,8 +214,10 @@ fn iface_of(
         // Registered before it was created: wgate's, its key not set yet. Or its key
         // file is lost: managed, but never issued a new key (see `network`).
         Carried::Nothing | Carried::Unverified if mine => Ok(Iface::Owned),
-        // Registered, but the name was taken again; or never wgate's.
-        Carried::Other if mine => Err(NOT_MADE.into()),
+        // Registered, but the name was taken again (or the key file replaced).
+        Carried::Other if mine => Ok(Iface::RulesOnly(
+            "carries a key that is not the network's".into(),
+        )),
         _ if exists == Some(true) => Err(NOT_MADE.into()),
         _ => Ok(Iface::Unknown),
     }
