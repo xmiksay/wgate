@@ -7,4 +7,6 @@ reserved = ["172.16.16.0/24"]
 snat_source = "172.19.9.10"
 node_cidrs = ["172.19.9.0/24"]
 keys_dir = "/var/lib/wgate/keys"
+# The last desired state loaded, served when the hub boots without its database.
+state_file = "/var/lib/wgate/state.json"
 reconcile_interval_secs = 60

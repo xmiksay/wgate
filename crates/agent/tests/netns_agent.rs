@@ -12,7 +12,7 @@ use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-use wgate_agent::{Config, System, reconcile_once};
+use wgate_agent::{Config, System, apply_saved, reconcile_once};
 
 const KEY: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
 
@@ -66,6 +66,7 @@ async fn the_agent_builds_updates_and_tears_down_a_network() {
         snat_source: "172.19.9.10".parse().expect("addr"),
         node_cidrs: vec![],
         keys_dir: keys.path().to_owned(),
+        state_file: keys.path().join("state.json"),
         reconcile_interval_secs: 60,
     };
     let runner = Arc::new(System::in_netns(&hub.0));
@@ -106,6 +107,23 @@ async fn the_agent_builds_updates_and_tears_down_a_network() {
     assert!(
         hub.output(&["ip", "-j", "link", "show", "dev", "wg-n1"])
             .contains(r#""ifalias":"wgate:n1""#)
+    );
+
+    // A hub that boots while the database is unreachable comes back as it was, from
+    // the state the last pass saved.
+    hub.exec(&["ip", "link", "del", "wg-n1"], None);
+    hub.exec(&["nft", "delete", "table", "inet", "wgate"], None);
+    apply_saved(&config, runner.clone())
+        .await
+        .expect("apply the saved state");
+    assert!(
+        hub.output(&["wg", "show", "wg-n1", "allowed-ips"])
+            .contains(KEY),
+        "the peer is back"
+    );
+    assert!(
+        hub.output(&["nft", "list", "table", "inet", "wgate"])
+            .contains("chain n1_from")
     );
     assert!(
         hub.output(&["wg", "show", "wg-n1", "public-key"])

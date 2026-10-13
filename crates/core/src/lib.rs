@@ -3,6 +3,7 @@
 
 mod client;
 mod compile;
+mod data;
 mod interval;
 mod net;
 mod nft;

@@ -95,7 +95,10 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
   without it are never changed, except in the agent's own scratch namespace
   `wgtmp-*`, which a crashed creation may leave unmarked.
 - **DB outage:** the kernel keeps the last applied state (interfaces, peers, nft), so
-  the VPN keeps running. Only changes stop.
+  the VPN keeps running. Only changes stop. A hub that boots during an outage rebuilds
+  from the last desired state the agent loaded, saved to `/var/lib/wgate/state.json`
+  (0600; addresses, rules and peer public keys, no secrets), and keeps retrying the
+  database.
 - **k8s outage:** the VPN keeps running; only the portal is unavailable.
 
 ## Data model (Postgres, SeaORM)

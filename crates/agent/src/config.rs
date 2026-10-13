@@ -22,6 +22,9 @@ pub struct Config {
     pub node_cidrs: Vec<Ipv4Net>,
     #[serde(default = "default_keys_dir")]
     pub keys_dir: PathBuf,
+    /// The last desired state loaded, served when the hub boots without its database.
+    #[serde(default = "default_state_file")]
+    pub state_file: PathBuf,
     /// A full reconcile also runs this often, backing up a lost notification.
     #[serde(default = "default_interval")]
     pub reconcile_interval_secs: u64,
@@ -29,6 +32,10 @@ pub struct Config {
 
 fn default_keys_dir() -> PathBuf {
     PathBuf::from("/var/lib/wgate/keys")
+}
+
+fn default_state_file() -> PathBuf {
+    PathBuf::from("/var/lib/wgate/state.json")
 }
 
 fn default_interval() -> u64 {

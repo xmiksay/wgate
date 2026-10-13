@@ -36,8 +36,9 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   server and agent
 - `crates/server` — Axum + OIDC; unprivileged
 - `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener; reconciles network
-  by network through `ip`/`wg`/`nft` behind a `Runner` (faked in unit tests); config
-  `agent.example.toml`, unit `deploy/wgate-agent.service`
+  by network through `ip`/`wg`/`nft` behind a `Runner` (faked in unit tests); saves
+  the last desired state (`state.rs`) to rebuild from when it boots without the
+  database; config `agent.example.toml`, unit `deploy/wgate-agent.service`
 - `crates/wgate` — binary, `server | agent | migrate`
 - `web/` — Vue UI, embedded into the binary
 
