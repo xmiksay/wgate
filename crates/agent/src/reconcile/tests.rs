@@ -9,6 +9,8 @@ use wgate_core::{Claim, DesiredState, NetRule, Network, Peer, RuleSet, Tenant, c
 #[derive(Default)]
 struct Fake {
     answers: HashMap<String, anyhow::Result<String>>,
+    /// Fails any command whose input contains this.
+    fail_input: Option<String>,
     log: RefCell<Vec<String>>,
 }
 
@@ -30,9 +32,14 @@ impl Fake {
 }
 
 impl Runner for Fake {
-    fn run(&self, argv: &[&str], _stdin: Option<&str>) -> anyhow::Result<String> {
+    fn run(&self, argv: &[&str], stdin: Option<&str>) -> anyhow::Result<String> {
         let cmd = argv.join(" ");
         self.log.borrow_mut().push(cmd.clone());
+        if let (Some(needle), Some(input)) = (&self.fail_input, stdin)
+            && input.contains(needle.as_str())
+        {
+            anyhow::bail!("boom");
+        }
         let mut best: Option<(&String, &anyhow::Result<String>)> = None;
         for (prefix, out) in &self.answers {
             if cmd.starts_with(prefix.as_str()) && best.is_none_or(|(b, _)| prefix.len() > b.len())
@@ -43,7 +50,7 @@ impl Runner for Fake {
         match best {
             Some((_, Ok(out))) => Ok(out.clone()),
             Some((_, Err(e))) => Err(anyhow::anyhow!("{e}")),
-            None if cmd.starts_with("wg genkey") => Ok("private\n".into()),
+            None if cmd.starts_with("wg genkey") => Ok(format!("{GENERATED}\n")),
             None if cmd.starts_with("wg pubkey") => Ok("hubpub\n".into()),
             None if cmd.starts_with("wg show") => Ok("iface\tpub\t1\toff\n".into()),
             None if cmd.starts_with("ip -j") => Ok("[]".into()),
@@ -53,6 +60,8 @@ impl Runner for Fake {
     }
 }
 
+/// What the fake `wg genkey` prints.
+const GENERATED: &str = "0000000000000000000000000000000000000000007A=";
 const K1: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
 const K2: &str = "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=";
 
@@ -120,7 +129,7 @@ fn nft_run(log: &[String], n: usize) -> usize {
 }
 
 #[test]
-fn a_new_network_is_built_and_its_fragment_applied_last() {
+fn a_new_network_is_registered_then_built() {
     let dir = keys();
     let fake = Fake::default();
     let out = reconcile(&fake, &compiled(), dir.path());
@@ -136,15 +145,26 @@ fn a_new_network_is_built_and_its_fragment_applied_last() {
         &format!("wg set wg-n1 peer {K1} allowed-ips 10.50.0.2/32,192.168.1.0/24"),
     );
     let route = position(&log, "ip route add 192.168.1.0/24 dev wg-n1 proto 150");
-    // A new peer joins only after its network's rules are in.
+    // Its rules (and map entries) go in before the interface exists.
     let fragment = nft_run(&log, 1);
-    assert!(base < link && link < addr && addr < port && port < fragment);
-    assert!(fragment < peer && peer < route);
+    assert!(base < fragment && fragment < link && link < addr && addr < port);
+    assert!(port < peer && peer < route);
+    assert_eq!(
+        nft_run(&log, 2),
+        position(&log, "ip link add wg-n2") - 1,
+        "n2 alike"
+    );
     // Nothing asks about an interface before it exists.
-    assert!(link < position(&log, "ip -j route show dev wg-n1"));
+    assert!(
+        !log.iter()
+            .any(|c| c.contains("show dev wg-n1") || c.starts_with("wg show wg-n1"))
+    );
     // The key is the network's (by id) and stays private (0600).
     let key = dir.path().join("n1.key");
-    assert_eq!(std::fs::read_to_string(&key).unwrap(), "private\n");
+    assert_eq!(
+        std::fs::read_to_string(&key).unwrap(),
+        format!("{GENERATED}\n")
+    );
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
         std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
@@ -182,29 +202,6 @@ fn revocations_come_before_additions_and_stale_routes_go() {
 }
 
 #[test]
-fn a_network_that_is_gone_is_removed_and_unknown_links_are_left_alone() {
-    let dir = keys();
-    let fake = Fake::default()
-        .answer(
-            "ip -j link show type wireguard",
-            r#"[{"ifname":"wg-n1"},{"ifname":"wg-old"},{"ifname":"wg-stray"},{"ifname":"wg0"}]"#,
-        )
-        .answer(
-            "nft -j list map",
-            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n1_from"}}], ["wg-old", {"jump": {"target": "n9_from"}}]]}}]}"#,
-        );
-    let out = reconcile(&fake, &compiled(), dir.path());
-    assert!(out.errors.is_empty(), "{:?}", out.errors);
-    let log = fake.log();
-    // The interface goes first; the map entry stays until the fragment removal.
-    assert!(position(&log, "ip link del wg-old") < nft_run(&log, 1));
-    assert!(
-        !log.iter()
-            .any(|c| c == "ip link del wg-stray" || c == "ip link del wg0")
-    );
-}
-
-#[test]
 fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
     let dir = keys();
     let fake = Fake::default()
@@ -215,8 +212,7 @@ fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
         .fail("wg show wg-n1 dump")
         .fail("ip -j route show dev wg-n1");
     let out = reconcile(&fake, &compiled(), dir.path());
-    // Each phase (removals, additions; route deletions, additions) reports its own.
-    assert_eq!(out.errors.len(), 4, "{:?}", out.errors);
+    assert_eq!(out.errors.len(), 2, "{:?}", out.errors);
     assert!(
         out.errors.iter().all(|e| e.starts_with("wg-n1: ")),
         "{:?}",
@@ -230,35 +226,6 @@ fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
         .count();
     assert_eq!(fragments, 3, "base + both networks");
     assert_eq!(out.hub_keys.len(), 2);
-}
-
-#[test]
-fn a_reused_slug_gets_a_fresh_network() {
-    let dir = keys();
-    let old_key = format!("{:0>42}A=", 9);
-    std::fs::write(dir.path().join("n9.key"), &old_key).unwrap();
-    let fake = Fake::default()
-        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
-        .answer(
-            "nft -j list map",
-            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n9_from"}}]]}}]}"#,
-        );
-    let out = reconcile(&fake, &compiled(), dir.path());
-    assert!(out.errors.is_empty(), "{:?}", out.errors);
-    let log = fake.log();
-    // Network 9 used wg-n1 before: its interface goes before network 1 is built, on
-    // a key of its own; network 9 keeps its key should it come back.
-    let del = position(&log, "ip link del wg-n1");
-    let add = position(&log, "ip link add wg-n1 type wireguard");
-    assert!(del < add);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("n1.key")).unwrap(),
-        "private\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("n9.key")).unwrap(),
-        old_key
-    );
 }
 
 #[test]
@@ -296,6 +263,7 @@ fn one_failing_revocation_does_not_keep_the_others() {
     let stale = |k: &str, ip: &str| format!("{k}\t(none)\t(none)\t{ip}\t0\t0\t0\toff\n");
     let k3 = format!("{:0>42}A=", 3);
     let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
         .answer(
             "wg show wg-n1 dump",
             &format!(
@@ -331,26 +299,24 @@ fn a_lan_moves_between_networks_in_one_reconcile() {
 }
 
 #[test]
-fn without_an_inventory_nothing_is_removed() {
+fn what_a_peer_loses_goes_before_the_rules_change() {
     let dir = keys();
-    let fake = Fake::default().fail("ip -j link show").answer(
-        "nft -j list map",
-        r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-old", {"jump": {"target": "n9_from"}}]]}}]}"#,
-    );
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "wg show wg-n1 dump",
+            &format!(
+                "priv\tpub\t51801\toff\n{K1}\t(none)\t(none)\t10.50.0.2/32,192.168.1.0/24,192.168.7.0/24\t0\t0\t0\toff\n"
+            ),
+        );
     let out = reconcile(&fake, &compiled(), dir.path());
-    assert!(
-        out.errors.iter().any(|e| e.starts_with("inventory: ")),
-        "{:?}",
-        out.errors
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let log = fake.log();
+    let narrow = position(
+        &log,
+        &format!("wg set wg-n1 peer {K1} allowed-ips 10.50.0.2/32,192.168.1.0/24"),
     );
-    assert!(!fake.log().iter().any(|c| c.contains("wg-old")));
+    assert!(narrow < nft_run(&log, 1));
 }
 
-#[test]
-fn without_the_base_nothing_else_is_touched() {
-    let dir = keys();
-    let fake = Fake::default().fail("nft -f -");
-    let out = reconcile(&fake, &compiled(), dir.path());
-    assert!(out.errors[0].starts_with("base: "));
-    assert_eq!(fake.log().len(), 1);
-}
+mod removal;

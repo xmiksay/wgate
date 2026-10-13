@@ -4,9 +4,10 @@
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
+use wait_timeout::ChildExt;
 
 pub trait Runner {
     /// Runs `argv` (with `stdin` fed in) and returns its stdout; a non-zero exit is an
@@ -86,17 +87,10 @@ impl Runner for System {
         };
         let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
         let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
-        let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            if let Some(status) = child.try_wait().context("wait")? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!("{} timed out after {:?}", argv.join(" "), self.timeout);
-            }
-            thread::sleep(Duration::from_millis(10));
+        let Some(status) = child.wait_timeout(self.timeout).context("wait")? else {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{} timed out after {:?}", argv.join(" "), self.timeout);
         };
         let out = std::process::Output {
             status,

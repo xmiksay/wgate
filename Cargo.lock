@@ -3952,6 +3952,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "wait-timeout",
  "wgate-core",
  "wgate-db",
 ]
