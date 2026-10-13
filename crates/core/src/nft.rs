@@ -192,29 +192,70 @@ pub fn render_network(c: &Compiled, n: &CompiledNetwork) -> String {
 }
 
 /// Takes a network out: its map entries first (a chain still referenced cannot be
-/// deleted), then its chains and sets.
+/// deleted), then its chains and sets. Each is added before it is deleted, so the
+/// transaction also succeeds when some are already gone (nft before 1.0.8 has no
+/// `destroy`).
 pub fn render_network_removal(id: Id, iface: &str) -> String {
-    let mut out = String::new();
+    let p = prefix(id);
+    let mut out = ensure_parts(id);
+    let _ = writeln!(out, "add element {TABLE} wg_ifaces {{ \"{iface}\" }}");
+    for (map, chain) in CHAINS {
+        let _ = writeln!(
+            out,
+            "add element {TABLE} {map} {{ \"{iface}\" : jump {p}_{chain} }}"
+        );
+    }
     let _ = writeln!(out, "delete element {TABLE} wg_ifaces {{ \"{iface}\" }}");
     for (map, _) in CHAINS {
         let _ = writeln!(out, "delete element {TABLE} {map} {{ \"{iface}\" }}");
     }
-    out.push_str(&render_network_purge(id));
+    delete_parts(&mut out, id);
     out
 }
 
 /// A network's chains and sets alone, for one whose map entries are already gone (a
 /// flushed map).
 pub fn render_network_purge(id: Id) -> String {
+    let mut out = ensure_parts(id);
+    delete_parts(&mut out, id);
+    out
+}
+
+/// Makes a network drop everything (its chains end in `drop`), for one whose
+/// unregistration failed: its old rights must not outlive it.
+pub fn render_network_cutoff(id: Id) -> String {
     let p = prefix(id);
-    let mut out = String::new();
+    let mut out = ensure_parts(id);
+    for (_, chain) in CHAINS {
+        rules(&mut out, &format!("{p}_{chain}"), &["counter drop"]);
+    }
+    out
+}
+
+/// `add` for a network's chains and sets: a no-op for those that exist.
+fn ensure_parts(id: Id) -> String {
+    let p = prefix(id);
+    let mut out = format!("add table {TABLE}\n");
+    for (set, ty) in SETS {
+        let _ = writeln!(
+            out,
+            "add set {TABLE} {p}_{set} {{ type {ty}; flags interval; }}"
+        );
+    }
+    for (_, chain) in CHAINS {
+        let _ = writeln!(out, "add chain {TABLE} {p}_{chain}");
+    }
+    out
+}
+
+fn delete_parts(out: &mut String, id: Id) {
+    let p = prefix(id);
     for (_, chain) in CHAINS {
         let _ = writeln!(out, "delete chain {TABLE} {p}_{chain}");
     }
     for (set, _) in SETS {
         let _ = writeln!(out, "delete set {TABLE} {p}_{set}");
     }
-    out
 }
 
 /// The base, SNAT and every network's fragment as one script (tests, a first install).

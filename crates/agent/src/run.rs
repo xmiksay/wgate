@@ -69,11 +69,16 @@ async fn next(listener: &mut Option<Listener>) -> Result<bool, ListenError> {
     if l.try_recv().await?.is_none() {
         return Ok(false);
     }
-    // Bounded: a steady stream of changes must not hold every reconcile off.
+    // Bounded: a steady stream of changes must not hold every reconcile off. A loss
+    // inside the drain counts like one at the first receive.
     let until = tokio::time::Instant::now() + Duration::from_secs(1);
-    while tokio::time::Instant::now() < until
-        && let Ok(Ok(Some(_))) = tokio::time::timeout(Duration::from_millis(50), l.try_recv()).await
-    {
+    while tokio::time::Instant::now() < until {
+        match tokio::time::timeout(Duration::from_millis(50), l.try_recv()).await {
+            Ok(Ok(Some(_))) => {}
+            Ok(Ok(None)) => return Ok(false),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => break,
+        }
     }
     Ok(true)
 }

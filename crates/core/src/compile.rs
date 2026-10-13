@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{Slug, hub_address};
+use crate::net::{Slug, hub_address, overlaps};
 use crate::rights::{RuleSet, merge_nets, subtract_nets};
 use crate::rule::{Rule, Service};
 
@@ -181,6 +181,24 @@ impl Compiled {
     /// Network `id`, if it compiled.
     pub fn network(&self, id: Id) -> Option<&CompiledNetwork> {
         self.networks.iter().find(|n| n.id == id)
+    }
+
+    /// What stays enforceable while the hub's spoof guard leaves `unguarded` out: a
+    /// peer with an address there is dropped (fail closed), and nobody keeps a right
+    /// to or from it. Everything else, revocations included, still applies.
+    pub fn within_guard(&self, unguarded: &[Ipv4Net]) -> Compiled {
+        let cut = RuleSet::everything(unguarded);
+        let mut c = self.clone();
+        c.peers.retain(|p| {
+            !p.addrs
+                .iter()
+                .any(|a| unguarded.iter().any(|u| overlaps(*a, *u)))
+        });
+        for p in &mut c.peers {
+            p.outbound = p.outbound.difference(&cut);
+            p.inbound = p.inbound.difference(&cut);
+        }
+        c
     }
 }
 

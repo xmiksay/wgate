@@ -111,7 +111,7 @@ fn a_failed_removal_holds_back_the_network_reusing_its_interface() {
             "nft -j list map",
             r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n9_from"}}]]}}]}"#,
         )
-        .answer("wg show wg-n1 public-key", "(none)\n")
+        .answer("wg show wg-n1 public-key", &hub_pub(9))
         .fail("ip link del wg-n1");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(

@@ -43,9 +43,14 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let mut out = Outcome::default();
     let keys = &Keys::new(r, keys_dir);
     let base = nft(r, &render_base(c)).context("base");
-    // A stale base still guards against spoofing when its tenant space covers today's;
-    // then only what else it holds (SNAT, …) waits for it.
-    let guarded = base.is_ok() || tenant_space_covered(r, c);
+    // What the spoof guard leaves out: nothing once the base applied. A stale one
+    // guards what its tenant space covers; unreadable, it guards nothing known.
+    let unguarded = if base.is_ok() {
+        Some(vec![])
+    } else {
+        unguarded_space(r, c)
+    };
+    let guarded = unguarded.as_ref().is_some_and(Vec::is_empty);
     note(base, &mut out.errors);
     note(nft(r, &render_snat(c)).context("snat"), &mut out.errors);
     let mut links = note(links(r).context("inventory"), &mut out.errors);
@@ -84,8 +89,19 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         }
     }
     if !guarded {
-        // Nothing grows where spoofed sources may not be dropped, and rights revoked
-        // inside a fragment wait for the base; peer and route revocations need none.
+        // Nothing grows where spoofed sources may not be dropped. Peer and route
+        // revocations need no base; rights revoked in a fragment apply with the
+        // fragment cut down to what the stale guard covers.
+        let within = unguarded.map(|space| c.within_guard(&space));
+        for n in owned.iter().chain(&rules_only) {
+            if let Some(within) = &within {
+                let result = nft(r, &render_network(within, n));
+                note(
+                    result.with_context(|| format!("{}: nft", n.iface)),
+                    &mut out.errors,
+                );
+            }
+        }
         for n in owned {
             let plan = plan(r, c, n, true);
             let peers = plan.peers.and_then(|d| removals(r, &n.iface, &d));
@@ -161,14 +177,16 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     out
 }
 
-/// Whether the kernel's `tenant_space` (the spoof guard's) covers the compiled one.
-fn tenant_space_covered(r: &dyn Runner, c: &Compiled) -> bool {
+/// What of the compiled tenant space the kernel's `tenant_space` (the spoof guard's)
+/// leaves out; `None` when it cannot be read.
+fn unguarded_space(r: &dyn Runner, c: &Compiled) -> Option<Vec<Ipv4Net>> {
     r.run(
         &["nft", "-j", "list", "set", "inet", "wgate", "tenant_space"],
         None,
     )
     .and_then(|json| nftmap::parse_ranges(&json))
-    .is_ok_and(|kernel| subtract_nets(&c.tenant_space, &kernel).is_empty())
+    .ok()
+    .map(|kernel| subtract_nets(&c.tenant_space, &kernel))
 }
 
 const NOT_MADE: &str = "an interface wgate did not make; left alone";
@@ -249,15 +267,21 @@ fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors: &mut Vec<S
             continue;
         }
         // Port 0 is random and can land on another wanted port: picked again then.
+        let mut freed = false;
         for _ in 0..5 {
             if let Err(e) = run(r, &["wg", "set", iface, "listen-port", "0"]) {
                 errors.push(format!("{iface}: free port: {e:#}"));
+                freed = true;
                 break;
             }
             let now = r.run(&["wg", "show", iface, "listen-port"], None);
             if !now.is_ok_and(|now| wanted(iface, &now)) {
+                freed = true;
                 break;
             }
+        }
+        if !freed {
+            errors.push(format!("{iface}: free port: every pick was a wanted port"));
         }
     }
 }

@@ -245,3 +245,23 @@ fn mesh_off_means_no_access_between_members() {
 }
 
 mod valid;
+
+#[test]
+fn within_the_guard_drops_what_it_leaves_out() {
+    let c = compile(&state());
+    let left_out = c.peers[0].clone();
+    let everything = RuleSet::everything(&left_out.addrs);
+    let within = c.within_guard(&left_out.addrs);
+    assert!(!within.peers.iter().any(|p| p.id == left_out.id));
+    assert_eq!(within.peers.len(), c.peers.len() - 1);
+    for p in &within.peers {
+        assert!(
+            p.outbound.intersect(&everything).is_empty(),
+            "peer {}",
+            p.id
+        );
+        assert!(p.inbound.intersect(&everything).is_empty(), "peer {}", p.id);
+    }
+    // Nothing left out: nothing changes.
+    assert_eq!(c.within_guard(&[]).peers, c.peers);
+}
