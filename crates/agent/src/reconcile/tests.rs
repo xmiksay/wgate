@@ -125,7 +125,7 @@ fn a_new_network_is_built_and_its_fragment_applied_last() {
         &log,
         &format!("wg set wg-n1 peer {K1} allowed-ips 10.50.0.2/32,192.168.1.0/24"),
     );
-    let route = position(&log, "ip route replace 192.168.1.0/24 dev wg-n1 proto 150");
+    let route = position(&log, "ip route add 192.168.1.0/24 dev wg-n1 proto 150");
     assert!(base < link && link < addr && addr < port && port < peer && peer < route);
     // The key was generated once and stays private (0600).
     let key = dir.path().join("wg-n1.key");
@@ -189,13 +189,67 @@ fn a_network_that_is_gone_is_removed_and_unknown_links_are_left_alone() {
 }
 
 #[test]
-fn one_failing_network_does_not_stop_the_others() {
+fn a_failing_step_neither_stops_its_networks_rules_nor_the_others() {
     let dir = keys();
-    let fake = Fake::default().fail("wg show wg-n1 dump");
+    let fake = Fake::default()
+        .fail("wg show wg-n1 dump")
+        .fail("ip -j route show dev wg-n1");
     let out = reconcile(&fake, &compiled(), dir.path());
-    assert_eq!(out.hub_keys, [(2, "hubpub".into())]);
-    assert_eq!(out.errors.len(), 1);
-    assert!(out.errors[0].starts_with("wg-n1: "), "{:?}", out.errors);
+    assert_eq!(out.errors.len(), 2, "{:?}", out.errors);
+    assert!(
+        out.errors.iter().all(|e| e.starts_with("wg-n1: ")),
+        "{:?}",
+        out.errors
+    );
+    // Its fragment (every revocation of a right) still went in, and n2 was applied.
+    let fragments = fake
+        .log()
+        .iter()
+        .filter(|c| c.as_str() == "nft -f -")
+        .count();
+    assert_eq!(fragments, 3, "base + both networks");
+    assert_eq!(out.hub_keys.len(), 2);
+}
+
+#[test]
+fn a_reused_slug_gets_a_fresh_network() {
+    let dir = keys();
+    std::fs::write(dir.path().join("wg-n1.key"), "old").unwrap();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-n1"}]"#)
+        .answer(
+            "nft -j list map",
+            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n9_from"}}]]}}]}"#,
+        );
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let log = fake.log();
+    // Network 9 used wg-n1 before: it goes (interface, key) before network 1 is built.
+    let del = position(&log, "ip link del wg-n1");
+    let add = position(&log, "ip link add wg-n1 type wireguard");
+    assert!(del < add);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("wg-n1.key")).unwrap(),
+        "private\n"
+    );
+}
+
+#[test]
+fn swapped_ports_are_freed_first() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            r#"[{"ifname":"wg-n1"},{"ifname":"wg-n2"}]"#,
+        )
+        .answer("wg show all listen-port", "wg-n1\t51802\nwg-n2\t51801\n");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let log = fake.log();
+    let free1 = position(&log, "wg set wg-n1 listen-port 0");
+    let free2 = position(&log, "wg set wg-n2 listen-port 0");
+    let take1 = position(&log, "wg set wg-n1 listen-port 51801 ");
+    assert!(free1 < take1 && free2 < take1);
 }
 
 #[test]
