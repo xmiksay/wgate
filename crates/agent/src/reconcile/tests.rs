@@ -285,7 +285,7 @@ fn revocations_come_before_additions_and_stale_routes_go() {
 }
 
 #[test]
-fn a_failing_read_stops_growth_but_not_the_rules() {
+fn a_network_that_cannot_be_read_is_left_as_it_is() {
     let dir = keys();
     let fake = Fake::default()
         .answer(
@@ -297,15 +297,22 @@ fn a_failing_read_stops_growth_but_not_the_rules() {
     let out = reconcile(&fake, &compiled(), dir.path());
     assert_eq!(out.errors.len(), 2, "{:?}", out.errors);
     assert!(
-        out.errors.iter().all(|e| e.starts_with("wg-n1: ")),
+        out.errors
+            .iter()
+            .all(|e| e.starts_with("wg-n1: left as it is: ")),
         "{:?}",
         out.errors
     );
-    // Both networks' rules (every revocation of a right) still went in, n1's without
-    // its peers' addresses; nothing was added anywhere, as nothing is known free.
-    assert_eq!(nft_runs(&fake.log()), 3, "base + both networks");
-    assert!(!fake.fragments_of(1)[0].contains("10.50.0.2"));
-    assert!(!fake.log().iter().any(|c| c.contains(" allowed-ips ")));
+    // n1 keeps what the kernel has; n2 goes on as usual.
+    assert!(fake.fragments_of(1).is_empty());
+    assert_eq!(fake.fragments_of(2).len(), 1);
+    assert!(
+        !fake
+            .log()
+            .iter()
+            .any(|c| c.starts_with("wg set wg-n1") || c.ends_with("dev wg-n1"))
+    );
+    assert_eq!(out.hub_keys, [(2, hub_pub(2))]);
 }
 
 #[test]

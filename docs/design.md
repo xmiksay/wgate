@@ -204,8 +204,9 @@ inbound(p ∈ N) =
 
 Owned by the agent; it never touches the other tables. The table is a **base**, its
 **SNAT** rule and one **fragment per network**, each applied as its own atomic `nft -f`
-transaction, network by network (an update of one network never rewrites another's
-rules; a broken SNAT setting never holds back the spoof guard). The exact
+transaction, network by network (one network's transaction never touches another's
+rules; a broken SNAT setting never holds back the spoof guard). Every pass re-applies
+all of them: idempotent, and any drift is repaired within a pass. The exact
 rendering is the golden file `crates/core/tests/golden/ruleset.nft` (base + every
 fragment); in short:
 
