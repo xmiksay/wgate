@@ -197,42 +197,56 @@ inbound(p ∈ N) =
 
 ## Enforcement on the hub — `table inet wgate`
 
-Owned by the agent, replaced atomically (`table` + `delete table` + `table` in one
-`nft -f` transaction, just like role `firewall`). It never touches the other tables.
-The exact ruleset is the golden file `crates/core/tests/golden/ruleset.nft`; in short:
+Owned by the agent; it never touches the other tables. The table is a **base** plus one
+**fragment per network**, each applied as its own atomic `nft -f` transaction, network
+by network (an update of one network never rewrites another's rules). The exact
+rendering is the golden file `crates/core/tests/golden/ruleset.nft` (base + every
+fragment); in short:
 
 ```nft
 table inet wgate {
-  set tenant_space { pool + routed LANs }
-  set ingress      { iface . peer addrs }               # wg-<slug> . addrs(peer)
-  set peer_addrs   { peer addrs }                      # all addrs(peer), interval
-  set allow        { peer . dst . proto . dport }      # outbound
-  set allow_icmp   { peer . dst }
-  set inbound      { src . peer . proto . dport }      # inbound
-  set inbound_icmp { src . peer }
-
-  # who opened the connection picks the check; replies use the same sets, swapped
-  #   fwd = ip saddr . ip daddr . meta l4proto . th dport, rev = the tuple swapped
-  chain from_tenant           { ip daddr @peer_addrs jump tenant_to_tenant; fwd @allow accept; drop }
-  chain tenant_to_tenant      { fwd @allow fwd @inbound accept; drop }      # both sides
-  chain tenant_answers        { ip daddr @peer_addrs jump tenant_answers_tenant; rev @inbound accept; drop }
-  chain tenant_answers_tenant { rev @allow rev @inbound accept; drop }
-  chain to_tenant             { fwd @inbound accept; drop }
-  chain to_tenant_reply       { rev @allow accept; drop }
-  # (each chain has the same pair of rules for icmp against the *_icmp sets)
+  # base: global sets, the dispatch maps, the hooks
+  set tenant_space { pool + routed LANs of compiled peers }
+  set wg_ifaces    { the agent's wg-<slug> interfaces }
+  map ingress / from_net / to_net { wg-<slug> : jump n<id>_ingress / _from / _to }
 
   prerouting (raw): non-wg ingress claiming a tenant source → drop;
-                    wg-* ingress whose source is not a peer of that interface → drop
-  input:   iifname wg-*  original → from_tenant, reply → tenant_answers, else drop
-  forward: same for iifname wg-*, then oifname wg-*: original → to_tenant,
-           reply → to_tenant_reply, else drop
-  output:  a local socket sending as a peer (any interface) → drop; oifname wg-*:
-           hub ICMP errors for
-           a tracked flow accept; original → to_tenant, reply → to_tenant_reply, else drop
-  postrouting: ip saddr @peer_addrs ip daddr { node_cidrs − tenant space } snat ip to 172.19.9.10
+                    an unknown wg-* → drop; iifname vmap @ingress
+  input:    iifname vmap @from_net
+  forward:  oifname of an unknown wg-* → drop; iifname vmap @from_net;
+            oifname vmap @to_net
+  output:   a local packet with a tenant-space source that is no hub address → drop;
+            hub ICMP errors for a tracked flow accept; oifname vmap @to_net
+  postrouting: ip saddr @tenant_space ip daddr { node_cidrs − tenant space } snat ip to 172.19.9.10
+
+  # fragment of network <id> (only its own peers; sender side + receiver side)
+  set n<id>_peers        { addrs(peer) }
+  set n<id>_allow        { peer . dst . proto . dport }       # outbound
+  set n<id>_allow_icmp   { peer . dst }
+  set n<id>_inbound      { src . peer . proto . dport }       # inbound
+  set n<id>_inbound_icmp { src . peer }
+  chain n<id>_ingress { ip saddr != @n<id>_peers drop }       # sources pinned to wg-<slug>
+  chain n<id>_from {   # a packet from a member
+    ct direction original  fwd @n<id>_allow return
+    ct direction reply     rev @n<id>_inbound return
+    drop }
+  chain n<id>_to {     # a packet to a member
+    ct direction original  fwd @n<id>_inbound return
+    ct direction reply     rev @n<id>_allow return
+    drop }
+  #   fwd = ip saddr . ip daddr . meta l4proto . th dport, rev = the tuple swapped;
+  #   each pair also has an icmp rule against the *_icmp sets
 }
 ```
 
+- Every packet from a member passes its network's `_from` chain, every packet to a
+  member its network's `_to` chain; device → device across networks passes both (the
+  opener's outbound right and the target's inbound right). The chains `return` on
+  success so the other side's check still runs; base chains have policy accept and
+  never see a tenant packet that both sides did not allow.
+- A network fragment creates its chains and sets if missing, flushes and refills them
+  and registers its interface in the maps; removing a network deletes its map entries
+  and then its chains and sets (a chain still referenced by a map cannot be deleted).
 - **Elements must be disjoint.** nft rejects an interval element that overlaps an
   existing one ("File exists"), even when one contains the other. `core` therefore
   keeps rights in a canonical disjoint form (`RuleSet`) and renders them as
@@ -255,9 +269,6 @@ table inet wgate {
   sending peer's `AllowedIPs` (its /32 + routed subnets). So neither a peer nor a
   leftover or misconfigured `wg-*` interface can pose as another peer. A tenant source
   arriving on any other interface, or sent by a local socket, is spoofed and dropped.
-- Device-to-device is told apart by `@peer_addrs`, not by the pool: a network's hub
-  address is in the pool but is no peer, so hub-opened connections (an inbound grant
-  with the hub address as source) work.
 - Rules apply to hub-local addresses too (input/output hooks); that is how
   `tcp 172.16.16.1/32 6443` reaches the k8s API. A broad ceiling (e.g. `0.0.0.0/0`)
   therefore also opens the hub's own services on those ports. Keep ceilings specific.

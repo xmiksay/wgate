@@ -1,181 +1,197 @@
-table inet wgate {}
-delete table inet wgate
-
-table inet wgate {
-	set tenant_space {
-		type ipv4_addr
-		flags interval
-		elements = {
-			10.50.0.0-10.50.255.255,
-			192.168.10.0-192.168.10.255
-		}
-	}
-
-	set ingress {
-		type ifname . ipv4_addr
-		flags interval
-		elements = {
-			"wg-nexial" . 10.50.0.2,
-			"wg-nexial" . 10.50.0.3,
-			"wg-nexial" . 192.168.10.0-192.168.10.255,
-			"wg-nexial-dev" . 10.50.1.2,
-			"wg-nexial-dev" . 10.50.1.3,
-			"wg-krcmar" . 10.50.2.2
-		}
-	}
-
-	set peer_addrs {
-		type ipv4_addr
-		flags interval
-		elements = {
-			10.50.0.2,
-			10.50.0.3,
-			192.168.10.0-192.168.10.255,
-			10.50.1.2,
-			10.50.1.3,
-			10.50.2.2
-		}
-	}
-
-	set allow {
-		type ipv4_addr . ipv4_addr . inet_proto . inet_service
-		flags interval
-		elements = {
-			10.50.0.2 . 10.0.0.0-10.49.255.255 . tcp . 80-90,
-			10.50.0.2 . 10.50.1.2-10.50.1.3 . tcp . 22,
-			10.50.0.2 . 10.51.0.0-10.255.255.255 . tcp . 80-90,
-			10.50.0.2 . 172.16.16.1 . tcp . 6443,
-			10.50.0.3 . 10.0.0.0-10.49.255.255 . tcp . 80-90,
-			10.50.0.3 . 10.50.1.2-10.50.1.3 . tcp . 22,
-			10.50.0.3 . 10.51.0.0-10.255.255.255 . tcp . 80-90,
-			10.50.0.3 . 172.16.16.1 . tcp . 6443,
-			192.168.10.0-192.168.10.255 . 10.0.0.0-10.49.255.255 . tcp . 80-90,
-			192.168.10.0-192.168.10.255 . 10.50.1.2-10.50.1.3 . tcp . 22,
-			192.168.10.0-192.168.10.255 . 10.51.0.0-10.255.255.255 . tcp . 80-90,
-			192.168.10.0-192.168.10.255 . 172.16.16.1 . tcp . 6443,
-			10.50.1.2 . 10.50.1.3 . tcp . 1-65535,
-			10.50.1.2 . 172.16.16.1 . tcp . 6443,
-			10.50.1.2 . 10.50.1.3 . udp . 1-65535,
-			10.50.1.3 . 10.50.1.2 . tcp . 1-65535,
-			10.50.1.3 . 172.16.16.1 . tcp . 6443,
-			10.50.1.3 . 10.50.1.2 . udp . 1-65535,
-			10.50.2.2 . 10.50.1.2-10.50.1.3 . tcp . 443,
-			10.50.2.2 . 172.16.16.1 . tcp . 6443
-		}
-	}
-
-	set allow_icmp {
-		type ipv4_addr . ipv4_addr
-		flags interval
-		elements = {
-			10.50.0.2 . 172.19.9.10-172.19.9.12,
-			10.50.0.3 . 172.19.9.10-172.19.9.12,
-			192.168.10.0-192.168.10.255 . 172.19.9.10-172.19.9.12,
-			10.50.1.2 . 10.50.1.3,
-			10.50.1.3 . 10.50.1.2
-		}
-	}
-
-	set inbound {
-		type ipv4_addr . ipv4_addr . inet_proto . inet_service
-		flags interval
-		elements = {
-			10.50.0.2-10.50.0.3 . 10.50.1.2 . tcp . 22,
-			10.50.1.3 . 10.50.1.2 . tcp . 1-65535,
-			10.50.2.2 . 10.50.1.2 . tcp . 443,
-			10.244.0.0-10.244.255.255 . 10.50.1.2 . tcp . 8080,
-			192.168.10.0-192.168.10.255 . 10.50.1.2 . tcp . 22,
-			10.50.1.3 . 10.50.1.2 . udp . 1-65535,
-			10.50.0.2-10.50.0.3 . 10.50.1.3 . tcp . 22,
-			10.50.1.2 . 10.50.1.3 . tcp . 1-65535,
-			10.50.2.2 . 10.50.1.3 . tcp . 443,
-			10.244.0.0-10.244.255.255 . 10.50.1.3 . tcp . 8080,
-			192.168.10.0-192.168.10.255 . 10.50.1.3 . tcp . 22,
-			10.50.1.2 . 10.50.1.3 . udp . 1-65535
-		}
-	}
-
-	set inbound_icmp {
-		type ipv4_addr . ipv4_addr
-		flags interval
-		elements = {
-			10.50.1.3 . 10.50.1.2,
-			10.50.1.2 . 10.50.1.3
-		}
-	}
-
-	chain prerouting {
-		type filter hook prerouting priority raw; policy accept;
-		iifname != "wg-*" iifname != "lo" ip saddr @tenant_space counter drop
-		iifname "wg-*" iifname . ip saddr != @ingress counter drop
-	}
-
-	chain from_tenant {
-		ip daddr @peer_addrs jump tenant_to_tenant
-		ip saddr . ip daddr . meta l4proto . th dport @allow accept
-		meta l4proto icmp ip saddr . ip daddr @allow_icmp accept
-		counter drop
-	}
-
-	chain tenant_to_tenant {
-		ip saddr . ip daddr . meta l4proto . th dport @allow ip saddr . ip daddr . meta l4proto . th dport @inbound accept
-		meta l4proto icmp ip saddr . ip daddr @allow_icmp ip saddr . ip daddr @inbound_icmp accept
-		counter drop
-	}
-
-	chain tenant_answers {
-		ip daddr @peer_addrs jump tenant_answers_tenant
-		ip daddr . ip saddr . meta l4proto . th sport @inbound accept
-		meta l4proto icmp ip daddr . ip saddr @inbound_icmp accept
-		counter drop
-	}
-
-	chain tenant_answers_tenant {
-		ip daddr . ip saddr . meta l4proto . th sport @allow ip daddr . ip saddr . meta l4proto . th sport @inbound accept
-		meta l4proto icmp ip daddr . ip saddr @allow_icmp ip daddr . ip saddr @inbound_icmp accept
-		counter drop
-	}
-
-	chain to_tenant {
-		ip saddr . ip daddr . meta l4proto . th dport @inbound accept
-		meta l4proto icmp ip saddr . ip daddr @inbound_icmp accept
-		counter drop
-	}
-
-	chain to_tenant_reply {
-		ip daddr . ip saddr . meta l4proto . th sport @allow accept
-		meta l4proto icmp ip daddr . ip saddr @allow_icmp accept
-		counter drop
-	}
-
-	chain input {
-		type filter hook input priority filter - 5; policy accept;
-		iifname "wg-*" ct direction original jump from_tenant
-		iifname "wg-*" ct direction reply jump tenant_answers
-		iifname "wg-*" counter drop
-	}
-
-	chain output {
-		type filter hook output priority filter - 5; policy accept;
-		ip saddr @peer_addrs counter drop
-		oifname "wg-*" ct state related icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
-		oifname "wg-*" ct direction original jump to_tenant
-		oifname "wg-*" ct direction reply jump to_tenant_reply
-		oifname "wg-*" counter drop
-	}
-
-	chain forward {
-		type filter hook forward priority filter - 5; policy accept;
-		iifname "wg-*" ct direction original jump from_tenant
-		iifname "wg-*" ct direction reply jump tenant_answers
-		iifname "wg-*" counter drop
-		oifname "wg-*" ct direction original jump to_tenant
-		oifname "wg-*" ct direction reply jump to_tenant_reply
-		oifname "wg-*" counter drop
-	}
-
-	chain postrouting {
-		type nat hook postrouting priority srcnat; policy accept;
-		ip saddr @peer_addrs ip daddr { 172.19.9.0/24 } snat ip to 172.19.9.10
-	}
+add table inet wgate
+add set inet wgate tenant_space { type ipv4_addr; flags interval; }
+add set inet wgate wg_ifaces { type ifname; }
+add map inet wgate ingress { type ifname : verdict; }
+add map inet wgate from_net { type ifname : verdict; }
+add map inet wgate to_net { type ifname : verdict; }
+add chain inet wgate prerouting { type filter hook prerouting priority raw; policy accept; }
+add chain inet wgate input { type filter hook input priority filter - 5; policy accept; }
+add chain inet wgate forward { type filter hook forward priority filter - 5; policy accept; }
+add chain inet wgate output { type filter hook output priority filter - 5; policy accept; }
+add chain inet wgate postrouting { type nat hook postrouting priority srcnat; policy accept; }
+flush set inet wgate tenant_space
+add element inet wgate tenant_space {
+	10.50.0.0-10.50.255.255,
+	192.168.10.0-192.168.10.255
 }
+flush chain inet wgate prerouting
+add rule inet wgate prerouting iifname != "wg-*" iifname != "lo" ip saddr @tenant_space counter drop
+add rule inet wgate prerouting iifname "wg-*" iifname != @wg_ifaces counter drop
+add rule inet wgate prerouting iifname vmap @ingress
+flush chain inet wgate input
+add rule inet wgate input iifname vmap @from_net
+flush chain inet wgate forward
+add rule inet wgate forward oifname "wg-*" oifname != @wg_ifaces counter drop
+add rule inet wgate forward iifname vmap @from_net
+add rule inet wgate forward oifname vmap @to_net
+flush chain inet wgate output
+add rule inet wgate output ip saddr @tenant_space fib saddr type != local counter drop
+add rule inet wgate output oifname "wg-*" oifname != @wg_ifaces counter drop
+add rule inet wgate output oifname "wg-*" ct state related icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+add rule inet wgate output oifname vmap @to_net
+flush chain inet wgate postrouting
+add rule inet wgate postrouting ip saddr @tenant_space ip daddr { 172.19.9.0/24 } snat ip to 172.19.9.10
+
+add table inet wgate
+add set inet wgate n1_peers { type ipv4_addr; flags interval; }
+add set inet wgate n1_allow { type ipv4_addr . ipv4_addr . inet_proto . inet_service; flags interval; }
+add set inet wgate n1_allow_icmp { type ipv4_addr . ipv4_addr; flags interval; }
+add set inet wgate n1_inbound { type ipv4_addr . ipv4_addr . inet_proto . inet_service; flags interval; }
+add set inet wgate n1_inbound_icmp { type ipv4_addr . ipv4_addr; flags interval; }
+add chain inet wgate n1_ingress
+add chain inet wgate n1_from
+add chain inet wgate n1_to
+flush set inet wgate n1_peers
+add element inet wgate n1_peers {
+	10.50.0.2,
+	10.50.0.3,
+	192.168.10.0-192.168.10.255
+}
+flush set inet wgate n1_allow
+add element inet wgate n1_allow {
+	10.50.0.2 . 10.0.0.0-10.49.255.255 . tcp . 80-90,
+	10.50.0.2 . 10.50.1.2-10.50.1.3 . tcp . 22,
+	10.50.0.2 . 10.51.0.0-10.255.255.255 . tcp . 80-90,
+	10.50.0.2 . 172.16.16.1 . tcp . 6443,
+	10.50.0.3 . 10.0.0.0-10.49.255.255 . tcp . 80-90,
+	10.50.0.3 . 10.50.1.2-10.50.1.3 . tcp . 22,
+	10.50.0.3 . 10.51.0.0-10.255.255.255 . tcp . 80-90,
+	10.50.0.3 . 172.16.16.1 . tcp . 6443,
+	192.168.10.0-192.168.10.255 . 10.0.0.0-10.49.255.255 . tcp . 80-90,
+	192.168.10.0-192.168.10.255 . 10.50.1.2-10.50.1.3 . tcp . 22,
+	192.168.10.0-192.168.10.255 . 10.51.0.0-10.255.255.255 . tcp . 80-90,
+	192.168.10.0-192.168.10.255 . 172.16.16.1 . tcp . 6443
+}
+flush set inet wgate n1_allow_icmp
+add element inet wgate n1_allow_icmp {
+	10.50.0.2 . 172.19.9.10-172.19.9.12,
+	10.50.0.3 . 172.19.9.10-172.19.9.12,
+	192.168.10.0-192.168.10.255 . 172.19.9.10-172.19.9.12
+}
+flush set inet wgate n1_inbound
+flush set inet wgate n1_inbound_icmp
+flush chain inet wgate n1_ingress
+add rule inet wgate n1_ingress ip saddr != @n1_peers counter drop
+flush chain inet wgate n1_from
+add rule inet wgate n1_from ct direction original ip saddr . ip daddr . meta l4proto . th dport @n1_allow return
+add rule inet wgate n1_from ct direction original meta l4proto icmp ip saddr . ip daddr @n1_allow_icmp return
+add rule inet wgate n1_from ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n1_inbound return
+add rule inet wgate n1_from ct direction reply meta l4proto icmp ip daddr . ip saddr @n1_inbound_icmp return
+add rule inet wgate n1_from counter drop
+flush chain inet wgate n1_to
+add rule inet wgate n1_to ct direction original ip saddr . ip daddr . meta l4proto . th dport @n1_inbound return
+add rule inet wgate n1_to ct direction original meta l4proto icmp ip saddr . ip daddr @n1_inbound_icmp return
+add rule inet wgate n1_to ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n1_allow return
+add rule inet wgate n1_to ct direction reply meta l4proto icmp ip daddr . ip saddr @n1_allow_icmp return
+add rule inet wgate n1_to counter drop
+add element inet wgate wg_ifaces { "wg-nexial" }
+add element inet wgate ingress { "wg-nexial" : jump n1_ingress }
+add element inet wgate from_net { "wg-nexial" : jump n1_from }
+add element inet wgate to_net { "wg-nexial" : jump n1_to }
+
+add table inet wgate
+add set inet wgate n2_peers { type ipv4_addr; flags interval; }
+add set inet wgate n2_allow { type ipv4_addr . ipv4_addr . inet_proto . inet_service; flags interval; }
+add set inet wgate n2_allow_icmp { type ipv4_addr . ipv4_addr; flags interval; }
+add set inet wgate n2_inbound { type ipv4_addr . ipv4_addr . inet_proto . inet_service; flags interval; }
+add set inet wgate n2_inbound_icmp { type ipv4_addr . ipv4_addr; flags interval; }
+add chain inet wgate n2_ingress
+add chain inet wgate n2_from
+add chain inet wgate n2_to
+flush set inet wgate n2_peers
+add element inet wgate n2_peers {
+	10.50.1.2,
+	10.50.1.3
+}
+flush set inet wgate n2_allow
+add element inet wgate n2_allow {
+	10.50.1.2 . 10.50.1.3 . tcp . 1-65535,
+	10.50.1.2 . 172.16.16.1 . tcp . 6443,
+	10.50.1.2 . 10.50.1.3 . udp . 1-65535,
+	10.50.1.3 . 10.50.1.2 . tcp . 1-65535,
+	10.50.1.3 . 172.16.16.1 . tcp . 6443,
+	10.50.1.3 . 10.50.1.2 . udp . 1-65535
+}
+flush set inet wgate n2_allow_icmp
+add element inet wgate n2_allow_icmp {
+	10.50.1.2 . 10.50.1.3,
+	10.50.1.3 . 10.50.1.2
+}
+flush set inet wgate n2_inbound
+add element inet wgate n2_inbound {
+	10.50.0.2-10.50.0.3 . 10.50.1.2 . tcp . 22,
+	10.50.1.3 . 10.50.1.2 . tcp . 1-65535,
+	10.50.2.2 . 10.50.1.2 . tcp . 443,
+	10.244.0.0-10.244.255.255 . 10.50.1.2 . tcp . 8080,
+	192.168.10.0-192.168.10.255 . 10.50.1.2 . tcp . 22,
+	10.50.1.3 . 10.50.1.2 . udp . 1-65535,
+	10.50.0.2-10.50.0.3 . 10.50.1.3 . tcp . 22,
+	10.50.1.2 . 10.50.1.3 . tcp . 1-65535,
+	10.50.2.2 . 10.50.1.3 . tcp . 443,
+	10.244.0.0-10.244.255.255 . 10.50.1.3 . tcp . 8080,
+	192.168.10.0-192.168.10.255 . 10.50.1.3 . tcp . 22,
+	10.50.1.2 . 10.50.1.3 . udp . 1-65535
+}
+flush set inet wgate n2_inbound_icmp
+add element inet wgate n2_inbound_icmp {
+	10.50.1.3 . 10.50.1.2,
+	10.50.1.2 . 10.50.1.3
+}
+flush chain inet wgate n2_ingress
+add rule inet wgate n2_ingress ip saddr != @n2_peers counter drop
+flush chain inet wgate n2_from
+add rule inet wgate n2_from ct direction original ip saddr . ip daddr . meta l4proto . th dport @n2_allow return
+add rule inet wgate n2_from ct direction original meta l4proto icmp ip saddr . ip daddr @n2_allow_icmp return
+add rule inet wgate n2_from ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n2_inbound return
+add rule inet wgate n2_from ct direction reply meta l4proto icmp ip daddr . ip saddr @n2_inbound_icmp return
+add rule inet wgate n2_from counter drop
+flush chain inet wgate n2_to
+add rule inet wgate n2_to ct direction original ip saddr . ip daddr . meta l4proto . th dport @n2_inbound return
+add rule inet wgate n2_to ct direction original meta l4proto icmp ip saddr . ip daddr @n2_inbound_icmp return
+add rule inet wgate n2_to ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n2_allow return
+add rule inet wgate n2_to ct direction reply meta l4proto icmp ip daddr . ip saddr @n2_allow_icmp return
+add rule inet wgate n2_to counter drop
+add element inet wgate wg_ifaces { "wg-nexial-dev" }
+add element inet wgate ingress { "wg-nexial-dev" : jump n2_ingress }
+add element inet wgate from_net { "wg-nexial-dev" : jump n2_from }
+add element inet wgate to_net { "wg-nexial-dev" : jump n2_to }
+
+add table inet wgate
+add set inet wgate n3_peers { type ipv4_addr; flags interval; }
+add set inet wgate n3_allow { type ipv4_addr . ipv4_addr . inet_proto . inet_service; flags interval; }
+add set inet wgate n3_allow_icmp { type ipv4_addr . ipv4_addr; flags interval; }
+add set inet wgate n3_inbound { type ipv4_addr . ipv4_addr . inet_proto . inet_service; flags interval; }
+add set inet wgate n3_inbound_icmp { type ipv4_addr . ipv4_addr; flags interval; }
+add chain inet wgate n3_ingress
+add chain inet wgate n3_from
+add chain inet wgate n3_to
+flush set inet wgate n3_peers
+add element inet wgate n3_peers {
+	10.50.2.2
+}
+flush set inet wgate n3_allow
+add element inet wgate n3_allow {
+	10.50.2.2 . 10.50.1.2-10.50.1.3 . tcp . 443,
+	10.50.2.2 . 172.16.16.1 . tcp . 6443
+}
+flush set inet wgate n3_allow_icmp
+flush set inet wgate n3_inbound
+flush set inet wgate n3_inbound_icmp
+flush chain inet wgate n3_ingress
+add rule inet wgate n3_ingress ip saddr != @n3_peers counter drop
+flush chain inet wgate n3_from
+add rule inet wgate n3_from ct direction original ip saddr . ip daddr . meta l4proto . th dport @n3_allow return
+add rule inet wgate n3_from ct direction original meta l4proto icmp ip saddr . ip daddr @n3_allow_icmp return
+add rule inet wgate n3_from ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n3_inbound return
+add rule inet wgate n3_from ct direction reply meta l4proto icmp ip daddr . ip saddr @n3_inbound_icmp return
+add rule inet wgate n3_from counter drop
+flush chain inet wgate n3_to
+add rule inet wgate n3_to ct direction original ip saddr . ip daddr . meta l4proto . th dport @n3_inbound return
+add rule inet wgate n3_to ct direction original meta l4proto icmp ip saddr . ip daddr @n3_inbound_icmp return
+add rule inet wgate n3_to ct direction reply ip daddr . ip saddr . meta l4proto . th sport @n3_allow return
+add rule inet wgate n3_to ct direction reply meta l4proto icmp ip daddr . ip saddr @n3_allow_icmp return
+add rule inet wgate n3_to counter drop
+add element inet wgate wg_ifaces { "wg-krcmar" }
+add element inet wgate ingress { "wg-krcmar" : jump n3_ingress }
+add element inet wgate from_net { "wg-krcmar" : jump n3_from }
+add element inet wgate to_net { "wg-krcmar" : jump n3_to }

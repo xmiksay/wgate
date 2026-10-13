@@ -195,6 +195,7 @@ async fn a_peer_fits_its_network_and_tenant() {
         "UPDATE network SET cidr = '10.50.0.0/26' WHERE id = 1",
     )
     .await;
+    refused(&pg.db, "UPDATE network SET slug = 'renamed' WHERE id = 1").await;
 }
 
 #[tokio::test]

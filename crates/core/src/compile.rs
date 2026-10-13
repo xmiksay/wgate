@@ -101,6 +101,7 @@ pub struct Federation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompiledPeer {
     pub id: Id,
+    pub network: Id,
     pub ip: Ipv4Addr,
     pub public_key: String,
     /// The interface its packets must arrive on.
@@ -111,6 +112,17 @@ pub struct CompiledPeer {
     pub outbound: RuleSet,
     /// Who may open to the peer; addresses = sources.
     pub inbound: RuleSet,
+}
+
+/// A network the hub serves: its interface, range and hub address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledNetwork {
+    pub id: Id,
+    pub iface: String,
+    pub cidr: Ipv4Net,
+    /// The hub's address on the interface (`cidr`'s first host).
+    pub hub: Ipv4Addr,
+    pub port: u16,
 }
 
 /// Why a peer was left out (fail closed; the caller reports it).
@@ -139,11 +151,13 @@ pub enum Problem {
     RoutedNotAllowed,
 }
 
-/// One compile run; render it with [`crate::render_nft`]. Its peers' addresses are
+/// One compile run; render it with [`crate::render_base`] and [`crate::render_network`]. Its peers' addresses are
 /// disjoint, which nft requires (it rejects overlapping elements, and with them the
 /// whole transaction).
 #[derive(Clone, Debug)]
 pub struct Compiled {
+    /// Valid networks, by id: one interface and one nft fragment each.
+    pub networks: Vec<CompiledNetwork>,
     pub peers: Vec<CompiledPeer>,
     /// Tenant blocks that lost (outside the pool, host bits, an older block's range).
     pub invalid_blocks: Vec<Id>,
@@ -248,6 +262,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
             let own = RuleSet::everything(&v.addrs);
             peers.push(CompiledPeer {
                 id: v.peer.id,
+                network: id,
                 ip: v.peer.ip,
                 public_key: v.peer.public_key.clone(),
                 iface: n.net.slug.iface(),
@@ -258,9 +273,21 @@ pub fn compile(state: &DesiredState) -> Compiled {
         }
     }
     peers.sort_by_key(|p| p.id);
+    let mut compiled_networks: Vec<CompiledNetwork> = networks
+        .values()
+        .map(|n| CompiledNetwork {
+            id: n.net.id,
+            iface: n.net.slug.iface(),
+            cidr: n.net.cidr,
+            hub: hub_address(n.net.cidr),
+            port: n.net.port,
+        })
+        .collect();
+    compiled_networks.sort_by_key(|n| n.id);
     let mut invalid_networks: Vec<Id> = invalid.into_iter().collect();
     invalid_networks.sort_unstable();
     Compiled {
+        networks: compiled_networks,
         peers,
         invalid_blocks,
         invalid_networks,

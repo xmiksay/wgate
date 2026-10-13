@@ -12,7 +12,7 @@ use common::{Background, Netns};
 use ipnet::Ipv4Net;
 use wgate_core::{
     Claim, DesiredState, Federation, NetRule, Network, Peer, PortRange, RuleSet, Service, Tenant,
-    compile, render_nft,
+    compile, render_all,
 };
 
 const A: &str = "10.50.0.2"; // tenant 1, network 1
@@ -129,7 +129,7 @@ impl Lab {
     fn apply(&self, state: &DesiredState) {
         let compiled = compile(state);
         assert!(compiled.skipped.is_empty(), "{:?}", compiled.skipped);
-        let script = render_nft(&compiled);
+        let script = render_all(&compiled);
         self.hub.exec(&["nft", "-f", "-"], Some(&script));
     }
 }
@@ -291,12 +291,13 @@ fn peers_cannot_pose_as_another_network() {
     lab.a
         .exec(&["ip", "addr", "add", "10.50.1.2/32", "dev", "p0"], None);
     lab.a.exec(&["python3", "-c", SPOOF, B, C, "7000"], None);
+    // wg-n1 belongs to network 1: its ingress chain admits only network 1's peers.
     let chain = lab
         .hub
-        .output(&["nft", "list", "chain", "inet", "wgate", "prerouting"]);
+        .output(&["nft", "list", "chain", "inet", "wgate", "n1_ingress"]);
     let ingress = chain
         .lines()
-        .find(|l| l.contains("!= @ingress"))
+        .find(|l| l.contains("!= @n1_peers"))
         .expect("ingress rule");
     assert!(ingress.contains("packets 1 "), "{ingress}");
 }
