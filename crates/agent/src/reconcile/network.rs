@@ -13,6 +13,7 @@ use crate::keys::Keys;
 use crate::runner::Runner;
 
 /// Brings one network to its compiled state, after its peers lost what they lose.
+/// `c` holds its rights (with what is still held elsewhere left out).
 /// Every step is attempted even when an earlier one failed, except the hub key and
 /// the interface of a new network. Returns the hub public key (when the interface has
 /// it) and the failed steps.
@@ -144,6 +145,8 @@ fn interface_key(r: &dyn Runner, iface: &str) -> anyhow::Result<Option<String>> 
 
 /// Where a port another network wants is parked meanwhile: outside `PORT_RANGE`.
 const SPARE_PORTS: std::ops::RangeInclusive<u16> = 51900..=51999;
+const _: () =
+    assert!(*SPARE_PORTS.start() > *PORT_RANGE.end() || *SPARE_PORTS.end() < *PORT_RANGE.start());
 
 /// Ports can swap: an interface of wgate's holding the port another network wants lets
 /// go of it (it gets its own in its turn).
@@ -157,7 +160,6 @@ pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors:
             .iter()
             .any(|n| n.iface != iface && n.port.to_string() == port.trim())
     };
-    debug_assert!(!PORT_RANGE.contains(SPARE_PORTS.start()));
     for line in ports.lines() {
         let Some((iface, port)) = line.split_once('\t') else {
             continue;

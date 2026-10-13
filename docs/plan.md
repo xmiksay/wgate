@@ -113,9 +113,10 @@ under sudo).
   2. apply the base, then SNAT as a transaction of its own; read the inventory
      (`ip -j link show type wireguard`, `nft -j list map … from_net`). A failed base
      still counts as guarding when the kernel's `tenant_space` covers the compiled
-     one. Otherwise nothing grows (nothing made, no peer added), but peer and route
-     revocations apply, and so do the fragments, cut down to what the stale guard
-     covers (`Compiled::within_guard`)
+     one. Otherwise, or without the full inventory
+     (links and registry), nothing grows (nothing made, no peer added), but peer and
+     route revocations apply, and then the fragments, cut down to what the stale
+     guard covers and to what is not held (`Compiled::within_guard`)
   3. what is gone. An interface is wgate's when its alias carries the mark
      `wgate:n<id>` (set at creation; survives a flushed table and a lost key file).
      A marked interface whose network is not compiled under that name, or an
@@ -133,7 +134,8 @@ under sudo).
      narrowings (diffed against `wg show <if> allowed-ips`, never `dump`: it carries
      private and preshared keys) and stale LAN route deletions — before any network
      grows, so nothing is held twice while it moves; what a failed command could not
-     release stays held, and no peer or route anywhere takes it this pass
+     release (and every peer address of a network whose peers cannot be read) stays
+     held: no peer, route or right anywhere takes it this pass
   5. **network by network**, every step attempted: the hub key `n<id>.key` in
      `keys_dir` first (issued only to an interface without a key, never deleted; a
      damaged or missing one for a keyed interface is an error, never a rotation; its

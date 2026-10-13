@@ -114,20 +114,7 @@ pub(super) fn route_deletions(
 ) -> (anyhow::Result<()>, Vec<Ipv4Net>) {
     let commands = del
         .iter()
-        .map(|lan| {
-            let lan_s = lan.to_string();
-            let cmd = argv(&[
-                "ip",
-                "route",
-                "del",
-                &lan_s,
-                "dev",
-                &n.iface,
-                "proto",
-                routes::PROTO,
-            ]);
-            (cmd, vec![*lan])
-        })
+        .map(|lan| (route("del", lan, &n.iface), vec![*lan]))
         .collect();
     release(r, commands)
 }
@@ -164,39 +151,29 @@ pub(super) fn route_commands(
     verb: &str,
     lans: &[Ipv4Net],
 ) -> anyhow::Result<()> {
-    let commands: Vec<_> = lans
-        .iter()
-        .map(|lan| {
-            argv(&[
-                "ip",
-                "route",
-                verb,
-                &lan.to_string(),
-                "dev",
-                &n.iface,
-                "proto",
-                routes::PROTO,
-            ])
-        })
-        .collect();
+    let commands: Vec<_> = lans.iter().map(|lan| route(verb, lan, &n.iface)).collect();
     all(r, &commands)
+}
+
+/// `ip route <verb> <lan> dev <iface> proto 150`.
+fn route(verb: &str, lan: &Ipv4Net, iface: &str) -> Vec<String> {
+    let lan = lan.to_string();
+    argv(&[
+        "ip",
+        "route",
+        verb,
+        &lan,
+        "dev",
+        iface,
+        "proto",
+        routes::PROTO,
+    ])
 }
 
 /// Runs every command, also after one fails (one stuck peer must not keep the other
 /// revocations from applying); reports all failures.
 pub(super) fn all(r: &dyn Runner, commands: &[Vec<String>]) -> anyhow::Result<()> {
-    let failures: Vec<String> = commands
-        .iter()
-        .filter_map(|cmd| {
-            let argv: Vec<&str> = cmd.iter().map(String::as_str).collect();
-            run(r, &argv).err().map(|e| format!("{e:#}"))
-        })
-        .collect();
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(failures.join("; ")))
-    }
+    release(r, commands.iter().map(|c| (c.clone(), vec![])).collect()).0
 }
 
 pub(super) fn argv(parts: &[&str]) -> Vec<String> {
@@ -264,15 +241,25 @@ pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<Link>> {
 
 /// The compiled networks' own interfaces, each read on its own: those that exist and
 /// are WireGuard. `None` when not one could be read.
-pub(super) fn links_of(r: &dyn Runner, c: &Compiled) -> Option<Vec<Link>> {
+pub(super) fn links_of(
+    r: &dyn Runner,
+    c: &Compiled,
+    errors: &mut Vec<String>,
+) -> Option<Vec<Link>> {
     let mut read_any = false;
     let mut found = vec![];
     for n in &c.networks {
         let Ok(json) = r.run(&["ip", "-j", "-d", "link", "show", "dev", &n.iface], None) else {
             continue;
         };
+        let shown: Vec<Shown> = match serde_json::from_str(&json) {
+            Ok(shown) => shown,
+            Err(e) => {
+                errors.push(format!("{}: ip -j link: {e}", n.iface));
+                continue;
+            }
+        };
         read_any = true;
-        let shown: Vec<Shown> = serde_json::from_str(&json).unwrap_or_default();
         found.extend(
             shown
                 .into_iter()

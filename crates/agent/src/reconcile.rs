@@ -66,10 +66,14 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         Ok(links) => (Some(links), true),
         Err(e) => {
             out.errors.push(format!("{e:#}"));
-            (links_of(r, c), false)
+            (links_of(r, c, &mut out.errors), false)
         }
     };
-    let registered = note(registered(r).context("inventory"), &mut out.errors).unwrap_or_default();
+    let registry = note(registered(r).context("inventory"), &mut out.errors);
+    // Nothing grows where spoofed sources may not be dropped, nor without knowing what
+    // is gone, free or registered.
+    let grow = guarded && complete && registry.is_some();
+    let registered = registry.unwrap_or_default();
     let (stuck, gone_pairs) = match &mut links {
         Some(links) if complete => remove_gone_links(r, c, links, &mut out.errors),
         _ => (vec![], vec![]),
@@ -111,54 +115,25 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         }
     }
 
-    if !guarded || !complete {
-        // Nothing grows where spoofed sources may not be dropped, nor without knowing
-        // what is free. Peer and route revocations need neither; rights revoked in a
-        // fragment apply with the fragment cut down to what the guard covers.
-        let within = unguarded.map(|space| c.within_guard(&space));
-        for &n in &owned {
-            if let Some(within) = &within {
-                let result = nft(r, &render_network(within, n));
-                note(
-                    result.with_context(|| format!("{}: nft", n.iface)),
-                    &mut out.errors,
-                );
-            }
-            let plan = plan(r, c, n, true);
-            let peers = plan.peers.and_then(|d| removals(r, &n.iface, &d).0);
-            let routes = plan
-                .routes
-                .and_then(|(_, del)| route_deletions(r, n, &del).0);
-            let result = peers.and(routes);
-            note(
-                result.with_context(|| format!("{}: revocations", n.iface)),
-                &mut out.errors,
-            );
-        }
-        return out;
-    }
-    // Also the ports of gone interfaces that would not go.
-    let holders: Vec<&str> = owned
-        .iter()
-        .map(|n| n.iface.as_str())
-        .chain(stuck.iter().map(String::as_str))
-        .collect();
-    free_ports(r, c, &holders, &mut out.errors);
-
     let active: Vec<_> = owned
-        .into_iter()
-        .map(|n| (n, true))
-        .chain(new.into_iter().map(|n| (n, false)))
+        .iter()
+        .map(|&n| (n, true))
+        .chain(new.iter().filter(|_| grow).map(|&n| (n, false)))
         .map(|(n, exists)| (n, exists, plan(r, c, n, exists)))
         .collect();
-    // What anyone loses, in every network, goes before any network grows: an address
-    // or LAN moving between peers or networks is never held twice.
-    // What failed to be released stays held: nobody else takes it this pass.
+    // What anyone loses, in every network, goes before any network's rules change or
+    // grow: an address or LAN moving between peers or networks is never held twice.
+    // What failed to be released stays held, and is nobody's this pass: no peer, no
+    // route and no right takes it.
     let mut held = vec![];
     for (n, _, plan) in &active {
         let (result, still) = match &plan.peers {
             Ok(d) => removals(r, &n.iface, d),
-            Err(e) => (Err(anyhow::anyhow!("{e:#}")), vec![]),
+            // Who holds what on it is unknown: all its peers' addresses are.
+            Err(e) => (
+                Err(anyhow::anyhow!("{e:#}")),
+                c.peers_of(n.id).flat_map(|p| p.addrs.clone()).collect(),
+            ),
         };
         held.extend(still);
         note(
@@ -174,8 +149,32 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             );
         }
     }
+
+    if !grow {
+        // Rights revoked in a fragment still apply, cut down to what the guard covers.
+        if let Some(unguarded) = unguarded {
+            let within = c.within_guard(&[unguarded, held].concat());
+            for (n, _, _) in &active {
+                let result = nft(r, &render_network(&within, n));
+                note(
+                    result.with_context(|| format!("{}: nft", n.iface)),
+                    &mut out.errors,
+                );
+            }
+        }
+        return out;
+    }
+    // Also the ports of gone interfaces that would not go.
+    let holders: Vec<&str> = owned
+        .iter()
+        .map(|n| n.iface.as_str())
+        .chain(stuck.iter().map(String::as_str))
+        .collect();
+    free_ports(r, c, &holders, &mut out.errors);
+
+    let rules = c.within_guard(&held);
     for (n, exists, plan) in active {
-        let (key, errors) = network(r, c, n, keys, exists, plan, &held);
+        let (key, errors) = network(r, &rules, n, keys, exists, plan, &held);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
         }

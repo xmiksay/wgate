@@ -196,3 +196,67 @@ fn without_the_list_of_links_wgates_own_interfaces_still_revoke() {
             .any(|c| c.contains(" allowed-ips ") || c.starts_with("ip link add"))
     );
 }
+
+#[test]
+fn an_address_still_held_gets_no_rights_either() {
+    let dir = keys();
+    // A revoked peer still holds 10.50.0.2, which network 1's router now owns.
+    let fake = owned_n1()
+        .answer(
+            "wg show wg-n1 allowed-ips",
+            &format!("{K2}\t10.50.0.2/32\n"),
+        )
+        .fail(&format!("wg set wg-n1 peer {K2} remove"));
+    reconcile(&fake, &compiled(), dir.path());
+    let fragments = fake.fragments_of(1);
+    assert_eq!(fragments.len(), 1);
+    assert!(!fragments[0].contains("10.50.0.2"), "{}", fragments[0]);
+    assert!(
+        !fake
+            .log()
+            .iter()
+            .any(|c| c.starts_with(&format!("wg set wg-n1 peer {K1}")))
+    );
+}
+
+#[test]
+fn unreadable_peers_hold_their_networks_addresses() {
+    let dir = keys();
+    let fake = owned_n1().fail("wg show wg-n1 allowed-ips");
+    reconcile(&fake, &compiled(), dir.path());
+    let fragments = fake.fragments_of(1);
+    assert!(!fragments[0].contains("10.50.0.2"), "{}", fragments[0]);
+}
+
+#[test]
+fn on_a_stale_base_removals_still_come_before_the_rules() {
+    let dir = keys();
+    let fake = owned_n1()
+        .fail_input("add set inet wgate tenant_space")
+        .answer(
+            "nft -j list set inet wgate tenant_space",
+            r#"{"nftables": [{"set": {"name": "tenant_space", "elem": [{"prefix": {"addr": "10.50.0.0", "len": 24}}]}}]}"#,
+        )
+        .answer("wg show wg-n1 allowed-ips", &format!("{K2}\t10.50.0.3/32\n"));
+    reconcile(&fake, &compiled(), dir.path());
+    let log = fake.log();
+    assert!(position(&log, &format!("wg set wg-n1 peer {K2} remove")) < nft_run(&log, 1));
+}
+
+#[test]
+fn without_the_registry_nothing_grows() {
+    let dir = keys();
+    let fake = owned_n1().fail("nft -j list map");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.iter().any(|e| e.starts_with("inventory: ")),
+        "{:?}",
+        out.errors
+    );
+    let log = fake.log();
+    assert!(
+        !log.iter()
+            .any(|c| c.starts_with("ip link add") || c.contains(" allowed-ips "))
+    );
+    assert_eq!(fake.fragments_of(1).len(), 1, "n1's rules still refreshed");
+}

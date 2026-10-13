@@ -12,6 +12,8 @@ struct Fake {
     /// Fails any command whose input contains this.
     fail_input: Option<String>,
     log: RefCell<Vec<String>>,
+    /// What each command got on stdin (nft scripts).
+    inputs: RefCell<Vec<String>>,
 }
 
 impl Fake {
@@ -31,6 +33,17 @@ impl Fake {
         self
     }
 
+    /// The nft scripts that render network `id`'s chains.
+    fn fragments_of(&self, id: Id) -> Vec<String> {
+        let chain = format!("add chain inet wgate n{id}_from");
+        self.inputs
+            .borrow()
+            .iter()
+            .filter(|i| i.contains(&chain) && i.contains("flush set"))
+            .cloned()
+            .collect()
+    }
+
     fn log(&self) -> Vec<String> {
         self.log.borrow().clone()
     }
@@ -40,6 +53,9 @@ impl Runner for Fake {
     fn run(&self, argv: &[&str], stdin: Option<&str>) -> anyhow::Result<String> {
         let cmd = argv.join(" ");
         self.log.borrow_mut().push(cmd.clone());
+        if let Some(input) = stdin {
+            self.inputs.borrow_mut().push(input.to_owned());
+        }
         if let (Some(needle), Some(input)) = (&self.fail_input, stdin)
             && input.contains(needle.as_str())
         {

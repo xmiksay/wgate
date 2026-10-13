@@ -30,17 +30,13 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
         tokio::select! {
             // The timer rewrites every hub key: a row lost meanwhile comes back.
             _ = tick.tick() => published.clear(),
-            note = next(&mut listener) => match note {
-                Ok(true) => {}
-                Ok(false) => {
-                    tracing::warn!("LISTEN connection lost");
+            note = next(&mut listener) => {
+                if !matches!(note, Ok(true)) {
+                    let error = note.err().map(|e| e.to_string()).unwrap_or_default();
+                    tracing::warn!(%error, "LISTEN connection lost");
                     listener = None;
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "LISTEN connection lost");
-                    listener = None;
-                }
-            },
+            }
         }
         if listener.is_none() {
             // Before the reconcile reads its snapshot, so nothing committed after it
