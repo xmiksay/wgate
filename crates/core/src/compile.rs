@@ -1,11 +1,11 @@
 //! Desired state → per-peer access sets (design.md → Rights).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{MAX_NETWORK_PREFIX, Slug, first_overlap, hub_address, is_inside, is_peer_ip};
+use crate::net::{Slug, hub_address, is_peer_ip};
 use crate::rights::{RuleSet, merge_nets, subtract_nets};
 use crate::rule::{Rule, Service};
 
@@ -20,6 +20,9 @@ pub struct DesiredState {
     /// infrastructure. A LAN becomes tenant space, which the hub drops as a source
     /// on non-wg interfaces, so it must never cover anything else.
     pub routed_space: Vec<Ipv4Net>,
+    /// Infrastructure no routed LAN may cover (node networks, the SNAT source),
+    /// whatever `routed_space` says.
+    pub reserved: Vec<Ipv4Net>,
     pub tenants: Vec<Tenant>,
     pub networks: Vec<Network>,
     pub peers: Vec<Peer>,
@@ -94,13 +97,15 @@ pub struct CompiledPeer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
     UnknownNetwork,
-    /// Its network lies outside its tenant's blocks or the pool, has an unknown
-    /// tenant, is longer than `MAX_NETWORK_PREFIX` or overlaps an older network.
+    /// Its network is invalid: outside its tenant's blocks, unknown tenant, host
+    /// bits, longer than `MAX_NETWORK_PREFIX`, or its range or slug taken by an older
+    /// network (see `valid`).
     InvalidNetwork,
     /// Not a peer address of its network (outside it, the hub address, network or
     /// broadcast).
     InvalidIp,
-    /// A routed subnet outside `routed_space`, inside the pool, or with host bits.
+    /// A routed subnet outside `routed_space`, over the pool or reserved
+    /// infrastructure, or with host bits.
     RoutedNotAllowed,
     /// Its addresses overlap another peer's.
     Overlap,
@@ -110,38 +115,16 @@ pub enum Problem {
 pub struct Compiled {
     pub peers: Vec<CompiledPeer>,
     pub skipped: Vec<(Id, Problem)>,
-    /// The pool plus every allowed declared routed LAN (also of skipped routers), merged:
-    /// what nft treats as tenant space.
+    /// The pool plus the routed LANs of compiled peers, merged: what nft treats as
+    /// tenant space.
     pub tenant_space: Vec<Ipv4Net>,
 }
 
 pub fn compile(state: &DesiredState) -> Compiled {
-    // A network outside its tenant's blocks (or the pool), with an unknown tenant, too
-    // small for a peer or overlapping an older one fails closed. Only networks that
-    // could be valid compete for addresses, so a bad row cannot knock out a good one.
+    let (networks, invalid) = valid::networks(state);
     let tenants: HashMap<Id, &Tenant> = state.tenants.iter().map(|t| (t.id, t)).collect();
-    let (eligible, mut invalid): (Vec<&Network>, Vec<&Network>) =
-        state.networks.iter().partition(|n| {
-            n.cidr.prefix_len() <= MAX_NETWORK_PREFIX
-                && is_inside(n.cidr, &state.pool)
-                && tenants
-                    .get(&n.tenant)
-                    .is_some_and(|t| is_inside(n.cidr, &t.blocks))
-        });
-    let ranges: Vec<(Id, Vec<Ipv4Net>)> = eligible.iter().map(|n| (n.id, vec![n.cidr])).collect();
-    let clashing = conflicting(&ranges);
-    let (networks, clashed): (Vec<&Network>, Vec<&Network>) = eligible
-        .into_iter()
-        .partition(|n| clashing.binary_search(&n.id).is_err());
-    invalid.extend(clashed);
-    let invalid: HashSet<Id> = invalid.iter().map(|n| n.id).collect();
-    let networks: HashMap<Id, &Network> = networks.into_iter().map(|n| (n.id, n)).collect();
+    let routable = valid::routable(state);
     let mut skipped = Vec::new();
-    let routable = |r: Ipv4Net| {
-        r == r.trunc()
-            && is_inside(r, &state.routed_space)
-            && first_overlap(r, &state.pool).is_none()
-    };
 
     let mut candidates = Vec::new();
     for p in &state.peers {
@@ -177,19 +160,13 @@ pub fn compile(state: &DesiredState) -> Compiled {
     }
     let empty = Vec::new();
     let members_of = |id: Id| members.get(&id).unwrap_or(&empty);
-    // Every declared LAN, also of skipped routers: a conflict must not turn a LAN
-    // into an external destination or drop it from the spoof guard.
+    // LANs of valid routers only: a rejected or stale row must not change the
+    // firewall for everyone, and a router that is down routes nothing anyway.
     let tenant_nets: Vec<Ipv4Net> = state
         .pool
         .iter()
         .copied()
-        .chain(
-            state
-                .peers
-                .iter()
-                .flat_map(|p| p.routed.iter().copied())
-                .filter(|r| routable(*r)),
-        )
+        .chain(valid.iter().flat_map(|p| p.routed.iter().copied()))
         .collect();
     let tenant_nets = merge_nets(&tenant_nets);
     let tenant_space = RuleSet::everything(&tenant_nets);
@@ -282,27 +259,9 @@ fn addrs(p: &Peer) -> Vec<Ipv4Net> {
         .collect()
 }
 
-/// Sorted ids that lose an address conflict. The lowest id keeps its addresses, so
-/// a newcomer that overlaps (e.g. another tenant's router claiming the same LAN)
-/// fails closed alone instead of knocking out what already works. An item whose own
-/// addresses overlap each other always loses.
-pub(crate) fn conflicting(items: &[(Id, Vec<Ipv4Net>)]) -> Vec<Id> {
-    let mut items: Vec<&(Id, Vec<Ipv4Net>)> = items.iter().collect();
-    items.sort_by_key(|(id, _)| *id);
-    let mut taken: Vec<Ipv4Net> = Vec::new();
-    let mut bad = Vec::new();
-    for (id, addrs) in items {
-        let clash = addrs.iter().enumerate().any(|(i, a)| {
-            first_overlap(*a, &taken).is_some() || first_overlap(*a, &addrs[i + 1..]).is_some()
-        });
-        if clash {
-            bad.push(*id);
-        } else {
-            taken.extend(addrs);
-        }
-    }
-    bad
-}
+mod valid;
+
+pub(crate) use valid::conflicting;
 
 #[cfg(test)]
 mod tests;

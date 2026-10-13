@@ -1,8 +1,12 @@
 //! Helpers shared by the root-only netns test crates.
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
+pub mod py;
+
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 /// A network namespace deleted on drop, so a failed assertion leaves nothing behind.
 pub struct Netns(pub String);
@@ -81,31 +85,33 @@ impl Netns {
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn");
-        let out = child.stdout.take().map(BufReader::new);
-        Background { child, out }
+        let out = child.stdout.take().expect("piped stdout");
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if tx.send((Instant::now(), line)).is_err() {
+                    break;
+                }
+            }
+        });
+        Background { child, lines }
     }
 }
 
-/// Keeps one `BufReader` for the process's stdout, so nothing read ahead is lost.
+/// A process with its stdout lines (and when each arrived) read on a thread, so a
+/// test can wait with a timeout instead of hanging on a process that never prints.
 pub struct Background {
     child: Child,
-    out: Option<BufReader<ChildStdout>>,
+    pub lines: Receiver<(Instant, String)>,
 }
 
 impl Background {
-    /// Blocks until the process prints a line (e.g. a server's "ready").
-    pub fn wait_line(&mut self) -> String {
-        let mut line = String::new();
-        self.out
-            .as_mut()
-            .expect("stdout not taken")
-            .read_line(&mut line)
-            .expect("read");
-        line
-    }
-
-    pub fn take_stdout(&mut self) -> BufReader<ChildStdout> {
-        self.out.take().expect("stdout not taken")
+    /// The next line, or a panic naming `what` after 10 s.
+    pub fn expect_line(&self, what: &str) -> String {
+        self.lines
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|e| panic!("{what}: {e}"))
+            .1
     }
 }
 

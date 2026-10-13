@@ -64,6 +64,7 @@ fn state() -> impl Strategy<Value = DesiredState> {
         DesiredState {
             pool: vec!["10.50.0.0/16".parse().expect("cidr")],
             routed_space: vec!["192.168.0.0/16".parse().expect("cidr")],
+            reserved: vec![],
             tenants: ceilings
                 .iter()
                 .enumerate()

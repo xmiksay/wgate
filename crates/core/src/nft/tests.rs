@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::{DesiredState, Federation, NetRule, Network, Tenant, compile};
+use crate::compile::{Compiled, DesiredState, Federation, NetRule, Network, Tenant, compile};
 use crate::rights::RuleSet;
 use crate::rule::Rule;
 
@@ -27,6 +27,7 @@ fn sample_state() -> NftState {
     let state = DesiredState {
         pool: vec![net("10.50.0.0/16")],
         routed_space: vec![net("192.168.0.0/16")],
+        reserved: vec![],
         tenants: vec![
             Tenant {
                 id: 1,
@@ -94,8 +95,7 @@ fn sample_state() -> NftState {
     NftState {
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![net("172.19.9.0/24")],
-        tenant_space: compiled.tenant_space,
-        peers: compiled.peers,
+        compiled,
     }
 }
 
@@ -135,8 +135,7 @@ fn empty_state_has_no_elements_or_snat() {
     let script = render_nft(&NftState {
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![],
-        tenant_space: vec![],
-        peers: vec![],
+        compiled: Compiled::default(),
     });
     assert!(!script.contains("elements"));
     assert!(!script.contains("snat"));

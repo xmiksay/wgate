@@ -33,8 +33,8 @@ access inside their tenant; only the global admin connects tenants (federation).
   have the router peer's access ("visibility via the router"). Routed subnets must be
   **globally** unique (no overlap with the pool or any other routed subnet) because
   the hub has one routing table; the API rejects overlaps. They must also lie inside
-  `routed_space`, a global-admin allowlist (config; default the private ranges minus
-  the pool and infrastructure): a LAN becomes tenant space, which the hub refuses as
+  `routed_space`, a global-admin allowlist (config; default the private ranges), and
+  never cover the pool or reserved infrastructure (node networks, the SNAT source): a LAN becomes tenant space, which the hub refuses as
   a source on non-wg interfaces, so `128.0.0.0/1` would cut off the internet. 1:1
   NETMAP of a colliding LAN into a pool block is the planned extension, not built
   now.

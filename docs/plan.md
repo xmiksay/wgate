@@ -34,7 +34,9 @@ under sudo).
   - peer IP: first free host of the network, not the hub address or broadcast
   - port: first free in `51800–51899`, skipping `51820`
   - routed subnets: rejected when outside `routed_space` (global-admin allowlist),
-    inside the pool, or overlapping another routed subnet
+    over the pool or `reserved` infrastructure, or overlapping another routed subnet
+  - every conflict (tenant blocks, network ranges and slugs, peer addresses): the
+    lowest id keeps it, only the newcomer fails closed
 - `compile(&DesiredState) -> Compiled { peers, skipped, tenant_space }`: per peer
   `addrs`, `outbound`, `inbound` exactly per design.md → Rights (ceiling ∩ external
   rules − tenant space, rules between networks, federation, mesh, inbound grants
@@ -70,7 +72,8 @@ under sudo).
 
 ### 1.4 `agent`
 - Config `/etc/wgate/agent.toml`: `database_url`, `public_ip`, `snat_source`
-  (172.19.9.10), `node_cidrs` (172.19.9.0/24), `keys_dir`, `reconcile_interval = 60s`.
+  (172.19.9.10), `node_cidrs` (172.19.9.0/24), `pool`, `routed_space`, `reserved`
+  (as the server's), `keys_dir`, `reconcile_interval = 60s`.
 - Loop:
   1. `LISTEN wgate_changed` or a tick
   2. load the desired state, `core::compile` it
@@ -91,7 +94,8 @@ under sudo).
 - Config `/etc/wgate/server.toml`:
   - `listen = 172.19.9.10:8470`, `database_url`, `public_url = https://vpn.mmik.cz`
   - `pool = ["10.50.0.0/16"]`, `routed_space = ["10.0.0.0/8", "172.16.0.0/12",
-    "192.168.0.0/16"]` minus pool/infra, `session_key`
+    "192.168.0.0/16"]`, `reserved = ["172.19.9.0/24", "172.16.16.0/24"]` (node
+    network, wg0; must match the agent's), `session_key`
   - `[admin_oidc]` issuer/client_id/client_secret + `admin_emails`
   - `[[tenant_oidc]]` slug/issuer/client_id/client_secret (for phase 2)
 - OIDC login (PKCE) for the global admin only; sessions in Postgres, cookie

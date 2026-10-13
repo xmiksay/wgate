@@ -44,6 +44,7 @@ fn state() -> DesiredState {
     DesiredState {
         pool: vec![net("10.50.0.0/16")],
         routed_space: vec![net("10.0.0.0/8"), net("192.168.0.0/16")],
+        reserved: vec![],
         tenants: vec![
             Tenant {
                 id: 10,
@@ -217,11 +218,12 @@ fn compiled_peers_know_their_interface() {
 }
 
 #[test]
-fn lans_of_skipped_routers_stay_tenant_space() {
+fn lans_of_skipped_routers_are_not_tenant_space() {
     let mut s = state();
     s.tenants[0].ceiling = rule_set(&["tcp 192.168.0.0/16 80"]);
     s.networks[0].rules.push(external("tcp 192.168.0.0/16 80"));
     s.peers.push(peer(12, A, "10.50.0.3", &[]));
+    // Its own LANs overlap each other: skipped, and its LAN stays external space.
     s.peers.push(peer(
         32,
         C,
@@ -231,10 +233,79 @@ fn lans_of_skipped_routers_stay_tenant_space() {
     let c = compile(&s);
     assert_eq!(c.skipped, [(32, Problem::Overlap)]);
     let a2 = get(&c, 12);
-    assert!(!a2.outbound.allows(Proto::Tcp, ip("192.168.3.5"), 80));
+    assert!(a2.outbound.allows(Proto::Tcp, ip("192.168.3.5"), 80));
+    // A valid router's LAN is tenant space: reachable only through network rules.
     assert!(!a2.outbound.allows(Proto::Tcp, ip("192.168.1.5"), 80));
-    assert!(a2.outbound.allows(Proto::Tcp, ip("192.168.2.5"), 80));
-    assert!(c.tenant_space.contains(&net("192.168.3.0/24")));
+    assert!(!c.tenant_space.contains(&net("192.168.3.0/24")));
+}
+
+#[test]
+fn routed_lans_never_cover_reserved_infrastructure() {
+    let mut s = state();
+    s.routed_space.push(net("172.16.0.0/12"));
+    s.reserved = vec![net("172.19.9.0/24")];
+    s.peers.push(peer(13, A, "10.50.0.4", &["172.19.0.0/16"]));
+    s.peers.push(peer(14, A, "10.50.0.5", &["172.20.0.0/16"]));
+    let c = compile(&s);
+    assert_eq!(c.skipped, [(13, Problem::RoutedNotAllowed)]);
+    get(&c, 14);
+}
+
+#[test]
+fn network_slugs_and_blocks_follow_older_wins() {
+    let mut s = state();
+    // Same slug as B (id 2), newer: it would share B's interface.
+    let mut dup = network(8, 10, "10.50.0.32/28", false, vec![]);
+    dup.slug = "n2".parse().unwrap();
+    s.networks.push(dup);
+    // Host bits in the range.
+    s.networks
+        .push(network(9, 10, "10.50.0.53/28", false, vec![]));
+    s.peers.push(peer(81, 8, "10.50.0.34", &[]));
+    s.peers.push(peer(91, 9, "10.50.0.50", &[]));
+    // A newer tenant whose block overlaps tenant 10's loses its block.
+    s.tenants.push(Tenant {
+        id: 30,
+        blocks: vec![net("10.50.0.128/25")],
+        ceiling: RuleSet::new(),
+    });
+    s.networks
+        .push(network(10, 30, "10.50.0.128/28", false, vec![]));
+    s.peers.push(peer(101, 10, "10.50.0.130", &[]));
+    let c = compile(&s);
+    let mut skipped = c.skipped.clone();
+    skipped.sort_by_key(|(id, _)| *id);
+    assert_eq!(
+        skipped,
+        [
+            (81, Problem::InvalidNetwork),
+            (91, Problem::InvalidNetwork),
+            (101, Problem::InvalidNetwork),
+        ]
+    );
+    assert_eq!(get(&c, 21).iface, "wg-n2");
+}
+
+#[test]
+fn adjacent_blocks_and_routed_entries_are_merged() {
+    let mut s = state();
+    s.tenants[0].blocks = vec![
+        net("10.50.0.0/24"),
+        net("10.50.3.0/24"),
+        net("10.50.2.0/24"),
+    ];
+    s.networks
+        .push(network(11, 10, "10.50.2.0/23", false, vec![]));
+    s.peers.push(peer(111, 11, "10.50.2.9", &[]));
+    s.routed_space = vec![
+        net("192.168.4.0/24"),
+        net("192.168.1.0/24"),
+        net("192.168.5.0/24"),
+    ];
+    s.peers
+        .push(peer(112, 11, "10.50.2.10", &["192.168.4.0/23"]));
+    let c = compile(&s);
+    assert!(c.skipped.is_empty(), "{:?}", c.skipped);
 }
 
 #[test]

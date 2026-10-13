@@ -5,69 +5,15 @@
 
 mod common;
 
-use std::io::BufRead;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use common::py::{ECHO, PROBE, SPOOF, STREAM};
 use common::{Background, Netns};
 use ipnet::Ipv4Net;
 use wgate_core::{
     DesiredState, Federation, NetRule, Network, NftState, Peer, PortRange, RuleSet, Service,
     Tenant, compile, render_nft,
 };
-
-const ECHO: &str = r#"
-import socket, sys, threading
-def echo(c):
-    while (d := c.recv(64)):
-        c.sendall(d)
-def serve(port):
-    s = socket.socket()
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", port))
-    s.listen()
-    while True:
-        threading.Thread(target=echo, args=(s.accept()[0],), daemon=True).start()
-for p in sys.argv[1:]:
-    threading.Thread(target=serve, args=(int(p),), daemon=True).start()
-print("ready", flush=True)
-threading.Event().wait()
-"#;
-
-/// Exit 0 when a TCP echo round trip to host:port works within a second.
-const PROBE: &str = r#"
-import socket, sys
-try:
-    s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=1)
-    s.sendall(b"x")
-    sys.exit(0 if s.recv(1) == b"x" else 1)
-except OSError:
-    sys.exit(1)
-"#;
-
-/// One open connection; prints "ok" per echo every 100 ms for argv[3] seconds.
-const STREAM: &str = r#"
-import socket, sys, time
-s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=1)
-s.settimeout(0.3)
-end = time.monotonic() + float(sys.argv[3])
-while time.monotonic() < end:
-    try:
-        s.sendall(b"x")
-        if s.recv(1):
-            print("ok", flush=True)
-    except OSError:
-        pass
-    time.sleep(0.1)
-"#;
-
-/// Sends one UDP datagram from a chosen source address.
-const SPOOF: &str = r#"
-import socket, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.bind((sys.argv[1], 0))
-s.sendto(b"x", (sys.argv[2], int(sys.argv[3])))
-"#;
 
 const A: &str = "10.50.0.2"; // tenant 1, network 1
 const B: &str = "10.50.1.2"; // tenant 1, network 2
@@ -147,8 +93,8 @@ impl Lab {
         ] {
             let mut argv = vec!["python3", "-c", ECHO];
             argv.extend(ports);
-            let mut server = ns.spawn(&argv);
-            assert_eq!(server.wait_line().trim(), "ready");
+            let server = ns.spawn(&argv);
+            assert_eq!(server.expect_line("echo server").trim(), "ready");
             servers.push(server);
         }
         Self {
@@ -162,14 +108,30 @@ impl Lab {
         }
     }
 
+    /// Packets dropped by any rule of the table since it was last applied.
+    fn drops(&self) -> u64 {
+        self.hub
+            .output(&["nft", "list", "table", "inet", "wgate"])
+            .lines()
+            .filter(|l| l.trim_end().ends_with("drop"))
+            .filter_map(|l| {
+                l.split("packets ")
+                    .nth(1)?
+                    .split(' ')
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .sum()
+    }
+
     fn apply(&self, state: &DesiredState) {
         let compiled = compile(state);
         assert!(compiled.skipped.is_empty(), "{:?}", compiled.skipped);
         let script = render_nft(&NftState {
             snat_source: "172.19.9.10".parse().expect("addr"),
             node_cidrs: vec![net("172.19.9.0/24")],
-            tenant_space: compiled.tenant_space,
-            peers: compiled.peers,
+            compiled,
         });
         self.hub.exec(&["nft", "-f", "-"], Some(&script));
     }
@@ -217,6 +179,7 @@ fn state() -> DesiredState {
     DesiredState {
         pool: vec![net("10.50.0.0/16")],
         routed_space: vec![],
+        reserved: vec![],
         tenants: vec![
             Tenant {
                 id: 1,
@@ -348,29 +311,25 @@ fn revocation_cuts_live_streams() {
             "pod" => &lab.pod,
             _ => &lab.c,
         };
-        let mut stream = src.spawn(&["python3", "-c", STREAM, to, &port.to_string(), "3"]);
-        let (tx, rx) = mpsc::channel();
-        let out = stream.take_stdout();
-        std::thread::spawn(move || {
-            for _ in out.lines() {
-                let _ = tx.send(Instant::now());
-            }
-        });
+        let stream = src.spawn(&["python3", "-c", STREAM, to, &port.to_string(), "3"]);
         for _ in 0..3 {
-            rx.recv_timeout(Duration::from_secs(2))
-                .expect("stream is up");
+            assert_eq!(stream.expect_line("stream is up"), "ok");
         }
         revoke(&mut state);
         lab.apply(&state);
         let revoked = Instant::now();
-        let late: Vec<_> = rx
+        let late: Vec<_> = stream
+            .lines
             .iter()
-            .filter(|t| *t > revoked + Duration::from_millis(300))
+            .filter(|(t, _)| *t > revoked + Duration::from_millis(300))
             .collect();
         assert!(
             late.is_empty(),
             "{from} → {to}:{port} still flowing after revocation"
         );
+        // The stream ran its full time against the new table (applying resets the
+        // counters), so the cut must have been the ruleset's drops, not a dead stream.
+        assert!(lab.drops() > 0, "{from} → {to}:{port}: nothing was dropped");
     }
 }
 
