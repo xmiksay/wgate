@@ -111,7 +111,10 @@ fn without_any_list_of_links_the_kernel_is_left_as_it_is() {
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
         .fail("ip -j -d link show")
-        .answer("nft -j list map", &registry(&[("wg-n1", 1), ("wg-old", 9)]));
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-n1", 1), ("wg-old", 9)]),
+        );
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("inventory: ")),
@@ -132,7 +135,7 @@ fn without_any_list_of_links_the_kernel_is_left_as_it_is() {
 #[test]
 fn a_network_not_made_gets_no_registration_while_nothing_grows() {
     let dir = keys();
-    let fake = owned_n1().fail("nft -j list map");
+    let fake = owned_n1().fail("nft -j list map inet wgate from_net");
     reconcile(&fake, &compiled(), dir.path());
     assert_eq!(fake.fragments_of(1).len(), 1);
     assert!(fake.fragments_of(2).is_empty(), "wg-n2 does not exist");
@@ -192,7 +195,7 @@ fn a_registration_shown_not_to_be_wgates_goes() {
             r#"[{"ifname":"wg-n1","linkinfo":{"info_kind":"wireguard"}}]"#,
         )
         .answer(
-            "nft -j list map",
+            "nft -j list map inet wgate from_net",
             r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n1_from"}}]]}}]}"#,
         );
     let out = reconcile(&fake, &compiled(), dir.path());

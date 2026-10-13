@@ -17,16 +17,21 @@ add element inet wgate tenant_space {
 flush chain inet wgate prerouting
 add rule inet wgate prerouting iifname != "wg-*" iifname != "lo" ip saddr @tenant_space counter drop
 add rule inet wgate prerouting iifname "wg-*" iifname != @wg_ifaces counter drop
+add rule inet wgate prerouting iifname "wg-*" iifname != @ingress counter drop
 add rule inet wgate prerouting iifname vmap @ingress
 flush chain inet wgate input
+add rule inet wgate input iifname "wg-*" iifname != @from_net counter drop
 add rule inet wgate input iifname vmap @from_net
 flush chain inet wgate forward
 add rule inet wgate forward oifname "wg-*" oifname != @wg_ifaces counter drop
+add rule inet wgate forward iifname "wg-*" iifname != @from_net counter drop
+add rule inet wgate forward oifname "wg-*" oifname != @to_net counter drop
 add rule inet wgate forward iifname vmap @from_net
 add rule inet wgate forward oifname vmap @to_net
 flush chain inet wgate output
 add rule inet wgate output ip saddr @tenant_space fib saddr type != local counter drop
 add rule inet wgate output oifname "wg-*" oifname != @wg_ifaces counter drop
+add rule inet wgate output oifname "wg-*" oifname != @to_net counter drop
 add rule inet wgate output oifname "wg-*" ct state related icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
 add rule inet wgate output oifname vmap @to_net
 flush chain inet wgate postrouting

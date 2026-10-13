@@ -26,8 +26,8 @@ mod steps;
 use gone::{remove_gone_links, unregister};
 use network::{free_ports, network};
 use steps::{
-    Link, SCRATCH, clear_stray, current_routes, desired_peers, lans, link_exists, links, nft,
-    peer_diff, registered, removals, route_deletions, set_ranges,
+    Link, SCRATCH, clear_stray, current_peers, current_routes, desired_peers, lans, link_exists,
+    links, nft, peer_diff, registered, removals, route_deletions, set_ranges,
 };
 
 #[derive(Debug, Default)]
@@ -65,17 +65,17 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // Nothing grows where spoofed sources may not be dropped, nor without knowing what
     // is gone, free or registered.
     let grow = guarded && links.is_some() && registry.is_some();
-    let crate::nftmap::Registry {
+    let steps::Dispatch {
         networks: registered,
         stray,
     } = registry.unwrap_or_default();
     // An element that is not wgate's on a compiled network's name would keep that
     // network's own entries out: it goes.
-    for iface in stray
+    for (map, iface) in stray
         .iter()
-        .filter(|i| c.networks.iter().any(|n| n.iface == **i))
+        .filter(|(_, i)| c.networks.iter().any(|n| n.iface == *i))
     {
-        let result = clear_stray(r, iface);
+        let result = clear_stray(r, map, iface);
         note(
             result.with_context(|| format!("{iface}: element not wgate's")),
             &mut out.errors,
@@ -114,6 +114,22 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let mut held = gone.held;
     let mut taken = vec![];
     let mut blind = gone.blind;
+    // An invalid network keeps its interface as it is (see `remove_gone_links`): what it
+    // holds there, nobody else takes.
+    for link in links.iter().flatten() {
+        if link
+            .owner
+            .is_some_and(|id| c.invalid_networks.contains(&id))
+        {
+            match (current_peers(r, &link.name), current_routes(r, &link.name)) {
+                (Ok(peers), Ok(routes)) => {
+                    taken.extend(peers.into_iter().flat_map(|p| p.allowed));
+                    taken.extend(routes);
+                }
+                _ => blind = true,
+            }
+        }
+    }
     let mut unreadable: Vec<Id> = vec![];
     for (n, _, plan) in &active {
         let (Ok(peers), Ok((_, del))) = (&plan.peers, &plan.routes) else {

@@ -221,7 +221,7 @@ fn on_a_stale_base_removals_still_come_before_the_rules() {
 #[test]
 fn without_the_registry_nothing_grows() {
     let dir = keys();
-    let fake = owned_n1().fail("nft -j list map");
+    let fake = owned_n1().fail("nft -j list map inet wgate from_net");
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("inventory: ")),

@@ -8,7 +8,10 @@ fn gone_n9_on(iface: &str) -> Fake {
             "ip -j link show type wireguard",
             &wg_links(&[(iface, Some(9))]),
         )
-        .answer("nft -j list map", &registry(&[(iface, 9)]))
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[(iface, 9)]),
+        )
 }
 
 #[test]
@@ -24,7 +27,10 @@ fn a_network_that_is_gone_is_removed_and_unknown_links_are_left_alone() {
                 ("wg0", None),
             ]),
         )
-        .answer("nft -j list map", &registry(&[("wg-n1", 1), ("wg-old", 9)]));
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-n1", 1), ("wg-old", 9)]),
+        );
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let log = fake.log();
@@ -119,7 +125,10 @@ fn without_the_links_only_registrations_go() {
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
         .fail("ip -j -d link show")
-        .answer("nft -j list map", &registry(&[("wg-old", 9), ("wg-n1", 1)]));
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-old", 9), ("wg-n1", 1)]),
+        );
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("inventory: ")),
@@ -181,7 +190,10 @@ fn an_invalid_network_keeps_its_interface() {
             "ip -j link show type wireguard",
             &wg_links(&[("wg-n1", Some(1))]),
         )
-        .answer("nft -j list map", &registry(&[("wg-n1", 1)]));
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-n1", 1)]),
+        );
     reconcile(&fake, &c, dir.path());
     let log = fake.log();
     assert!(!log.iter().any(|l| l == "ip link del wg-n1"));
@@ -199,7 +211,7 @@ fn an_element_not_wgates_on_a_networks_name_is_cleared() {
             &wg_links(&[("wg-n1", Some(1))]),
         )
         .answer(
-            "nft -j list map",
+            "nft -j list map inet wgate from_net",
             r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", "accept"]]}}]}"#,
         );
     reconcile(&fake, &compiled(), dir.path());
@@ -215,4 +227,64 @@ fn an_element_not_wgates_on_a_networks_name_is_cleared() {
         .rposition(|i| i.contains("add chain inet wgate n1_from"))
         .unwrap();
     assert!(at < fragment);
+}
+
+#[test]
+fn what_an_invalid_network_holds_is_taken_by_nobody() {
+    let dir = keys();
+    let mut c = compiled();
+    // n1 is invalid this pass; its LAN is now compiled for n2's router.
+    let lan: ipnet::Ipv4Net = "192.168.1.0/24".parse().unwrap();
+    let mut taker = c.peers[0].clone();
+    taker.id = 2;
+    taker.network = 2;
+    taker.public_key = K3.into();
+    taker.ip = "10.50.1.2".parse().unwrap();
+    taker.addrs = vec!["10.50.1.2/32".parse().unwrap(), lan];
+    c.networks.retain(|n| n.id != 1);
+    c.peers = vec![taker];
+    c.invalid_networks.push(1);
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
+        )
+        .answer(
+            "ip -j route show dev wg-n1",
+            r#"[{"dst":"192.168.1.0/24","scope":"link","flags":[]}]"#,
+        );
+    reconcile(&fake, &c, dir.path());
+    let log = fake.log();
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with(&format!("wg set wg-n2 peer {K3}")))
+    );
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("ip route add 192.168.1.0/24"))
+    );
+}
+
+#[test]
+fn a_stray_in_one_map_is_cleared_from_that_map_only() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", &wg_links(&[("wg-n1", Some(1))]))
+        .answer("nft -j list map inet wgate from_net", &registry(&[("wg-n1", 1)]))
+        .answer(
+            "nft -j list map inet wgate ingress",
+            r#"{"nftables": [{"map": {"name": "ingress", "elem": [["wg-n1", {"jump": {"target": "n1_from"}}]]}}]}"#,
+        );
+    reconcile(&fake, &compiled(), dir.path());
+    let inputs = fake.inputs.borrow();
+    assert!(
+        inputs
+            .iter()
+            .any(|i| i.trim() == "delete element inet wgate ingress { \"wg-n1\" }")
+    );
+    assert!(
+        !inputs
+            .iter()
+            .any(|i| i.trim() == "delete element inet wgate from_net { \"wg-n1\" }")
+    );
 }

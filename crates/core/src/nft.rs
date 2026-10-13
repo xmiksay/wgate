@@ -1,4 +1,4 @@
-//! Rendering of `table inet wgate` (design.md → Enforcement on the hub): a base plus
+//! Rendering of `table inet wgate` (docs/enforcement.md): a base plus
 //! one fragment per network, each an `nft -f` transaction of its own.
 
 use std::fmt::Write;
@@ -63,18 +63,30 @@ pub fn render_base(c: &Compiled) -> String {
         &[
             "iifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop",
             "iifname \"wg-*\" iifname != @wg_ifaces counter drop",
+            // Fail closed: an interface whose dispatch entry is missing (a hand edit,
+            // a removal halfway) is never let through unchecked.
+            "iifname \"wg-*\" iifname != @ingress counter drop",
             "iifname vmap @ingress",
         ],
     );
     // Every packet from a member passes its network's `from` chain, every packet to a
     // member its network's `to` chain; they `return` when allowed, so device to device
     // passes both. Revocation never depends on conntrack: it only picks the direction.
-    rules(&mut out, "input", &["iifname vmap @from_net"]);
+    rules(
+        &mut out,
+        "input",
+        &[
+            "iifname \"wg-*\" iifname != @from_net counter drop",
+            "iifname vmap @from_net",
+        ],
+    );
     rules(
         &mut out,
         "forward",
         &[
             "oifname \"wg-*\" oifname != @wg_ifaces counter drop",
+            "iifname \"wg-*\" iifname != @from_net counter drop",
+            "oifname \"wg-*\" oifname != @to_net counter drop",
             "iifname vmap @from_net",
             "oifname vmap @to_net",
         ],
@@ -87,6 +99,7 @@ pub fn render_base(c: &Compiled) -> String {
         &[
             "ip saddr @tenant_space fib saddr type != local counter drop",
             "oifname \"wg-*\" oifname != @wg_ifaces counter drop",
+            "oifname \"wg-*\" oifname != @to_net counter drop",
             "oifname \"wg-*\" ct state related icmp type { destination-unreachable, time-exceeded, parameter-problem } accept",
             "oifname vmap @to_net",
         ],

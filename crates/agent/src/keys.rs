@@ -2,9 +2,9 @@
 //! issued on first use and never deleted or replaced. They never leave the hub; only
 //! the public key goes to the database.
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs::{self, DirBuilder};
+use std::io::ErrorKind;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -71,26 +71,12 @@ impl<'a> Keys<'a> {
     }
 }
 
-/// Written to a temporary file, synced, then renamed: a crash leaves either no key or
-/// a whole one.
 fn generate(r: &dyn Runner, path: &Path) -> anyhow::Result<String> {
     let key = r.run(&["wg", "genkey"], None)?;
     if !is_wg_key(key.trim()) {
         bail!("wg genkey printed no key");
     }
-    let tmp = path.with_extension("key.tmp");
-    let _ = fs::remove_file(&tmp);
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .and_then(|mut f| f.write_all(key.as_bytes()).and_then(|()| f.sync_all()))
-        .with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))?;
-    if let Some(dir) = path.parent() {
-        File::open(dir).and_then(|d| d.sync_all()).ok();
-    }
+    crate::private::write(path, key.as_bytes())?;
     Ok(key)
 }
 
