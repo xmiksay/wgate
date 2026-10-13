@@ -7,8 +7,8 @@ export CARGO_BUILD_JOBS
 # Load nvm (if installed) and select web/.nvmrc.
 NVM = export NVM_DIR="$$HOME/.nvm"; [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; nvm use >/dev/null 2>&1 || true;
 MUSL = x86_64-unknown-linux-musl
-# Local settings (WGATE_DATABASE_URL, …; see .env.example), sourced by the shell so
-# `$` and `#` in values survive.
+# Local settings (WGATE_DATABASE_URL, …; see .env.example), sourced by the shell, not
+# parsed by make (which would mangle `$` and `#`); quote values as in shell.
 DOTENV = set -a; [ -f .env ] && . ./.env; set +a;
 
 .PHONY: help

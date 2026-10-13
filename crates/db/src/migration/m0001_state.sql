@@ -17,7 +17,10 @@ INSERT INTO state_revision (revision) VALUES (0);
 -- (writers must not `SET CONSTRAINTS ... IMMEDIATE`, which would fire it early).
 -- Row-level and only for real changes of what the state depends on, so a statement
 -- that changes nothing (or only a name) does not count.
-CREATE FUNCTION state_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+-- SECURITY DEFINER: writers need no rights on the counter (none can set it to a
+-- value the agent already reports as applied).
+CREATE FUNCTION state_changed() RETURNS trigger LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
     rev bigint;
 BEGIN
@@ -26,10 +29,12 @@ BEGIN
     IF current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION 'write the wgate state at READ COMMITTED';
     END IF;
-    IF current_setting('wgate.state_changed', true) = 'yes' THEN
+    -- Once per transaction. The marker is this transaction's id, so no session can
+    -- preset it and switch the bumps off.
+    IF current_setting('wgate.state_changed', true) = pg_current_xact_id()::text THEN
         RETURN NULL;
     END IF;
-    PERFORM set_config('wgate.state_changed', 'yes', true);
+    PERFORM set_config('wgate.state_changed', pg_current_xact_id()::text, true);
     UPDATE state_revision SET revision = revision + 1 RETURNING revision INTO rev;
     PERFORM pg_notify('wgate_changed', rev::text);
     RETURN NULL;
@@ -49,10 +54,10 @@ BEGIN
         ['device', ''],
         ['peer', 'revoked_at'],
         ['peer_route', 'peer_id, active, cidr'],
-        ['ceiling', 'proto, dst, port_from, port_to'],
-        ['rule', 'proto, port_from, port_to, dst, target_network_id'],
+        ['ceiling', 'tenant_id, proto, dst, port_from, port_to'],
+        ['rule', 'tenant_id, network_id, proto, port_from, port_to, dst, target_network_id'],
         ['federation', 'from_network_id, to_network_id, proto, port_from, port_to'],
-        ['inbound', 'source, proto, port_from, port_to']
+        ['inbound', 'network_id, source, proto, port_from, port_to']
     ] LOOP
         EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER INSERT OR DELETE ON %I
                         DEFERRABLE INITIALLY DEFERRED
