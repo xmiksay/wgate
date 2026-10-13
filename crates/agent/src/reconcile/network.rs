@@ -87,6 +87,12 @@ pub(super) fn network(
 /// plainly wgate's (and removed as gone).
 fn create(r: &dyn Runner, n: &CompiledNetwork) -> anyhow::Result<()> {
     let scratch = format!("{SCRATCH}{}", n.id);
+    // IFNAMSIZ: 15 characters.
+    anyhow::ensure!(
+        scratch.len() <= 15,
+        "network id {} is too long for an interface name",
+        n.id
+    );
     run(r, &["ip", "link", "add", &scratch, "type", "wireguard"])?;
     let marked = run(
         r,

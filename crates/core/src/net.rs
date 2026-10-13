@@ -84,6 +84,11 @@ pub fn first_overlap(net: Ipv4Net, others: &[Ipv4Net]) -> Option<Ipv4Net> {
     others.iter().copied().find(|&o| overlaps(net, o))
 }
 
+/// Whether any of `nets` overlaps any of `others`.
+pub fn overlaps_any(nets: &[Ipv4Net], others: &[Ipv4Net]) -> bool {
+    nets.iter().any(|n| first_overlap(*n, others).is_some())
+}
+
 /// Whether `net` lies entirely inside `within`; adjacent entries count as one range.
 pub fn is_inside(net: Ipv4Net, within: &[Ipv4Net]) -> bool {
     merge_nets(within).iter().any(|w| w.contains(&net))

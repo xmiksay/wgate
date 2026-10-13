@@ -73,7 +73,7 @@ impl Runner for Fake {
             Some((_, Err(e))) => Err(anyhow::anyhow!("{e}")),
             None if cmd.starts_with("wg genkey") => Ok(format!("{GENERATED}\n")),
             None if cmd.starts_with("wg pubkey") => {
-                Ok(format!("pub-{}\n", stdin.unwrap_or_default().trim()))
+                Ok(format!("{}\n", public_of(stdin.unwrap_or_default())))
             }
             // wg-n1 and wg-n2 carry their network's key, other interfaces none.
             None if cmd == "wg show wg-n1 public-key" => Ok(format!("{}\n", hub_pub(1))),
@@ -179,9 +179,16 @@ fn hub_private(id: i64) -> String {
     format!("{:0>42}A=", 100 + id)
 }
 
+/// What the fake `wg pubkey` derives: a key of its own, told from the private one.
+fn public_of(private: &str) -> String {
+    let mut key = private.trim().to_owned();
+    key.replace_range(42..43, "E");
+    key
+}
+
 /// The fake `wg pubkey` of network `id`'s key.
 fn hub_pub(id: i64) -> String {
-    format!("pub-{}", hub_private(id))
+    public_of(&hub_private(id))
 }
 
 fn position(log: &[String], needle: &str) -> usize {
@@ -214,7 +221,7 @@ fn a_new_network_is_keyed_made_marked_and_built() {
     let fake = Fake::default();
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
-    let issued = format!("pub-{GENERATED}");
+    let issued = public_of(GENERATED);
     assert_eq!(out.hub_keys, [(1, issued.clone()), (2, issued)]);
     let log = fake.log();
     // The key before the interface; made under a scratch name, marked, renamed.

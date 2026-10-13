@@ -138,7 +138,7 @@ fn an_interface_without_a_key_gets_one() {
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     position(&fake.log(), "wg set wg-n1 private-key ");
-    assert!(out.hub_keys.contains(&(1, format!("pub-{GENERATED}"))));
+    assert!(out.hub_keys.contains(&(1, public_of(GENERATED))));
 }
 
 #[test]
