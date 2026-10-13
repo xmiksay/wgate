@@ -27,8 +27,8 @@ mod steps;
 use gone::{remove_gone_links, unregister};
 use network::{free_ports, network};
 use steps::{
-    Link, desired_peers, lans, link_exists, links, links_of, nft, peer_diff, registered, removals,
-    route_deletions,
+    Link, current_routes, desired_peers, lans, link_exists, links, links_of, nft, peer_diff,
+    registered, removals, route_deletions,
 };
 
 #[derive(Debug, Default)]
@@ -75,33 +75,31 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // is gone, free or registered.
     let grow = guarded && complete && registry.is_some();
     let registered = registry.unwrap_or_default();
-    let (stuck, gone_pairs, stuck_held) = match &mut links {
+    let gone = match &mut links {
         Some(links) if complete => remove_gone_links(r, c, links, &mut out.errors),
-        _ => (vec![], vec![], vec![]),
+        _ => Default::default(),
     };
+    let stuck: Vec<String> = gone.stuck.iter().map(|(name, _)| name.clone()).collect();
 
     let mut owned = vec![];
     let mut new = vec![];
+    let mut unknown = vec![];
     for n in &c.networks {
         match iface_of(r, n, links.as_deref(), complete, &stuck) {
             Ok(Iface::Owned) => owned.push(n),
             Ok(Iface::New) => new.push(n),
-            Ok(Iface::Unknown) => {}
+            Ok(Iface::Unknown) => unknown.push(n),
             Err(why) => out.errors.push(format!("{}: {why}", n.iface)),
         }
     }
     // A registration stays only for a network compiled on that interface whose own
     // interface is there or about to be made (or that cannot be told, without the
     // links): otherwise nothing on that name keeps its rights.
-    // A gone interface's own pair too: its chains may have outlived its registration.
-    let extra = gone_pairs.into_iter().filter(|p| !registered.contains(p));
+    // A deleted interface's own pair too: its chains may have outlived its registration.
+    let extra = gone.deleted.into_iter().filter(|p| !registered.contains(p));
     for (iface, id) in &registered.iter().cloned().chain(extra).collect::<Vec<_>>() {
         let pair = |n: &&CompiledNetwork| n.iface == *iface && n.id == *id;
-        let kept = if complete {
-            owned.iter().chain(&new).any(pair)
-        } else {
-            c.networks.iter().any(|n| pair(&n))
-        };
+        let kept = owned.iter().chain(&new).chain(&unknown).any(pair);
         if !kept {
             unregister(r, iface, *id, &mut out.errors);
         }
@@ -117,7 +115,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // grow: an address or LAN moving between peers or networks is never held twice.
     // What failed to be released stays held, and is nobody's this pass: no peer, no
     // route and no right takes it.
-    let mut held = stuck_held;
+    let mut held = gone.held;
     for (n, _, plan) in &active {
         let (result, still) = match &plan.peers {
             Ok(d) => removals(r, &n.iface, d),
@@ -143,13 +141,18 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         );
     }
 
-    // With some network's peers unknown, nothing is known to be free.
-    let grow = grow && active.iter().all(|(_, _, plan)| plan.peers.is_ok());
+    // With some network's peers or routes unknown, or what a stuck interface keeps,
+    // nothing is known to be free.
+    let grow = grow
+        && !gone.blind
+        && active
+            .iter()
+            .all(|(_, _, plan)| plan.peers.is_ok() && plan.routes.is_ok());
     if !grow {
         // Rights revoked in a fragment still apply, cut down to what the guard covers;
         // with the guard unknown, every network is cut off.
         let within = unguarded.map(|unguarded| c.within_guard(&[unguarded, held].concat()));
-        for (n, _, _) in &active {
+        for (n, _, _) in active.iter().filter(|(_, exists, _)| *exists) {
             let script = match &within {
                 Some(within) => render_network(within, n),
                 None => render_network_cutoff(n.id),
@@ -245,22 +248,7 @@ fn plan(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork, exists: bool) -> Plan
             routes: Ok(routes::diff(&[], &lans(c, n))),
         };
     }
-    let routes = r
-        .run(
-            &[
-                "ip",
-                "-j",
-                "route",
-                "show",
-                "dev",
-                &n.iface,
-                "proto",
-                routes::PROTO,
-            ],
-            None,
-        )
-        .and_then(|json| routes::parse(&json))
-        .map(|current| routes::diff(&current, &lans(c, n)));
+    let routes = current_routes(r, &n.iface).map(|current| routes::diff(&current, &lans(c, n)));
     Plan {
         peers: peer_diff(r, c, n),
         routes,

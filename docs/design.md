@@ -92,7 +92,8 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
 - **Ownership:** an interface is the agent's when its alias carries the mark
   `wgate:n<network id>`, set as it makes the interface (under a scratch name, then
   renamed). The mark survives a flushed nft table and a lost key file; interfaces
-  without it are never changed.
+  without it are never changed, except in the agent's own scratch namespace
+  `wgtmp-*`, which a crashed creation may leave unmarked.
 - **DB outage:** the kernel keeps the last applied state (interfaces, peers, nft), so
   the VPN keeps running. Only changes stop.
 - **k8s outage:** the VPN keeps running; only the portal is unavailable.

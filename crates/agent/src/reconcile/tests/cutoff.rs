@@ -91,3 +91,60 @@ fn an_unreadable_link_in_the_fallback_is_named() {
         out.errors
     );
 }
+
+#[test]
+fn a_network_not_made_gets_no_registration_while_nothing_grows() {
+    let dir = keys();
+    let fake = owned_n1().fail("wg show wg-n1 allowed-ips");
+    reconcile(&fake, &compiled(), dir.path());
+    assert_eq!(fake.fragments_of(1).len(), 1);
+    assert!(fake.fragments_of(2).is_empty(), "wg-n2 does not exist");
+}
+
+#[test]
+fn an_unreadable_route_list_stops_growth_too() {
+    let dir = keys();
+    let fake = owned_n1().fail("ip -j route show dev wg-n1");
+    reconcile(&fake, &compiled(), dir.path());
+    assert!(!fake.log().iter().any(|c| c.starts_with("ip link add")));
+}
+
+#[test]
+fn a_stuck_interface_whose_leftovers_are_unknown_stops_growth() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-old", Some(9))]),
+        )
+        .fail("ip link del wg-old")
+        .fail("wg show wg-old allowed-ips");
+    reconcile(&fake, &compiled(), dir.path());
+    let log = fake.log();
+    assert!(!log.iter().any(|c| c.starts_with("ip link add")));
+    // Not registered: it is not unregistered over and over either.
+    assert_eq!(nft_runs(&log), 1, "the base only: {log:#?}");
+}
+
+#[test]
+fn a_registration_shown_not_to_be_wgates_goes_without_the_full_list() {
+    let dir = keys();
+    let fake = Fake::default()
+        .fail("ip -j link show type wireguard")
+        .answer(
+            "ip -j -d link show dev wg-n1",
+            r#"[{"ifname":"wg-n1","linkinfo":{"info_kind":"wireguard"}}]"#,
+        )
+        .answer(
+            "nft -j list map",
+            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", {"jump": {"target": "n1_from"}}]]}}]}"#,
+        );
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.contains(&format!("wg-n1: {NOT_MADE}")),
+        "{:?}",
+        out.errors
+    );
+    let removal = "delete element inet wgate from_net { \"wg-n1\" }";
+    assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
+}

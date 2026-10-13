@@ -162,6 +162,10 @@ pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors:
             .iter()
             .any(|n| n.iface != iface && n.port.to_string() == port.trim())
     };
+    let mut in_use: Vec<u16> = ports
+        .lines()
+        .filter_map(|l| l.split_once('\t')?.1.trim().parse().ok())
+        .collect();
     for line in ports.lines() {
         let Some((iface, port)) = line.split_once('\t') else {
             continue;
@@ -169,11 +173,15 @@ pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors:
         if !wanted(iface, port) || !holders.contains(&iface) {
             continue;
         }
-        // Parked on a spare port no network can want (past PORT_RANGE): the first
-        // one free.
+        // Parked on a spare port no network can want (past PORT_RANGE), the first
+        // that nothing listed listens on.
         let parked = SPARE_PORTS
-            .into_iter()
-            .any(|spare| run(r, &["wg", "set", iface, "listen-port", &spare.to_string()]).is_ok());
+            .filter(|spare| !in_use.contains(spare))
+            .find(|spare| run(r, &["wg", "set", iface, "listen-port", &spare.to_string()]).is_ok());
+        if let Some(spare) = parked {
+            in_use.push(spare);
+        }
+        let parked = parked.is_some();
         if !parked {
             errors.push(format!("{iface}: free port: no spare port is free"));
         }
