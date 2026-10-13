@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, CompiledNetwork, Id, first_overlap};
+use wgate_core::{Compiled, CompiledNetwork, Id, overlaps_any};
 
 use crate::routes;
 use crate::runner::Runner;
@@ -107,11 +107,6 @@ fn unless_held<T>(
         Ok(()) => anyhow::anyhow!(waits),
         Err(e) => e.context(waits),
     })
-}
-
-/// Whether any of `nets` overlaps any of `held`.
-pub(super) fn touches(nets: &[Ipv4Net], held: &[Ipv4Net]) -> bool {
-    nets.iter().any(|n| first_overlap(*n, held).is_some())
 }
 
 /// Runs each command, also after one fails; what a failed one was to release stays
@@ -275,13 +270,38 @@ pub(super) fn links(r: &dyn Runner) -> anyhow::Result<Vec<Link>> {
     Ok(shown.into_iter().map(Link::from).collect())
 }
 
-/// The interfaces registered in the `from_net` map, with their network.
-pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Vec<(String, Id)>> {
+/// The interfaces registered in the `from_net` map, with their network, and those of
+/// elements that are not wgate's.
+pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<crate::nftmap::Registry> {
     let json = r.run(
         &["nft", "-j", "list", "map", "inet", "wgate", "from_net"],
         None,
     )?;
     crate::nftmap::parse(&json)
+}
+
+/// Takes an element that is not wgate's off a compiled network's name, map by map
+/// (it may be in any of them): its own entries could not go in otherwise.
+pub(super) fn clear_stray(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
+    let results: Vec<_> = ["from_net", "ingress", "to_net"]
+        .iter()
+        .map(|map| {
+            nft(
+                r,
+                &format!("delete element inet wgate {map} {{ \"{iface}\" }}\n"),
+            )
+        })
+        .collect();
+    // Gone from at least the map that showed it.
+    results
+        .into_iter()
+        .find(Result::is_ok)
+        .unwrap_or_else(|| Err(anyhow::anyhow!("not removed")))
+}
+
+/// Whether any of `nets` overlaps any of `held`.
+pub(super) fn touches(nets: &[Ipv4Net], held: &[Ipv4Net]) -> bool {
+    overlaps_any(nets, held)
 }
 
 /// Whether any link (WireGuard or not) has this name.

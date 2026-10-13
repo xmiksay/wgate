@@ -39,7 +39,7 @@ migrate: ## Apply database migrations (WGATE_DATABASE_URL, see .env.example)
 .PHONY: run-agent
 run-agent: ## Run the agent as root (needs CAP_NET_ADMIN)
 	cargo build -p wgate
-	sudo -E target/debug/wgate agent
+	$(DOTENV) sudo -E target/debug/wgate agent
 
 .PHONY: lint
 lint: ## clippy -D warnings, rustfmt check, eslint, vue-tsc

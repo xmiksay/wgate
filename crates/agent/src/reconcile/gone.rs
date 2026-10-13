@@ -32,6 +32,9 @@ pub(super) fn remove_gone_links(
     let mut gone = Gone::default();
     for link in links.clone() {
         let is_gone = match link.owner {
+            // Invalid this pass (a bad block, range or setting) is not gone: it keeps
+            // its interface, unregistered, so a fix brings it straight back.
+            Some(id) if c.invalid_networks.contains(&id) => false,
             Some(id) => !c
                 .networks
                 .iter()

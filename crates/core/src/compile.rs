@@ -1,11 +1,12 @@
 //! Desired state → per-peer access sets (design.md → Rights).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{Slug, first_overlap, hub_address};
+use crate::net::{Slug, hub_address, overlaps_any};
 use crate::rights::{RuleSet, merge_nets, subtract_nets};
 use crate::rule::{Rule, Service};
 
@@ -186,20 +187,20 @@ impl Compiled {
     /// What stays enforceable while the hub's spoof guard leaves `unguarded` out: no
     /// address there is anyone's (a peer whose own address is, is dropped), and nobody
     /// keeps a right to or from it. Everything else, revocations included, applies.
-    pub fn within_guard(&self, unguarded: &[Ipv4Net]) -> Compiled {
-        let mut c = self.clone();
+    pub fn within_guard(&self, unguarded: &[Ipv4Net]) -> Cow<'_, Compiled> {
         if unguarded.is_empty() {
-            return c;
+            return Cow::Borrowed(self);
         }
+        let mut c = self.clone();
         let cut = RuleSet::everything(unguarded);
-        let outside = |a: &Ipv4Net| first_overlap(*a, unguarded).is_some();
+        let outside = |a: &Ipv4Net| overlaps_any(std::slice::from_ref(a), unguarded);
         c.peers.retain(|p| !outside(&Ipv4Net::from(p.ip)));
         for p in &mut c.peers {
             p.addrs.retain(|a| !outside(a));
             p.outbound = p.outbound.difference(&cut);
             p.inbound = p.inbound.difference(&cut);
         }
-        c
+        Cow::Owned(c)
     }
 }
 

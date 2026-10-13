@@ -121,7 +121,8 @@ under sudo).
      in the rules wait for a pass that can see)
   3. what is gone. An interface is wgate's when its alias carries the mark
      `wgate:n<id>` (set at creation; survives a flushed table and a lost key file).
-     A marked interface whose network is not compiled under that name, or an
+     A marked interface whose network is not compiled under that name (and is not
+     merely invalid this pass: that one keeps its interface, unregistered), or an
      unmarked `wgtmp-*` scratch link, is deleted; one that would not go loses its
      peers, addresses and LAN routes, frees a wanted port and holds its name until
      it goes. Registrations stay only for a network compiled on that name whose own

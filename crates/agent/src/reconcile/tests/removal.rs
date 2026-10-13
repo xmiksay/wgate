@@ -167,3 +167,52 @@ fn without_the_base_only_revocations_apply() {
     );
     assert!(out.hub_keys.is_empty());
 }
+
+#[test]
+fn an_invalid_network_keeps_its_interface() {
+    let dir = keys();
+    let mut c = compiled();
+    // Network 1 failed validation this pass (say, a bad block): not gone.
+    c.networks.retain(|n| n.id != 1);
+    c.peers.retain(|p| p.network != 1);
+    c.invalid_networks.push(1);
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1))]),
+        )
+        .answer("nft -j list map", &registry(&[("wg-n1", 1)]));
+    reconcile(&fake, &c, dir.path());
+    let log = fake.log();
+    assert!(!log.iter().any(|l| l == "ip link del wg-n1"));
+    // Unregistered: its traffic is dropped until it is valid again.
+    let removal = "delete element inet wgate from_net { \"wg-n1\" }";
+    assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
+}
+
+#[test]
+fn an_element_not_wgates_on_a_networks_name_is_cleared() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1))]),
+        )
+        .answer(
+            "nft -j list map",
+            r#"{"nftables": [{"map": {"name": "from_net", "elem": [["wg-n1", "accept"]]}}]}"#,
+        );
+    reconcile(&fake, &compiled(), dir.path());
+    let cleared = "delete element inet wgate from_net { \"wg-n1\" }";
+    let inputs = fake.inputs.borrow();
+    let at = inputs
+        .iter()
+        .position(|i| i.trim() == cleared)
+        .expect("cleared");
+    // Before network 1's own entries go in.
+    let fragment = inputs
+        .iter()
+        .rposition(|i| i.contains("add chain inet wgate n1_from"))
+        .unwrap();
+    assert!(at < fragment);
+}

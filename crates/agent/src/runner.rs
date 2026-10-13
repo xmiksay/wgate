@@ -72,7 +72,11 @@ impl Runner for System {
         let feeder = match (stdin, child.stdin.take()) {
             (Some(input), Some(mut pipe)) => {
                 let input = input.to_owned();
-                Some(thread::spawn(move || pipe.write_all(input.as_bytes())))
+                let (tx, rx) = std::sync::mpsc::channel();
+                thread::spawn(move || {
+                    let _ = tx.send(pipe.write_all(input.as_bytes()));
+                });
+                Some(rx)
             }
             _ => None,
         };
@@ -117,7 +121,7 @@ impl Runner for System {
             stdout,
             stderr: stderr.recv_timeout(left()).unwrap_or_default(),
         };
-        let fed = feeder.map(|f| f.join());
+        let fed = feeder.map(|rx| rx.recv_timeout(left()));
         if !out.status.success() {
             // argv only, never stdin: it may carry a private key.
             bail!(

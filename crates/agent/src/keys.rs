@@ -61,11 +61,13 @@ impl<'a> Keys<'a> {
     }
 
     fn public(&self, private: &str) -> anyhow::Result<String> {
-        Ok(self
-            .r
-            .run(&["wg", "pubkey"], Some(private))?
-            .trim()
-            .to_owned())
+        let public = self.r.run(&["wg", "pubkey"], Some(private))?;
+        let public = public.trim();
+        // It is published as the hub's key: only a key, never whatever was printed.
+        if !is_wg_key(public) {
+            bail!("wg pubkey printed no key");
+        }
+        Ok(public.to_owned())
     }
 }
 
@@ -109,7 +111,12 @@ mod tests {
                     self.0.set(self.0.get() + 1);
                     format!("{:0>42}A=\n", self.0.get())
                 }
-                _ => format!("pub-{}", stdin.unwrap_or_default().trim()),
+                // A key of its own, told from the private one.
+                _ => {
+                    let mut key = stdin.unwrap_or_default().trim().to_owned();
+                    key.replace_range(42..43, "E");
+                    key
+                }
             })
         }
     }
@@ -121,7 +128,7 @@ mod tests {
         let keys = || Keys::new(&tools, dir.path());
         let (path, public) = keys().ensure(1).unwrap();
         let key = fs::read_to_string(&path).unwrap();
-        assert_eq!(public, format!("pub-{}", key.trim()));
+        assert_eq!(public, key.trim().replace("A=", "E="));
         assert_eq!(keys().ensure(1).unwrap().1, public, "kept");
         assert_ne!(keys().ensure(2).unwrap().1, public, "own key");
         fs::write(&path, "garbage").unwrap();
@@ -160,5 +167,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(Keys::new(&Broken, dir.path()).ensure(1).is_err());
         assert!(!dir.path().join("n1.key").exists());
+        // Nor is a pubkey that prints no key taken for one.
+        fs::write(dir.path().join("n2.key"), format!("{:0>42}A=", 2)).unwrap();
+        assert!(Keys::new(&Broken, dir.path()).load(2).is_err());
     }
 }

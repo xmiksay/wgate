@@ -26,8 +26,8 @@ mod steps;
 use gone::{remove_gone_links, unregister};
 use network::{free_ports, network};
 use steps::{
-    Link, SCRATCH, current_routes, desired_peers, lans, link_exists, links, nft, peer_diff,
-    registered, removals, route_deletions, set_ranges,
+    Link, SCRATCH, clear_stray, current_routes, desired_peers, lans, link_exists, links, nft,
+    peer_diff, registered, removals, route_deletions, set_ranges,
 };
 
 #[derive(Debug, Default)]
@@ -65,7 +65,22 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // Nothing grows where spoofed sources may not be dropped, nor without knowing what
     // is gone, free or registered.
     let grow = guarded && links.is_some() && registry.is_some();
-    let registered = registry.unwrap_or_default();
+    let crate::nftmap::Registry {
+        networks: registered,
+        stray,
+    } = registry.unwrap_or_default();
+    // An element that is not wgate's on a compiled network's name would keep that
+    // network's own entries out: it goes.
+    for iface in stray
+        .iter()
+        .filter(|i| c.networks.iter().any(|n| n.iface == **i))
+    {
+        let result = clear_stray(r, iface);
+        note(
+            result.with_context(|| format!("{iface}: element not wgate's")),
+            &mut out.errors,
+        );
+    }
     let gone = match &mut links {
         Some(links) => remove_gone_links(r, c, links, &mut out.errors),
         _ => Default::default(),
@@ -193,15 +208,9 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
 
     // Growth waits for both; rights leave out only what failed to be released.
     let waits = [held.as_slice(), &taken].concat();
-    let within;
-    let rules = if held.is_empty() {
-        c
-    } else {
-        within = c.within_guard(&held);
-        &within
-    };
+    let rules = c.within_guard(&held);
     for (n, exists, plan) in active {
-        let (key, errors) = network(r, rules, n, keys, exists, plan, &waits);
+        let (key, errors) = network(r, &rules, n, keys, exists, plan, &waits);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
         }
