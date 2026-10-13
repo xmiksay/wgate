@@ -10,8 +10,6 @@ use rand::rngs::OsRng;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::error::ApiError;
-
 pub struct KeyPair {
     pub private: Zeroizing<String>,
     pub public: String,
@@ -45,10 +43,11 @@ fn from_private(bytes: &[u8; 32]) -> KeyPair {
     }
 }
 
-/// A config as a QR code (SVG), for the WireGuard app on a phone.
-pub fn qr_svg(config: &str) -> Result<String, ApiError> {
-    let code = QrCode::new(config.as_bytes()).map_err(|e| anyhow::anyhow!("QR: {e}"))?;
-    Ok(code.render::<svg::Color>().min_dimensions(256, 256).build())
+/// A config as a QR code (SVG), for the WireGuard app on a phone; `None` when it is
+/// too long for one (many rights).
+pub fn qr_svg(config: &str) -> Option<String> {
+    let code = QrCode::new(config.as_bytes()).ok()?;
+    Some(code.render::<svg::Color>().min_dimensions(256, 256).build())
 }
 
 #[cfg(test)]
@@ -83,5 +82,6 @@ mod tests {
                 .unwrap()
                 .starts_with("<?xml")
         );
+        assert_eq!(qr_svg(&"AllowedIPs = 10.0.0.0/8\n".repeat(200)), None);
     }
 }

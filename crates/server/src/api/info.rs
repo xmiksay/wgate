@@ -49,12 +49,15 @@ pub struct Status {
     /// What the agent last applied (behind `revision` while it catches up).
     pub applied_revision: Option<i64>,
     pub applied_at: Option<String>,
-    /// What the agent could not apply, if anything.
+    /// What the agent could not apply, if anything: its own words (every tenant's
+    /// interfaces and ranges), so for a global admin only.
     pub error: Option<String>,
+    /// Whether the agent reported an error.
+    pub failing: bool,
 }
 
 #[utoipa::path(get, path = "/status", responses((status = 200, body = Status)))]
-pub async fn status(State(s): State<AppState>, _actor: Actor) -> Result<Json<Status>, ApiError> {
+pub async fn status(State(s): State<AppState>, actor: Actor) -> Result<Json<Status>, ApiError> {
     let row =
         s.db.query_one_raw(Statement::from_string(
             DbBackend::Postgres,
@@ -63,11 +66,13 @@ pub async fn status(State(s): State<AppState>, _actor: Actor) -> Result<Json<Sta
         ))
         .await?
         .ok_or_else(|| anyhow::anyhow!("no state revision row"))?;
+    let error: Option<String> = row.try_get("", "error")?;
     Ok(Json(Status {
         revision: row.try_get("", "revision")?,
         applied_revision: row.try_get("", "applied_revision")?,
         applied_at: row.try_get("", "applied_at")?,
-        error: row.try_get("", "error")?,
+        failing: error.is_some(),
+        error: error.filter(|_| actor.is_global()),
     }))
 }
 

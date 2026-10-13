@@ -17,6 +17,12 @@ async fn log_in(app: &axum::Router, idp: &idp::Idp, who: Next) -> Result<String,
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let started = res.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(
+        started.starts_with("wgate_login=") && started.contains("HttpOnly"),
+        "{started}"
+    );
+    let started = started.split(';').next().unwrap().to_owned();
     let location = res.headers()[header::LOCATION].to_str().unwrap();
     let url = url::Url::parse(location).unwrap();
     let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
@@ -30,29 +36,38 @@ async fn log_in(app: &axum::Router, idp: &idp::Idp, who: Next) -> Result<String,
         ..who
     };
     let callback = format!("/auth/callback?code=c&state={}", query["state"]);
-    let res = app
-        .clone()
-        .oneshot(Request::get(&callback).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+    let get = |cookie: Option<&str>| {
+        let mut req = Request::get(&callback);
+        if let Some(c) = cookie {
+            req = req.header(header::COOKIE, c);
+        }
+        app.clone().oneshot(req.body(Body::empty()).unwrap())
+    };
+    // Someone else's browser (no login cookie, or another login's) gets nowhere.
+    for other in [None, Some("wgate_login=another")] {
+        assert_eq!(get(other).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    }
+    let res = get(Some(&started)).await.unwrap();
     if res.status() != StatusCode::SEE_OTHER {
         return Err(res.status());
     }
-    let cookie = res.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
+    let cookie = res
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|c| c.to_str().unwrap())
+        .find(|c| c.starts_with("wgate_session="))
+        .expect("a session cookie")
         .to_owned();
     assert!(
         cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax"),
         "{cookie}"
     );
     // A replayed callback finds nothing.
-    let replay = app
-        .clone()
-        .oneshot(Request::get(&callback).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        get(Some(&started)).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
     Ok(cookie.split(';').next().unwrap().to_owned())
 }
 
@@ -92,6 +107,27 @@ async fn a_global_admin_logs_in_and_their_subject_is_pinned() {
         .await
         .expect("logged in");
     assert_eq!(session_role(&e.app, &cookie).await, StatusCode::OK);
+    // Logging out ends the session; a dead one still gets its cookie cleared.
+    for _ in 0..2 {
+        let res = e
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/auth/logout")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let cleared = res.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(cleared.starts_with("wgate_session=;"), "{cleared}");
+    }
+    assert_eq!(
+        session_role(&e.app, &cookie).await,
+        StatusCode::UNAUTHORIZED
+    );
     // Again with the same subject: in.
     assert!(
         log_in(&e.app, &idp, who("sub-1", "other@example.org", true))

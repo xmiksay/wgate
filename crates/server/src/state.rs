@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use sea_orm::DatabaseConnection;
 
+use crate::auth::oidc::Provider;
 use crate::config::Config;
 
 #[derive(Clone)]
@@ -12,6 +13,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// For the OIDC provider; never follows redirects (an SSRF guard).
     pub http: openidconnect::reqwest::Client,
+    pub oidc: Arc<Provider>,
 }
 
 impl AppState {
@@ -23,6 +25,7 @@ impl AppState {
             db,
             config: Arc::new(config),
             http,
+            oidc: Arc::default(),
         })
     }
 }

@@ -18,7 +18,8 @@ use utoipa::{IntoParams, ToSchema};
 use wgate_core::{PORT_RANGE, RESERVED_PORT, Slug, overlaps};
 use wgate_db::entity::{hub_key, inbound, network};
 
-use super::{ServiceBody, begin, from_db, tenant_of_network, to_db};
+use super::routes::clear_of_others_lans;
+use super::{ServiceBody, begin, dns_hosts, from_db, tenant_of_network, to_db};
 use crate::audit;
 use crate::auth::Actor;
 use crate::error::ApiError;
@@ -95,14 +96,7 @@ async fn network_out(s: &AppState, n: network::Model) -> Result<Network, ApiErro
         cidr: from_db(n.cidr)?,
         port: u16::try_from(n.port).map_err(anyhow::Error::from)?,
         mesh: n.mesh,
-        dns: n
-            .dns
-            .iter()
-            .filter_map(|d| match d.ip() {
-                IpAddr::V4(a) => Some(a),
-                IpAddr::V6(_) => None,
-            })
-            .collect(),
+        dns: dns_hosts(&n.dns),
         disabled: n.disabled_at.is_some(),
         hub_public_key: key.map(|k| k.public_key),
     })
@@ -319,7 +313,8 @@ pub async fn add_inbound(
     }
     let (proto, port_from, port_to) = body.service.columns()?;
     let txn = begin(&s.db).await?;
-    tenant_of_network(&txn, id).await?;
+    let tenant = tenant_of_network(&txn, id).await?;
+    clear_of_others_lans(&txn, tenant, source).await?;
     let i = inbound::ActiveModel {
         network_id: Set(id),
         source: Set(to_db(source)),

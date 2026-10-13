@@ -6,7 +6,7 @@ mod common;
 
 use std::time::Duration;
 
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use common::{Client, Env, sign_in, sql};
 use serde_json::{Value, json};
 
@@ -101,6 +101,11 @@ async fn a_server_key_is_shown_once_and_every_download_rotates_it() {
     assert_eq!(created["peer"]["key_source"], "server");
     let peer = id(&created["peer"]);
     let first_key = created["peer"]["public_key"].as_str().unwrap().to_owned();
+    // A download with nothing to show keeps the working key.
+    let (s, v) = w.g.post(&format!("/peers/{peer}/config"), json!({})).await;
+    assert!(s == StatusCode::OK && v["config"].is_null(), "{v}");
+    let (_, now) = w.g.get(&format!("/peers/{peer}")).await;
+    assert_eq!(now["public_key"], first_key.as_str());
 
     publish_hub_key(&w).await;
     let (s, v) = w.g.post(&format!("/peers/{peer}/config"), json!({})).await;
@@ -206,6 +211,8 @@ async fn routed_lans_stay_in_routed_space_and_clear_of_others_rights() {
         ("172.16.16.0/24", "reserved"),
         ("192.168.7.0/24", "another tenant's ceiling"),
         ("192.168.1.0/25", "another active LAN"),
+        ("10.50.200.0/24", "the pool"),
+        ("172.19.9.0/25", "a node network"),
     ] {
         let (s, v) = g.post(&routes, json!({ "cidr": cidr })).await;
         assert!(
@@ -213,8 +220,81 @@ async fn routed_lans_stay_in_routed_space_and_clear_of_others_rights() {
             "{why}: {s} {v}"
         );
     }
+    // And the other way round: no grant of another tenant reaches the LAN.
+    let (s, v) = g
+        .post(
+            &format!("/tenants/{other}/ceilings"),
+            json!({ "dst": "192.168.0.0/16", "proto": "icmp" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let theirs = id(&g
+        .create(
+            &format!("/tenants/{other}/blocks"),
+            json!({ "cidr": "10.50.1.0/24" }),
+        )
+        .await);
+    let their_net = id(&g
+        .create(
+            "/networks",
+            json!({ "tenant_id": other, "block_id": theirs, "slug": "other",
+                                     "name": "Other", "cidr": "10.50.1.0/25", "port": 51802 }),
+        )
+        .await);
+    let (s, v) = g
+        .post(
+            &format!("/networks/{their_net}/inbound"),
+            json!({ "source": "192.168.1.0/24", "proto": "icmp" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    // The tenant's own ceiling may cover its own LAN.
+    g.create(
+        &format!("/tenants/{}/ceilings", w.tenant),
+        json!({ "dst": "192.168.1.0/24", "proto": "icmp" }),
+    )
+    .await;
     let r = g.create(&routes, json!({ "cidr": "192.168.2.0/24" })).await;
     let (s, _) = g.delete(&format!("/routes/{}", id(&r))).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let _ = w.tenant;
+}
+
+#[tokio::test]
+async fn a_global_admins_peer_is_out_of_a_tenant_admins_reach() {
+    let w = world().await;
+    let mine = id(&w
+        .g
+        .create(
+            "/devices",
+            json!({ "user_id": w.g.user_id, "name": "admin laptop" }),
+        )
+        .await);
+    let peer = id(&w
+        .g
+        .create(
+            "/peers",
+            json!({ "device_id": mine, "network_id": w.network, "ip": "10.50.0.9" }),
+        )
+        .await["peer"]);
+    let a = sign_in(&w.e, "a@acme.test", "tenant_admin", Some(w.tenant)).await;
+    for (method, uri) in [
+        (Method::GET, format!("/peers/{peer}")),
+        (Method::POST, format!("/peers/{peer}/config")),
+        (Method::POST, format!("/peers/{peer}/revoke")),
+        (Method::POST, format!("/peers/{peer}/routes")),
+        (Method::DELETE, format!("/peers/{peer}")),
+    ] {
+        let body = (method == Method::POST).then(|| json!({ "cidr": "192.168.3.0/24" }));
+        let (s, _) = a.call(method.clone(), &uri, body).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+    // The agent's own words reach global admins only.
+    sql(&w.e.db, "INSERT INTO agent_status (applied_revision, applied_at, error) VALUES (0, now(), 'wg-other: boom')").await;
+    let (_, v) = a.get("/status").await;
+    assert_eq!(
+        (v["failing"].clone(), v["error"].clone()),
+        (json!(true), Value::Null)
+    );
+    let (_, v) = w.g.get("/status").await;
+    assert_eq!(v["error"], "wg-other: boom");
 }

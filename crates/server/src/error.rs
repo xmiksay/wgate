@@ -27,6 +27,9 @@ pub enum ApiError {
         message: String,
         detail: Option<serde_json::Value>,
     },
+    /// Too much at once (logins in progress); try again shortly.
+    #[error("{0}")]
+    TooMany(String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -34,8 +37,8 @@ pub enum ApiError {
 /// The JSON body of every error.
 #[derive(Serialize, ToSchema)]
 pub struct ErrorBody {
-    /// `unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid` or
-    /// `internal`.
+    /// `unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid`,
+    /// `too_many` or `internal`.
     pub error: &'static str,
     pub message: String,
     /// What is in the way (e.g. the part of a rule no ceiling covers).
@@ -58,6 +61,7 @@ impl ApiError {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            Self::TooMany(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many"),
             Self::Invalid { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "invalid"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }

@@ -83,7 +83,7 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
     let role = Role::parse(&row.try_get::<String>("", "role")?);
     // A user only holds a portal session as an admin (users get their configs from
     // an admin until phase 2).
-    if !live || role.is_none() {
+    let (true, Some(role)) = (live, role) else {
         db.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             "DELETE FROM session WHERE id = $1",
@@ -91,7 +91,7 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
         ))
         .await?;
         return Ok(None);
-    }
+    };
     if row.try_get::<bool>("", "stale")? {
         db.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -100,9 +100,6 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
         ))
         .await?;
     }
-    let Some(role) = role else {
-        return Ok(None);
-    };
     Ok(Some(Actor {
         user_id: row.try_get("", "user_id")?,
         role,

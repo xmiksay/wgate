@@ -158,6 +158,16 @@ pub(crate) fn to_db(net: Ipv4Net) -> IpNetwork {
         .unwrap_or_else(|_| IpNetwork::from(IpAddr::V4(net.addr())))
 }
 
+/// A network's DNS servers (the schema holds IPv4 hosts only).
+pub(crate) fn dns_hosts(dns: &[IpNetwork]) -> Vec<std::net::Ipv4Addr> {
+    dns.iter()
+        .filter_map(|d| match d {
+            IpNetwork::V4(a) => Some(a.ip()),
+            IpNetwork::V6(_) => None,
+        })
+        .collect()
+}
+
 pub(crate) fn from_db(net: IpNetwork) -> Result<Ipv4Net, ApiError> {
     match net {
         IpNetwork::V4(n) => {

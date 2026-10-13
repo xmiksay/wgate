@@ -238,7 +238,9 @@ Other peers are unaffected; the interface never restarts.
   `(issuer, sub)`. An unknown user gets 403, with no auto-provisioning.
 - Phase 1: only global admins log in, through `[admin_oidc]` in `server.toml`. The
   match is a verified email (any case) against a global admin, then `sub` is pinned;
-  the role is the DB's. The first one comes from `wgate admin grant <email>`.
+  the role is the DB's. The first one comes from `wgate admin grant <email>`. The
+  round trip is bound to the browser that started it (a `wgate_login` cookie holds its
+  state); discovery is cached for an hour.
 - Session: a random token in an `HttpOnly; Secure; SameSite=Lax` cookie; Postgres keeps
   only its sha256 (8 h idle, 7 d at most). Writes carry the session's `X-CSRF-Token`.
 - User: their devices and peers; "add to network" (server keypair → config + QR /
@@ -246,7 +248,8 @@ Other peers are unaffected; the interface never restarts.
   stored: every config download of a server-key peer rotates its key (same peer,
   the previous config stops working); a pasted key is never rotated.
 - Tenant admin: networks (inside own blocks, mesh flag), membership, routers and
-  routed subnets, rules (with the ceiling check), the tenant's peers, its audit log.
+  routed subnets, rules (with the ceiling check), the tenant's peers, its audit log
+  (phase 2; until then `/audit` is the global admin's).
 - Global admin: tenants, blocks, ceilings, federations, inbound grants, everything a
   tenant admin can do in every tenant, the whole audit log.
 - Client config: `Endpoint = <endpoint_host>:<network port>`, `AllowedIPs` as in Rights

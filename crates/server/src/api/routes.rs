@@ -32,9 +32,46 @@ pub struct RouteCreate {
     pub cidr: Ipv4Net,
 }
 
-/// A router's LAN: inside routed space, outside reserved space, and clear of every
-/// other tenant's ceilings and inbound sources (else their rights would reach it).
-/// The schema keeps it clear of tenant blocks and other active LANs.
+/// Serializes the writes that check a LAN against other tenants' grants and back
+/// (routes, ceilings, inbound): two concurrent ones could each miss the other.
+pub(super) async fn lock_lans<C: ConnectionTrait>(db: &C) -> Result<(), ApiError> {
+    db.execute_unprepared("SELECT pg_advisory_xact_lock(7767001)")
+        .await?;
+    Ok(())
+}
+
+/// A ceiling (`dst`) or inbound source of `tenant` must not reach another tenant's
+/// routed LAN: across tenants only a federation grants access.
+pub(super) async fn clear_of_others_lans<C: ConnectionTrait>(
+    db: &C,
+    tenant: i64,
+    cidr: Ipv4Net,
+) -> Result<(), ApiError> {
+    lock_lans(db).await?;
+    let clash = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT EXISTS (SELECT FROM peer_route r JOIN peer p ON p.id = r.peer_id
+                            JOIN network n ON n.id = p.network_id
+                            WHERE r.active AND n.tenant_id <> $1 AND r.cidr && $2) AS clash",
+            [tenant.into(), to_db(cidr).into()],
+        ))
+        .await?
+        .map(|r| r.try_get::<bool>("", "clash"))
+        .transpose()?
+        .unwrap_or(false);
+    if clash {
+        return Err(ApiError::invalid(format!(
+            "{cidr} overlaps another tenant's routed LAN: a federation grants that"
+        )));
+    }
+    Ok(())
+}
+
+/// A router's LAN: inside routed space, clear of the pool and of infrastructure
+/// (node networks, the SNAT source, reserved space) as compile wants it, and of
+/// every other tenant's ceilings and inbound sources (else their rights would reach
+/// it). The schema keeps it clear of tenant blocks and other active LANs.
 pub(super) async fn insert_route<C: ConnectionTrait>(
     s: &AppState,
     db: &C,
@@ -48,9 +85,19 @@ pub(super) async fn insert_route<C: ConnectionTrait>(
     if !is_inside(lan, &s.config.routed_space) {
         return Err(ApiError::invalid(format!("{lan} is outside routed space")));
     }
-    if s.config.reserved.iter().any(|r| overlaps(*r, lan)) {
-        return Err(ApiError::invalid(format!("{lan} overlaps reserved space")));
+    let c = &s.config;
+    let snat = [Ipv4Net::from(c.snat_source)];
+    for (space, what) in [
+        (c.pool.as_slice(), "the pool"),
+        (&c.node_cidrs, "the node networks"),
+        (&c.reserved, "reserved space"),
+        (&snat, "the SNAT source"),
+    ] {
+        if space.iter().any(|r| overlaps(*r, lan)) {
+            return Err(ApiError::invalid(format!("{lan} overlaps {what}")));
+        }
     }
+    lock_lans(db).await?;
     let cidr: IpNetwork = to_db(lan);
     let clash = db
         .query_one_raw(Statement::from_sql_and_values(
