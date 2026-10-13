@@ -7,6 +7,7 @@ pub(super) fn network(id: Id, tenant: Id, cidr: &str, mesh: bool, rules: Vec<Net
         id,
         tenant,
         slug: format!("n{id}").parse().unwrap(),
+        port: (51800 + id).try_into().unwrap(),
         cidr: net(cidr),
         mesh,
         rules,
@@ -234,6 +235,9 @@ fn inbound_grants_only_take_outside_sources_and_hub_addresses() {
         "the hub address"
     );
     assert!(a1.inbound.allows(Proto::Tcp, ip("10.50.0.1"), 9100));
+    // Only its own network's hub address, not another network's.
+    assert!(!a1.inbound.allows(Proto::Tcp, ip("10.50.0.17"), 22));
+    assert!(!a1.inbound.allows(Proto::Tcp, ip("10.50.1.1"), 22));
 }
 
 #[test]

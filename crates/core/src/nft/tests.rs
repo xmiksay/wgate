@@ -19,6 +19,7 @@ fn desired() -> DesiredState {
         id: 2,
         tenant: 1,
         slug: "nexial-dev".parse().unwrap(),
+        port: 51802,
         cidr: net("10.50.1.0/24"),
         mesh: true,
         rules: vec![],
@@ -53,6 +54,7 @@ fn desired() -> DesiredState {
                 id: 1,
                 tenant: 1,
                 slug: "nexial".parse().unwrap(),
+                port: 51801,
                 cidr: net("10.50.0.0/24"),
                 mesh: false,
                 rules: vec![
@@ -75,6 +77,7 @@ fn desired() -> DesiredState {
                 id: 3,
                 tenant: 3,
                 slug: "krcmar".parse().unwrap(),
+                port: 51803,
                 cidr: net("10.50.2.0/24"),
                 mesh: false,
                 rules: vec![NetRule::External(rule("tcp 172.16.16.1/32 6443"))],

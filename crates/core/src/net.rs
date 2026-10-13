@@ -9,6 +9,8 @@ use std::str::FromStr;
 
 use ipnet::Ipv4Net;
 
+use crate::rights::merge_nets;
+
 /// Network listen ports; the firewall opens exactly this range.
 pub const PORT_RANGE: RangeInclusive<u16> = 51800..=51899;
 /// wg0's port, kept for when wg0 becomes a network (phase 3).
@@ -71,17 +73,16 @@ pub fn first_overlap(net: Ipv4Net, others: &[Ipv4Net]) -> Option<Ipv4Net> {
     others.iter().copied().find(|&o| overlaps(net, o))
 }
 
-/// Whether `net` lies entirely inside one of `within`.
+/// Whether `net` lies entirely inside `within`; adjacent entries count as one range.
 pub fn is_inside(net: Ipv4Net, within: &[Ipv4Net]) -> bool {
-    within.iter().any(|w| w.contains(&net))
+    merge_nets(within).iter().any(|w| w.contains(&net))
 }
 
 /// The lowest `/prefix` inside one of `within` that overlaps none of `taken`: a block
 /// in the pool for a tenant, or a network range in a tenant's blocks.
 pub fn next_free_net(within: &[Ipv4Net], taken: &[Ipv4Net], prefix: u8) -> Option<Ipv4Net> {
-    let mut within = within.to_vec();
-    within.sort();
-    within
+    // Merged (and so sorted), like compile sees them: adjacent blocks form one range.
+    merge_nets(within)
         .iter()
         .filter_map(|w| w.subnets(prefix).ok())
         .flatten()
@@ -178,6 +179,10 @@ mod tests {
         assert_eq!(next_free_net(&[net("10.50.4.0/24")], &[], 23), None);
         let full = [net("10.50.4.0/24")];
         assert_eq!(next_free_net(&full, &full, 28), None);
+        // Adjacent blocks form one range, as compile sees them.
+        let adjacent = [net("10.50.3.0/24"), net("10.50.2.0/24")];
+        assert_eq!(next_free_net(&adjacent, &[], 23), Some(net("10.50.2.0/23")));
+        assert!(is_inside(net("10.50.2.0/23"), &adjacent));
         // Several blocks: the lowest one wins regardless of order.
         let blocks = [net("10.50.9.0/24"), net("10.50.4.0/24")];
         assert_eq!(next_free_net(&blocks, &[], 26), Some(net("10.50.4.0/26")));

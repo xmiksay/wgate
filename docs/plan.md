@@ -37,8 +37,8 @@ under sudo).
     over the pool or `reserved` infrastructure, or overlapping another routed subnet
   - every conflict (tenant blocks, network ranges and slugs, peer addresses): the
     lowest id keeps it, only the newcomer fails closed
-- `compile(&DesiredState) -> Compiled { peers, invalid_networks, skipped,
-  dropped_routes, tenant_space, snat_source, node_cidrs }`: per peer
+- `compile(&DesiredState) -> Compiled { peers, invalid_blocks, invalid_networks,
+  skipped, dropped_routes, tenant_space, snat_source, node_cidrs }`: per peer
   `addrs`, `outbound`, `inbound` exactly per design.md → Rights (ceiling ∩ external
   rules − tenant space, rules between networks, federation, mesh, inbound grants
   clipped to outside sources + hub addresses). Peers with an unknown/invalid network,
@@ -85,8 +85,8 @@ under sudo).
      delete a disabled one); routes for routed subnets via their interface
   5. diff peers → `remove` first, then `add`/`update` (`AllowedIPs` = `addrs(peer)`)
   6. `nft -f -` with the rendered table (atomic)
-  7. `agent_status` (incl. `Compiled.skipped` peers and `Compiled.dropped_routes` as
-     errors)
+  7. `agent_status` (incl. everything `Compiled` rejected — blocks, networks, peers,
+     routes — as errors)
 - Only manages interfaces with the `wg-` prefix it has in its state; it never touches
   `wg0`. An unknown `wg-*` interface → warn, do not delete.
 - An error in one network does not block the others; the error goes to `agent_status`

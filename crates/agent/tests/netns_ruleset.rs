@@ -160,6 +160,7 @@ fn state() -> DesiredState {
         id,
         tenant,
         slug: format!("n{id}").parse().expect("slug"),
+        port: 51800 + id as u16,
         cidr: net(cidr),
         mesh: false,
         rules,

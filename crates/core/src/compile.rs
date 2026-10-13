@@ -48,6 +48,8 @@ pub struct Network {
     pub tenant: Id,
     /// The interface is `wg-<slug>`.
     pub slug: Slug,
+    /// Listen port, in `PORT_RANGE` except `RESERVED_PORT`.
+    pub port: u16,
     pub cidr: Ipv4Net,
     /// Members reach each other on every service.
     pub mesh: bool,
@@ -130,6 +132,8 @@ pub enum Problem {
 #[derive(Clone, Debug)]
 pub struct Compiled {
     pub peers: Vec<CompiledPeer>,
+    /// Tenant blocks that lost (outside the pool, host bits, an older block's range).
+    pub invalid_blocks: Vec<Id>,
     /// Networks that failed validation (their peers are in `skipped`); no interface
     /// may be brought up for them.
     pub invalid_networks: Vec<Id>,
@@ -144,7 +148,11 @@ pub struct Compiled {
 }
 
 pub fn compile(state: &DesiredState) -> Compiled {
-    let (networks, invalid) = valid::networks(state);
+    let valid::Networks {
+        valid: networks,
+        invalid,
+        invalid_blocks,
+    } = valid::networks(state);
     let valid::Peers {
         valid,
         skipped,
@@ -163,17 +171,10 @@ pub fn compile(state: &DesiredState) -> Compiled {
         .pool
         .iter()
         .copied()
-        .chain(valid.iter().flat_map(|v| v.addrs.iter().skip(1).copied()))
+        .chain(valid.iter().flat_map(|v| v.routes.iter().copied()))
         .collect();
     let tenant_nets = merge_nets(&tenant_nets);
     let tenant_space = RuleSet::everything(&tenant_nets);
-    // Inbound grants are for sources outside tenant space; the only in-pool source
-    // that is no peer is a hub address (hub-opened connections).
-    let hubs: Vec<Ipv4Net> = networks
-        .values()
-        .map(|n| Ipv4Net::from(hub_address(n.net.cidr)))
-        .collect();
-    let not_grantable = RuleSet::everything(&subtract_nets(&tenant_nets, &hubs));
 
     // Per network first; every member then only loses its own addresses.
     let mut by_network: HashMap<Id, Vec<valid::ValidPeer>> = HashMap::new();
@@ -203,6 +204,10 @@ pub fn compile(state: &DesiredState) -> Compiled {
             .difference(&tenant_space);
         outbound = outbound.union(&external);
 
+        // Inbound grants are for sources outside tenant space; the one in-pool source
+        // that is no peer is this network's own hub address (hub-opened connections).
+        let hub = Ipv4Net::from(hub_address(n.net.cidr));
+        let not_grantable = RuleSet::everything(&subtract_nets(&tenant_nets, &[hub]));
         let mut inbound = n.net.inbound.difference(&not_grantable);
         for m in networks.values().filter(|m| m.net.tenant == n.net.tenant) {
             for rule in &m.net.rules {
@@ -243,6 +248,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
     invalid_networks.sort_unstable();
     Compiled {
         peers,
+        invalid_blocks,
         invalid_networks,
         skipped,
         dropped_routes,
