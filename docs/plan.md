@@ -37,14 +37,16 @@ under sudo).
     over the pool or `reserved` infrastructure, or overlapping another routed subnet
   - every conflict (tenant blocks, network ranges and slugs, peer addresses): the
     lowest id keeps it, only the newcomer fails closed
-- `compile(&DesiredState) -> Compiled { peers, skipped, tenant_space }`: per peer
+- `compile(&DesiredState) -> Compiled { peers, skipped, dropped_routes, tenant_space }`:
+  per peer
   `addrs`, `outbound`, `inbound` exactly per design.md → Rights (ceiling ∩ external
   rules − tenant space, rules between networks, federation, mesh, inbound grants
   clipped to outside sources + hub addresses). Peers with an unknown/invalid network,
-  an invalid IP, a routed LAN outside `routed_space`, or an address an older peer
-  already holds are skipped with a `Problem`. A network is valid only inside its
-  tenant's blocks (and the pool), with a known tenant, at most /30 and not
-  overlapping an older network.
+  an invalid IP, or an address an older peer already holds are skipped with a
+  `Problem`; a route outside `routed_space`, over pool/reserved, or claimed by an
+  older route is dropped alone (its peer stays). A network is valid only inside its
+  tenant's (winning) blocks, with a known tenant, at most /30, and with a range and
+  slug no older network holds.
 - Rendering:
   - `render_nft(&NftState) -> String`: the whole `table inet wgate` per design.md
     from compiled peers and `tenant_space` (compile guarantees disjoint addresses)
@@ -82,7 +84,8 @@ under sudo).
      delete a disabled one); routes for routed subnets via their interface
   5. diff peers → `remove` first, then `add`/`update` (`AllowedIPs` = `addrs(peer)`)
   6. `nft -f -` with the rendered table (atomic)
-  7. `agent_status` (incl. `Compiled.skipped` peers as errors)
+  7. `agent_status` (incl. `Compiled.skipped` peers and `Compiled.dropped_routes` as
+     errors)
 - Only manages interfaces with the `wg-` prefix it has in its state; it never touches
   `wg0`. An unknown `wg-*` interface → warn, do not delete.
 - An error in one network does not block the others; the error goes to `agent_status`

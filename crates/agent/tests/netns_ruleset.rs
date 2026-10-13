@@ -11,7 +11,7 @@ use common::py::{ECHO, PROBE, SPOOF, STREAM};
 use common::{Background, Netns};
 use ipnet::Ipv4Net;
 use wgate_core::{
-    DesiredState, Federation, NetRule, Network, NftState, Peer, PortRange, RuleSet, Service,
+    Claim, DesiredState, Federation, NetRule, Network, NftState, Peer, PortRange, RuleSet, Service,
     Tenant, compile, render_nft,
 };
 
@@ -183,12 +183,18 @@ fn state() -> DesiredState {
         tenants: vec![
             Tenant {
                 id: 1,
-                blocks: vec![net("10.50.0.0/23")],
+                blocks: vec![Claim {
+                    id: 1,
+                    cidr: net("10.50.0.0/23"),
+                }],
                 ceiling: rules(&["icmp 172.19.9.0/24", "tcp 172.19.9.0/24 8080"]),
             },
             Tenant {
                 id: 2,
-                blocks: vec![net("10.50.2.0/24")],
+                blocks: vec![Claim {
+                    id: 2,
+                    cidr: net("10.50.2.0/24"),
+                }],
                 ceiling: RuleSet::new(),
             },
         ],

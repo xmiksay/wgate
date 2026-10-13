@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use ipnet::Ipv4Net;
 use proptest::prelude::*;
 use wgate_core::{
-    CompiledPeer, DesiredState, Federation, NetRule, Network, Peer, PortRange, Proto, Rule,
+    Claim, CompiledPeer, DesiredState, Federation, NetRule, Network, Peer, PortRange, Proto, Rule,
     RuleSet, Service, Tenant, compile,
 };
 
@@ -70,9 +70,11 @@ fn state() -> impl Strategy<Value = DesiredState> {
                 .enumerate()
                 .map(|(id, rules)| Tenant {
                     id: id as i64,
-                    blocks: vec![
-                        Ipv4Net::new(Ipv4Addr::new(10, 50, 2 * id as u8, 0), 23).expect("prefix"),
-                    ],
+                    blocks: vec![Claim {
+                        id: id as i64,
+                        cidr: Ipv4Net::new(Ipv4Addr::new(10, 50, 2 * id as u8, 0), 23)
+                            .expect("prefix"),
+                    }],
                     ceiling: RuleSet::from_rules(rules),
                 })
                 .collect(),
@@ -107,7 +109,10 @@ fn state() -> impl Strategy<Value = DesiredState> {
                             l => Ipv4Net::new(Ipv4Addr::new(192, 168, l, 0), 24),
                         })
                         .into_iter()
-                        .map(|n| n.expect("prefix"))
+                        .map(|n| Claim {
+                            id: id as i64,
+                            cidr: n.expect("prefix"),
+                        })
                         .collect(),
                 })
                 .collect(),

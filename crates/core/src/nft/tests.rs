@@ -6,7 +6,7 @@ use crate::rule::Rule;
 fn rule(s: &str) -> Rule {
     s.parse().unwrap()
 }
-use crate::testing::{assert_golden, net, peer, rule_set, tcp};
+use crate::testing::{assert_golden, block, net, peer, rule_set, tcp};
 
 /// Tenant nexial: network `nexial` (a laptop and a router with a LAN; k8s API, node
 /// pings, SSH into `nexial-dev`) and `nexial-dev` (mesh, a pod network may reach it on
@@ -31,7 +31,7 @@ fn sample_state() -> NftState {
         tenants: vec![
             Tenant {
                 id: 1,
-                blocks: vec![net("10.50.0.0/23")],
+                blocks: vec![block(1, "10.50.0.0/23")],
                 ceiling: rule_set(&[
                     "tcp 172.16.16.1/32 6443",
                     "icmp 172.19.9.0/24",
@@ -40,7 +40,7 @@ fn sample_state() -> NftState {
             },
             Tenant {
                 id: 3,
-                blocks: vec![net("10.50.2.0/24")],
+                blocks: vec![block(2, "10.50.2.0/24")],
                 ceiling: rule_set(&["tcp 172.16.16.1/32 6443"]),
             },
         ],

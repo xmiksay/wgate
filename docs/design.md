@@ -96,6 +96,7 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
 ```
 tenant        id, slug (unique), name, disabled_at
 tenant_block  id, tenant_id, cidr                 # global admin; inside the pool, disjoint
+                                                  # id = claim order: on a conflict the older wins
 network       id, tenant_id, slug (unique → wg-<slug>), name,
               cidr (inside one block of its tenant, disjoint from its other networks),
               port (unique, 51800–51899 except 51820), mesh bool, disabled_at
@@ -107,8 +108,10 @@ user          id, tenant_id NULL (= global admin), email,
 device        id, user_id, name
 peer          id, device_id, network_id, public_key (unique),
               ip (unique, inside the network, not the hub address),
-              routed cidr[] (globally disjoint from the pool and each other),
               created_at, revoked_at
+peer_route    id, peer_id, cidr                   # a router's LAN: inside routed_space,
+                                                  # clear of pool/reserved, globally disjoint;
+                                                  # id = claim order (older route wins)
 ceiling       id, tenant_id, proto, dst_cidr, port_from, port_to
                                                   # global admin: external dsts the tenant may use
 rule          id, network_id (opener), proto, port_from, port_to,
