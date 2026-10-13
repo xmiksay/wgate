@@ -48,6 +48,9 @@ mod testing {
             id,
             network,
             ip: ip(addr),
+            public_key: format!("key{id}"),
+            // A global admin's device: may join any network.
+            owner_tenant: None,
             routed: routed
                 .iter()
                 .enumerate()

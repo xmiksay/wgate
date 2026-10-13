@@ -37,6 +37,40 @@ CREATE TABLE network (
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
 
+-- A network lies inside one block of its tenant, and a block keeps its networks: a
+-- network outside its blocks would hold its range (EXCLUDE above) while compile
+-- refuses it, losing the range for everyone. The block row is locked, so a network
+-- insert and a block removal running at the same time serialize.
+CREATE FUNCTION network_in_block() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM 1 FROM tenant_block
+        WHERE tenant_id = NEW.tenant_id AND cidr >>= NEW.cidr FOR SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'network % lies outside the blocks of tenant %', NEW.cidr, NEW.tenant_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER network_in_block BEFORE INSERT OR UPDATE OF tenant_id, cidr ON network
+    FOR EACH ROW EXECUTE FUNCTION network_in_block();
+
+CREATE FUNCTION block_keeps_networks() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        SELECT FROM network n
+        WHERE n.tenant_id = OLD.tenant_id AND OLD.cidr >>= n.cidr
+          AND (TG_OP = 'DELETE' OR NOT NEW.cidr >>= n.cidr OR NEW.tenant_id <> n.tenant_id)
+    ) THEN
+        RAISE EXCEPTION 'block % still holds networks', OLD.cidr
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    RETURN coalesce(NEW, OLD);
+END
+$$;
+CREATE TRIGGER block_keeps_networks BEFORE DELETE OR UPDATE OF tenant_id, cidr ON tenant_block
+    FOR EACH ROW EXECUTE FUNCTION block_keeps_networks();
+
 -- tenant_id NULL = the global admin's provider. Client secrets live in the config.
 -- Issuers may repeat: tenants can share an IdP (Google, one Keycloak realm), since a
 -- login first picks the tenant and matches users within it.
@@ -79,9 +113,12 @@ CREATE TABLE peer (
     created_at timestamptz NOT NULL DEFAULT now(),
     revoked_at timestamptz
 );
--- An address and a key are free again once their peer is revoked.
+-- An address and a key are free again once their peer is revoked; a device is a
+-- member of a network at most once.
 CREATE UNIQUE INDEX peer_ip_active ON peer (ip) WHERE revoked_at IS NULL;
 CREATE UNIQUE INDEX peer_key_active ON peer (public_key) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX peer_membership_active ON peer (device_id, network_id)
+    WHERE revoked_at IS NULL;
 
 -- A router's LAN.
 CREATE TABLE peer_route (
@@ -97,6 +134,11 @@ CREATE TABLE peer_route (
 -- conflict with the revoke's row lock): whichever commits second sees the other.
 CREATE FUNCTION free_revoked_routes() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    -- Under a snapshot isolation level this DELETE would not see a route committed
+    -- while the revocation waited for the peer's row lock.
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'revoke peers at READ COMMITTED';
+    END IF;
     DELETE FROM peer_route WHERE peer_id = NEW.id;
     RETURN NEW;
 END

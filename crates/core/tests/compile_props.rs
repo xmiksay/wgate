@@ -106,6 +106,8 @@ fn state() -> impl Strategy<Value = DesiredState> {
                     id: id as i64,
                     network,
                     ip: Ipv4Addr::new(10, 50, network as u8, host),
+                    public_key: format!("key{id}"),
+                    owner_tenant: Some(tenant_of(network)),
                     routed: lan
                         .map(|l| match l {
                             4 => Ipv4Net::new(Ipv4Addr::new(8, 8, 8, 0), 24),

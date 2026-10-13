@@ -156,8 +156,7 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         .into_iter()
         .filter_map(|d| Some((d.id, *users.get(&d.user_id)?)))
         .collect();
-    let network_tenant: HashMap<i64, i64> =
-        state_networks.iter().map(|n| (n.id, n.tenant)).collect();
+    let active_networks: HashSet<i64> = state_networks.iter().map(|n| n.id).collect();
     let mut routes: HashMap<i64, Vec<Claim>> = HashMap::new();
     for r in peer_route::Entity::find().all(db).await? {
         match v4(r.cidr) {
@@ -175,22 +174,20 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         .await?
     {
         // Inactive owner or network: no access, nothing to report.
-        let (Some(owner), Some(net_tenant)) =
-            (devices.get(&p.device_id), network_tenant.get(&p.network_id))
-        else {
+        let (Some(owner), true) = (
+            devices.get(&p.device_id),
+            active_networks.contains(&p.network_id),
+        ) else {
             continue;
         };
-        // Defense in depth: only a global admin's device may join another tenant's
-        // network; anything else would be cross-tenant access without federation.
-        if owner.is_some_and(|t| t != *net_tenant) {
-            warn("peer", p.id, "its device belongs to another tenant".into());
-            continue;
-        }
+
         match v4(p.ip) {
             Some(ip) => peers.push(Peer {
                 id: p.id,
                 network: p.network_id,
                 ip: ip.addr(),
+                public_key: p.public_key,
+                owner_tenant: *owner,
                 routed: routes.remove(&p.id).unwrap_or_default(),
             }),
             None => warn("peer", p.id, "not IPv4".into()),

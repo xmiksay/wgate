@@ -7,10 +7,9 @@ export CARGO_BUILD_JOBS
 # Load nvm (if installed) and select web/.nvmrc.
 NVM = export NVM_DIR="$$HOME/.nvm"; [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh"; nvm use >/dev/null 2>&1 || true;
 MUSL = x86_64-unknown-linux-musl
-
-# Local settings (WGATE_DATABASE_URL, …); see .env.example.
--include .env
-export
+# Local settings (WGATE_DATABASE_URL, …; see .env.example), sourced by the shell so
+# `$` and `#` in values survive.
+DOTENV = set -a; [ -f .env ] && . ./.env; set +a;
 
 .PHONY: help
 help: ## Show this help
@@ -35,7 +34,7 @@ run-server: web ## Run the portal (WGATE_CONFIG or /etc/wgate/server.toml)
 
 .PHONY: migrate
 migrate: ## Apply database migrations (WGATE_DATABASE_URL, see .env.example)
-	cargo run -p wgate -- migrate
+	$(DOTENV) cargo run -p wgate -- migrate
 
 .PHONY: run-agent
 run-agent: ## Run the agent as root (needs CAP_NET_ADMIN)
@@ -60,8 +59,9 @@ test-unit: ## Rust unit tests
 	cargo test --workspace --lib --bins
 
 .PHONY: test-int
-test-int: ## Rust integration tests (tests/, netns ones are #[ignore]d)
-	cargo test --workspace --test '*'
+# Each db test starts its own Postgres container; 4 threads cap them at 4 at once.
+test-int: ## Rust integration tests (tests/; netns ones are #[ignore]d; db ones need Docker)
+	cargo test --workspace --test '*' -- --test-threads=4
 
 .PHONY: golden
 golden: ## Rewrite core golden files from the current output (review the diff!)

@@ -73,6 +73,11 @@ pub struct Peer {
     pub id: Id,
     pub network: Id,
     pub ip: Ipv4Addr,
+    /// Its WireGuard public key, passed through to the agent.
+    pub public_key: String,
+    /// The tenant of the device's owner; `None` for a global admin, who may join any
+    /// network.
+    pub owner_tenant: Option<Id>,
     /// LANs routed behind this peer (a router).
     pub routed: Vec<Claim>,
 }
@@ -97,6 +102,7 @@ pub struct Federation {
 pub struct CompiledPeer {
     pub id: Id,
     pub ip: Ipv4Addr,
+    pub public_key: String,
     /// The interface its packets must arrive on.
     pub iface: String,
     /// `ip/32` plus routed subnets: the hub-side `AllowedIPs`.
@@ -118,6 +124,9 @@ pub enum Problem {
     /// Not a peer address of its network (outside it, the hub address, network or
     /// broadcast).
     InvalidIp,
+    /// Its device belongs to another tenant's user: that would be cross-tenant access
+    /// without a federation.
+    ForeignDevice,
     /// Its address (a peer) or range (a route) is held by an older claim, or a
     /// route overlaps another route of the same peer.
     Overlap,
@@ -236,6 +245,7 @@ pub fn compile(state: &DesiredState) -> Compiled {
             peers.push(CompiledPeer {
                 id: v.peer.id,
                 ip: v.peer.ip,
+                public_key: v.peer.public_key.clone(),
                 iface: n.net.slug.iface(),
                 outbound: outbound.difference(&own),
                 inbound: inbound.difference(&own),

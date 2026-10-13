@@ -132,6 +132,9 @@ pub(super) fn peers<'a>(
         let problem = match networks.get(&p.network) {
             None if invalid.contains(&p.network) => Some(Problem::InvalidNetwork),
             None => Some(Problem::UnknownNetwork),
+            Some(n) if p.owner_tenant.is_some_and(|t| t != n.net.tenant) => {
+                Some(Problem::ForeignDevice)
+            }
             Some(n) if !is_peer_ip(n.net.cidr, p.ip) => Some(Problem::InvalidIp),
             // Networks are disjoint, so a duplicate is always an older peer's address.
             Some(_) if !ips.insert(p.ip) => Some(Problem::Overlap),
