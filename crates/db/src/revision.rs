@@ -1,5 +1,6 @@
-//! The state revision. Triggers bump it and NOTIFY the agent on every statement that
-//! changes the desired state (see the migration), so writers need not remember to.
+//! The state revision. Triggers bump it and NOTIFY the agent once per transaction
+//! that changes the desired state, at its commit (see `m0001_state.sql`), so writers
+//! need not remember to; nothing else may change it.
 
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement};
 

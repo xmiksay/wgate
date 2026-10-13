@@ -215,7 +215,7 @@ async fn state_is_written_at_read_committed_and_never_truncated() {
 }
 
 #[tokio::test]
-async fn moving_a_rule_counts_and_presetting_the_marker_does_not_mute() {
+async fn moving_a_rule_counts() {
     let pg = pg("").await;
     ok(&pg.db, BASE).await;
     ok(
@@ -230,28 +230,24 @@ async fn moving_a_rule_counts_and_presetting_the_marker_does_not_mute() {
     let base = revision::current(&pg.db).await.expect("revision");
     ok(&pg.db, "UPDATE rule SET network_id = 2").await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
-    // A session-level preset of the once-per-transaction marker changes nothing.
-    ok(
-        &pg.db,
-        "SET wgate.state_changed = 'yes'; UPDATE network SET mesh = true WHERE id = 1",
-    )
-    .await;
-    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 2);
 }
 
 #[tokio::test]
-async fn the_once_per_transaction_marker_cannot_be_forged() {
+async fn nobody_can_mute_or_rewind_the_revision() {
     let pg = pg("").await;
     ok(&pg.db, BASE).await;
     let base = revision::current(&pg.db).await.expect("revision");
-    ok(
-        &pg.db,
-        "BEGIN;
-         SELECT set_config('wgate.state_changed', pg_current_xact_id()::text, true);
-         UPDATE network SET mesh = true;
-         COMMIT",
-    )
-    .await;
+    // Touching the counter first would mark the transaction as bumped (its xmin);
+    // not even the owner may.
+    let txn = pg.db.begin().await.expect("begin");
+    assert!(
+        txn.execute_unprepared("UPDATE state_revision SET revision = revision")
+            .await
+            .is_err()
+    );
+    txn.rollback().await.expect("rollback");
+    refused(&pg.db, "UPDATE state_revision SET revision = 0").await;
+    ok(&pg.db, "UPDATE network SET mesh = true").await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
     // Users and devices count only through their peers.
     ok(
@@ -261,4 +257,10 @@ async fn the_once_per_transaction_marker_cannot_be_forged() {
     .await;
     ok(&pg.db, "UPDATE app_user SET role = 'tenant_admin'").await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
+    // Writes that cannot bump may run at any isolation level.
+    ok(
+        &pg.db,
+        "BEGIN ISOLATION LEVEL SERIALIZABLE; UPDATE app_user SET email = 's@nexial.cz' WHERE id = 5; COMMIT",
+    )
+    .await;
 }

@@ -118,13 +118,16 @@ async fn rows_compile_to_the_rights_they_describe() {
 #[tokio::test]
 async fn the_snapshot_carries_its_revision() {
     let pg = pg("").await;
-    ok(&pg.db, "UPDATE state_revision SET revision = 41").await;
+    ok(&pg.db, SCENARIO).await;
+    ok(&pg.db, "UPDATE network SET mesh = true WHERE id = 1").await;
+    let current = wgate_db::revision::current(&pg.db).await.expect("revision");
+    assert!(current > 0);
     assert_eq!(
         desired_state(&pg.db, &infra())
             .await
             .expect("load")
             .revision,
-        41
+        current
     );
 }
 
