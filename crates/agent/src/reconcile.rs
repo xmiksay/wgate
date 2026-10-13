@@ -20,14 +20,16 @@ use crate::runner::Runner;
 use crate::wg::{self, PeerDiff};
 
 mod gone;
+mod holdings;
 mod network;
 mod steps;
 
 use gone::{remove_gone_links, unregister};
+use holdings::{Ledger, revoke_all};
 use network::{Around, free_ports, network};
 use steps::{
-    Link, SCRATCH, clear_stray, current_peers, current_routes, desired_peers, lans, link_exists,
-    links, nft, peer_diff, registered, removals, route_deletions, set_ranges,
+    Link, SCRATCH, clear_stray, current_routes, desired_peers, lans, link_exists, links, nft,
+    peer_diff, registered, set_ranges,
 };
 
 #[derive(Debug, Default)]
@@ -99,7 +101,7 @@ pub fn reconcile_after(
         Some(links) => remove_gone_links(r, c, links, &mut out.errors),
         _ => Default::default(),
     };
-    let stuck = gone.stuck;
+    let stuck = gone.stuck.clone();
 
     let mut owned = vec![];
     let mut new = vec![];
@@ -119,109 +121,28 @@ pub fn reconcile_after(
         .chain(new.iter().filter(|_| grow).map(|&n| (n, false)))
         .map(|(n, exists)| (n, exists, plan(r, c, n, exists)))
         .collect();
-    // What anyone loses, in every network, goes before any network's rules change or
-    // grow: an address or LAN moving between peers or networks is never held twice.
-    // What failed to be released stays held, and is nobody's this pass: no peer, no
-    // route and no right takes it. A network whose peers or routes cannot be read is
-    // left as it is this pass; what it may hold (its registered addresses, and what
-    // is compiled for it) no other network takes, but rights to it stay.
-    let mut held = gone.held;
-    let mut taken = vec![];
-    let mut blind = gone.blind;
-    // An invalid network keeps its interface as it is (see `remove_gone_links`): what it
-    // holds there, nobody else takes.
+    let mut ledger = Ledger::new(&gone, previously_held);
+    // An invalid network keeps its interface as it is (see `remove_gone_links`).
     for link in links.iter().flatten() {
         if link
             .owner
             .is_some_and(|id| c.invalid_networks.contains(&id))
         {
-            match (current_peers(r, &link.name), current_routes(r, &link.name)) {
-                (Ok(peers), Ok(routes)) => {
-                    taken.extend(peers.into_iter().flat_map(|p| p.allowed));
-                    taken.extend(routes);
-                }
-                _ => blind = true,
-            }
+            ledger.kept(r, link);
         }
     }
-    let mut unreadable: Vec<Id> = vec![];
-    // What a network whose peers or routes cannot be read may hold there (its
-    // compiled addresses, and what its rules last gave): nobody else takes it.
-    let mut may_hold = |n: &CompiledNetwork, taken: &mut Vec<Ipv4Net>| {
-        taken.extend(c.peers_of(n.id).flat_map(|p| p.addrs.clone()));
-        match registered_addresses(r, n.id) {
-            Ok(addrs) => taken.extend(addrs),
-            // What it may hold is unknown: nothing is known to be free.
-            Err(_) => blind = true,
-        }
-    };
-    let mut own_held = vec![];
-    for (n, _, plan) in &active {
-        match &plan.peers {
-            Ok(peers) => {
-                let (result, still) = removals(r, &n.iface, peers);
-                held.extend(still);
-                note(
-                    result.with_context(|| format!("{}: peers", n.iface)),
-                    &mut out.errors,
-                );
-            }
-            Err(e) => {
-                // Its peers cannot be revoked: its rules give none of them anything
-                // this pass (below), so a revocation holds anyway.
-                out.errors.push(format!("{}: peers: {e:#}", n.iface));
-                let before = taken.len();
-                may_hold(n, &mut taken);
-                own_held.extend_from_slice(&taken[before..]);
-                unreadable.push(n.id);
-            }
-        }
-        match &plan.routes {
-            Ok((_, del)) => {
-                let (result, still) = route_deletions(r, &n.iface, del);
-                held.extend(still);
-                note(
-                    result.with_context(|| format!("{}: routes", n.iface)),
-                    &mut out.errors,
-                );
-            }
-            // No route of its is added this pass (`network` adds only what it read).
-            Err(e) => {
-                out.errors.push(format!("{}: routes: {e:#}", n.iface));
-                if plan.peers.is_ok() {
-                    may_hold(n, &mut taken);
-                }
-            }
-        }
-    }
-    // An unreadable network may still hold what an earlier pass could not release (and
-    // so left out of its rules): that stays taken too.
-    if !unreadable.is_empty() {
-        taken.extend_from_slice(previously_held);
-    }
-    // With what something may hold unknown (an unreadable network whose last rules
-    // cannot be read either, a stuck interface whose leftovers cannot), nothing is
-    // known to be free: nothing grows.
-    let grow = grow && !blind;
+    let unreadable = revoke_all(r, c, &active, &mut ledger, &mut out.errors);
+    let grow = grow && ledger.grows();
     let (unread, active): (Vec<_>, Vec<_>) = active
         .into_iter()
         .filter(|(_, exists, _)| grow || *exists)
         .partition(|(n, _, _)| unreadable.contains(&n.id));
     // Whose peers could not be read: rules that give them nothing (with the guard
     // known; unknown, the kernel is left as it is).
-    if !unread.is_empty()
-        && let Some(unguarded) = &unguarded
-    {
-        let within = c.within_guard(&[unguarded.as_slice(), &held, &own_held].concat());
+    if let Some(unguarded) = unguarded.as_ref().filter(|_| !unread.is_empty()) {
+        let within = c.within_guard(&[unguarded.as_slice(), &ledger.cut_unread()].concat());
         for (n, _, _) in &unread {
-            if let Err(e) = nft(r, &render_network(&within, n)) {
-                out.errors.push(format!("{}: nft: {e:#}", n.iface));
-                let cut = nft(r, &render_network_cutoff(n.id));
-                note(
-                    cut.with_context(|| format!("{}: cutoff", n.iface)),
-                    &mut out.errors,
-                );
-            }
+            apply_or_cut(r, &within, n, &mut out.errors);
         }
     }
 
@@ -250,26 +171,17 @@ pub fn reconcile_after(
         // covers. With the guard unknown, the kernel is left as it is: the VPN keeps
         // running and revocations wait for a pass that can see.
         if let Some(unguarded) = unguarded {
-            let within = c.within_guard(&[unguarded.as_slice(), &held].concat());
+            let within = c.within_guard(&[unguarded.as_slice(), ledger.cut()].concat());
             for (n, _, _) in &active {
-                let result = nft(r, &render_network(&within, n));
-                if let Err(e) = result {
-                    out.errors.push(format!("{}: nft: {e:#}", n.iface));
-                    // Its old rules would keep what was revoked.
-                    let cut = nft(r, &render_network_cutoff(n.id));
-                    note(
-                        cut.with_context(|| format!("{}: cutoff", n.iface)),
-                        &mut out.errors,
-                    );
-                }
+                apply_or_cut(r, &within, n, &mut out.errors);
             }
         }
         warn_unknown(c, links.as_deref());
-        out.held = [held, taken].concat();
+        out.held = ledger.taken();
         return out;
     }
-    // Also the ports of gone interfaces that would not go.
-    // An invalid network's kept interface gives up a wanted port too.
+    // Also the ports of gone interfaces that would not go, and of invalid networks'
+    // kept interfaces.
     let invalid_links = links
         .iter()
         .flatten()
@@ -283,14 +195,13 @@ pub fn reconcile_after(
         .collect();
     free_ports(r, c, &holders, &mut out.errors);
 
-    // Growth waits for both; rights leave out only what failed to be released.
-    let waits = [held.as_slice(), &taken].concat();
-    let rules = c.within_guard(&held);
+    let taken = ledger.taken();
+    let rules = c.within_guard(ledger.cut());
+    let around = Around {
+        held: &taken,
+        entries: &entries,
+    };
     for (n, exists, plan) in active {
-        let around = Around {
-            held: &waits,
-            entries: &entries,
-        };
         let (key, errors) = network(r, &rules, n, keys, exists, plan, &around);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
@@ -300,8 +211,18 @@ pub fn reconcile_after(
     }
 
     warn_unknown(c, links.as_deref());
-    out.held = waits;
+    out.held = taken;
     out
+}
+
+/// A network's rules; when they will not go in, the network is cut off: its old rules
+/// would keep what was revoked.
+fn apply_or_cut(r: &dyn Runner, c: &Compiled, n: &CompiledNetwork, errors: &mut Vec<String>) {
+    if let Err(e) = nft(r, &render_network(c, n)) {
+        errors.push(format!("{}: nft: {e:#}", n.iface));
+        let cut = nft(r, &render_network_cutoff(n.id));
+        note(cut.with_context(|| format!("{}: cutoff", n.iface)), errors);
+    }
 }
 
 /// `wg-*` interfaces that are neither wgate's nor a compiled network's name: their
@@ -314,12 +235,6 @@ fn warn_unknown(c: &Compiled, links: Option<&[Link]>) {
             tracing::warn!(link = %link.name, "unknown wg- interface left alone");
         }
     }
-}
-
-/// The addresses network `id`'s rules last gave (its `n<id>_peers` set): what its
-/// interface may still hold when it cannot be read.
-fn registered_addresses(r: &dyn Runner, id: Id) -> anyhow::Result<Vec<Ipv4Net>> {
-    set_ranges(r, &format!("n{id}_peers"))
 }
 
 /// What of the compiled tenant space the kernel's `tenant_space` (the spoof guard's)
