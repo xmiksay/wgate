@@ -7,7 +7,7 @@ mod common;
 use std::net::Ipv4Addr;
 
 use common::Netns;
-use wgate_core::{NftState, render_nft};
+use wgate_core::{Compiled, NftState, render_nft};
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
 /// with concatenated interval keys (design.md → Risks).
@@ -51,8 +51,7 @@ fn rendered_ruleset_loads_and_replaces() {
     let empty = render_nft(&NftState {
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![],
-        tenant_space: vec![],
-        peers: vec![],
+        compiled: Compiled::default(),
     });
     ns.exec(&["nft", "-f", "-"], Some(&empty));
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);

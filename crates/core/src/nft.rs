@@ -5,8 +5,8 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::compile::CompiledPeer;
-use crate::rights::{AddrRange, RuleSet, merge_nets, subtract_nets};
+use crate::compile::{Compiled, CompiledPeer};
+use crate::rights::{AddrRange, RuleSet, subtract_nets};
 use crate::rule::Service;
 
 #[derive(Clone, Debug)]
@@ -15,10 +15,11 @@ pub struct NftState {
     pub snat_source: Ipv4Addr,
     /// Networks whose hosts have no route back to tenant space.
     pub node_cidrs: Vec<Ipv4Net>,
-    /// [`crate::Compiled::tenant_space`]: the pool plus every declared routed LAN.
-    pub tenant_space: Vec<Ipv4Net>,
-    /// From [`crate::compile`]; a missing peer has no access.
-    pub peers: Vec<CompiledPeer>,
+    /// One [`crate::compile`] run: its peers (a missing peer has no access) and
+    /// tenant space belong together, and its peers' addresses are disjoint, which
+    /// nft requires (it rejects overlapping elements, and with them the whole
+    /// transaction).
+    pub compiled: Compiled,
 }
 
 /// Set elements, keyed `peer . addr . proto . port` (outbound) and
@@ -87,20 +88,17 @@ fn push(quads: &mut Vec<String>, pairs: &mut Vec<String>, service: Service, [s, 
 /// A complete `nft -f` script. It creates the table if missing, then deletes and
 /// redefines it, so applying it is one atomic transaction that replaces the whole
 /// table whether or not it existed.
-///
-/// Peers must come from [`crate::compile`], which guarantees disjoint addresses; nft
-/// rejects overlapping elements and with them the whole transaction.
 pub fn render_nft(state: &NftState) -> String {
-    let mut peers: Vec<&CompiledPeer> = state.peers.iter().collect();
+    let mut peers: Vec<&CompiledPeer> = state.compiled.peers.iter().collect();
     peers.sort_by_key(|p| p.ip);
     let mut sets = Sets::default();
     for p in peers {
         sets.add(p);
     }
-    let tenant_space = merge_nets(&state.tenant_space);
+    let tenant_space = &state.compiled.tenant_space;
 
     // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
-    let node_cidrs = subtract_nets(&state.node_cidrs, &tenant_space);
+    let node_cidrs = subtract_nets(&state.node_cidrs, tenant_space);
     let snat = if node_cidrs.is_empty() {
         String::new()
     } else {
@@ -113,7 +111,7 @@ pub fn render_nft(state: &NftState) -> String {
     };
     let quad = "ipv4_addr . ipv4_addr . inet_proto . inet_service";
     let pair = "ipv4_addr . ipv4_addr";
-    let tenant_space: Vec<String> = tenant_space.into_iter().map(range).collect();
+    let tenant_space: Vec<String> = tenant_space.iter().copied().map(range).collect();
     let sets = [
         set("tenant_space", "ipv4_addr", &tenant_space),
         set("ingress", "ifname . ipv4_addr", &sets.ingress),
