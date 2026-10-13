@@ -15,7 +15,6 @@ use wgate_core::{
 };
 
 use crate::keys::Keys;
-use crate::nftmap;
 use crate::routes;
 use crate::runner::Runner;
 use crate::wg::{self, PeerDiff};
@@ -28,7 +27,7 @@ use gone::{remove_gone_links, unregister};
 use network::{free_ports, network};
 use steps::{
     Link, SCRATCH, current_routes, desired_peers, lans, link_exists, links, nft, peer_diff,
-    registered, removals, route_deletions,
+    registered, removals, route_deletions, set_ranges,
 };
 
 #[derive(Debug, Default)]
@@ -99,6 +98,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // is compiled for it) no other network takes, but rights to it stay.
     let mut held = gone.held;
     let mut taken = vec![];
+    let mut blind = gone.blind;
     let mut unreadable: Vec<Id> = vec![];
     for (n, _, plan) in &active {
         let (Ok(peers), Ok((_, del))) = (&plan.peers, &plan.routes) else {
@@ -110,7 +110,11 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
                     .push(format!("{}: left as it is: {e:#}", n.iface));
             }
             taken.extend(c.peers_of(n.id).flat_map(|p| p.addrs.clone()));
-            taken.extend(registered_addresses(r, n.id));
+            match registered_addresses(r, n.id) {
+                Ok(addrs) => taken.extend(addrs),
+                // What it may hold is unknown: nothing is known to be free.
+                Err(_) => blind = true,
+            }
             unreadable.push(n.id);
             continue;
         };
@@ -127,9 +131,13 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
             &mut out.errors,
         );
     }
+    // With what something may hold unknown (an unreadable network whose last rules
+    // cannot be read either, a stuck interface whose leftovers cannot), nothing is
+    // known to be free: nothing grows.
+    let grow = grow && !blind;
     let active: Vec<_> = active
         .into_iter()
-        .filter(|(n, _, _)| !unreadable.contains(&n.id))
+        .filter(|(n, exists, _)| !unreadable.contains(&n.id) && (grow || *exists))
         .collect();
 
     // A registration stays only for a network compiled on that interface whose own
@@ -219,23 +227,16 @@ fn warn_unknown(c: &Compiled, links: Option<&[Link]>) {
 
 /// The addresses network `id`'s rules last gave (its `n<id>_peers` set): what its
 /// interface may still hold when it cannot be read.
-fn registered_addresses(r: &dyn Runner, id: Id) -> Vec<Ipv4Net> {
-    let set = format!("n{id}_peers");
-    r.run(&["nft", "-j", "list", "set", "inet", "wgate", &set], None)
-        .and_then(|json| nftmap::parse_ranges(&json))
-        .unwrap_or_default()
+fn registered_addresses(r: &dyn Runner, id: Id) -> anyhow::Result<Vec<Ipv4Net>> {
+    set_ranges(r, &format!("n{id}_peers"))
 }
 
 /// What of the compiled tenant space the kernel's `tenant_space` (the spoof guard's)
 /// leaves out; `None` when it cannot be read.
 fn unguarded_space(r: &dyn Runner, c: &Compiled) -> Option<Vec<Ipv4Net>> {
-    r.run(
-        &["nft", "-j", "list", "set", "inet", "wgate", "tenant_space"],
-        None,
-    )
-    .and_then(|json| nftmap::parse_ranges(&json))
-    .ok()
-    .map(|kernel| subtract_nets(&c.tenant_space, &kernel))
+    set_ranges(r, "tenant_space")
+        .ok()
+        .map(|kernel| subtract_nets(&c.tenant_space, &kernel))
 }
 
 /// What a compiled network's interface is to the agent.

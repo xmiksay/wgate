@@ -57,18 +57,53 @@ pub(super) fn additions(
     d: &PeerDiff,
     held: &[Ipv4Net],
 ) -> anyhow::Result<()> {
-    let (free, waiting): (Vec<_>, Vec<_>) = d.set.iter().partition(|p| !touches(&p.allowed, held));
-    let commands: Vec<_> = free.iter().map(|p| allowed_ips(&n.iface, p)).collect();
-    let added = all(r, commands);
+    unless_held(
+        r,
+        &d.set,
+        held,
+        |p| &p.allowed,
+        |p| p.public_key.clone(),
+        |p| allowed_ips(&n.iface, p),
+        "addresses",
+    )
+}
+
+/// LAN routes, but none for a LAN still routed elsewhere.
+pub(super) fn route_additions(
+    r: &dyn Runner,
+    n: &CompiledNetwork,
+    lans: &[Ipv4Net],
+    held: &[Ipv4Net],
+) -> anyhow::Result<()> {
+    unless_held(
+        r,
+        lans,
+        held,
+        std::slice::from_ref,
+        ToString::to_string,
+        |lan| route("add", lan, &n.iface),
+        "routes",
+    )
+}
+
+/// Runs the command of each item that touches nothing `held`; the others wait, named.
+fn unless_held<T>(
+    r: &dyn Runner,
+    items: &[T],
+    held: &[Ipv4Net],
+    nets: impl Fn(&T) -> &[Ipv4Net],
+    name: impl Fn(&T) -> String,
+    command: impl Fn(&T) -> Vec<String>,
+    what: &str,
+) -> anyhow::Result<()> {
+    let (free, waiting): (Vec<&T>, Vec<&T>) = items.iter().partition(|i| !touches(nets(i), held));
+    let done = all(r, free.into_iter().map(command).collect());
     if waiting.is_empty() {
-        return added;
+        return done;
     }
-    let keys: Vec<&str> = waiting.iter().map(|p| p.public_key.as_str()).collect();
-    let waits = format!(
-        "{} wait for addresses still held elsewhere",
-        keys.join(", ")
-    );
-    Err(match added {
+    let names: Vec<String> = waiting.into_iter().map(name).collect();
+    let waits = format!("{} wait for {what} still held elsewhere", names.join(", "));
+    Err(match done {
         Ok(()) => anyhow::anyhow!(waits),
         Err(e) => e.context(waits),
     })
@@ -138,17 +173,6 @@ pub(super) fn lans(c: &Compiled, n: &CompiledNetwork) -> Vec<Ipv4Net> {
                 .copied()
         })
         .collect()
-}
-
-/// `add`, not `replace`: a route someone else owns is reported, never taken over.
-pub(super) fn route_commands(
-    r: &dyn Runner,
-    n: &CompiledNetwork,
-    verb: &str,
-    lans: &[Ipv4Net],
-) -> anyhow::Result<()> {
-    let commands: Vec<_> = lans.iter().map(|lan| route(verb, lan, &n.iface)).collect();
-    all(r, commands)
 }
 
 /// `ip route <verb> <lan> dev <iface> proto 150`.
@@ -268,21 +292,33 @@ pub(super) fn link_exists(r: &dyn Runner, iface: &str) -> bool {
 
 /// Takes everything a gone network's interface carries away (peers, addresses, LAN
 /// routes) when the interface itself would not go.
-/// Returns, besides the outcome, what it still holds.
-pub(super) fn disarm(r: &dyn Runner, iface: &str) -> (anyhow::Result<()>, Vec<Ipv4Net>) {
+/// Returns, besides the outcome, what it still holds, and whether that could not even
+/// be read.
+pub(super) fn disarm(r: &dyn Runner, iface: &str) -> (anyhow::Result<()>, Vec<Ipv4Net>, bool) {
     let mut held = vec![];
-    let peers = current_peers(r, iface).and_then(|current| {
-        let (result, still) = removals(r, iface, &wg::diff(&current, &[]));
-        held.extend(still);
-        result
-    });
-    let routes = current_routes(r, iface).and_then(|current| {
-        let (result, still) = route_deletions(r, iface, &current);
-        held.extend(still);
-        result
-    });
+    let mut blind = false;
+    let peers = current_peers(r, iface)
+        .inspect_err(|_| blind = true)
+        .and_then(|current| {
+            let (result, still) = removals(r, iface, &wg::diff(&current, &[]));
+            held.extend(still);
+            result
+        });
+    let routes = current_routes(r, iface)
+        .inspect_err(|_| blind = true)
+        .and_then(|current| {
+            let (result, still) = route_deletions(r, iface, &current);
+            held.extend(still);
+            result
+        });
     let addresses = run(r, &["ip", "addr", "flush", "dev", iface]);
-    (peers.and(routes).and(addresses), held)
+    (peers.and(routes).and(addresses), held, blind)
+}
+
+/// The addresses in an interval set of `table inet wgate`.
+pub(super) fn set_ranges(r: &dyn Runner, set: &str) -> anyhow::Result<Vec<Ipv4Net>> {
+    let json = r.run(&["nft", "-j", "list", "set", "inet", "wgate", set], None)?;
+    crate::nftmap::parse_ranges(&json)
 }
 
 /// The LAN routes (wgate's protocol) via an interface.

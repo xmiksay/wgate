@@ -7,7 +7,8 @@ use anyhow::Context;
 use ipnet::Ipv4Net;
 use wgate_core::{Compiled, CompiledNetwork, PORT_RANGE, render_network, render_network_cutoff};
 
-use super::steps::{SCRATCH, additions, nft, owner_mark, route_commands, run, touches};
+use super::gone::unregister;
+use super::steps::{SCRATCH, additions, nft, owner_mark, route_additions, run};
 use super::{Plan, note};
 use crate::keys::Keys;
 use crate::runner::Runner;
@@ -30,11 +31,16 @@ pub(super) fn network(
     // Before the interface: one that is never keyed must not be left behind.
     let key = hub_key(r, keys, n, exists);
     if !exists {
-        if let Err(e) = &key {
-            return (None, vec![format!("hub key: {e:#}")]);
-        }
-        if let Err(e) = create(r, n) {
-            return (None, vec![format!("create: {e:#}")]);
+        let made = key
+            .as_ref()
+            .map(drop)
+            .map_err(|e| anyhow::anyhow!("hub key: {e:#}"))
+            .and_then(|()| create(r, n).context("create"));
+        if let Err(e) = made {
+            // Not made: a registration left from before must not stay on the name.
+            let mut errors = vec![format!("{e:#}")];
+            unregister(r, &n.iface, n.id, &mut errors);
+            return (None, errors);
         }
     }
     let mut errors = Vec::new();
@@ -65,20 +71,7 @@ pub(super) fn network(
         }
         // A failed read was reported with the deletions.
         if let Ok((add, _)) = plan.routes {
-            // A LAN still routed elsewhere waits for that route to go.
-            let (free, waiting): (Vec<_>, Vec<_>) =
-                add.iter().partition(|lan| !touches(&[**lan], held));
-            let added = route_commands(r, n, "add", &free);
-            let result = if waiting.is_empty() {
-                added
-            } else {
-                let waiting: Vec<String> = waiting.iter().map(ToString::to_string).collect();
-                added.and(Err(anyhow::anyhow!(
-                    "{} wait for routes still held elsewhere",
-                    waiting.join(", ")
-                )))
-            };
-            step("routes", result);
+            step("routes", route_additions(r, n, &add, held));
         }
     } else {
         // Growing on stale rules would hand a new holder its predecessor's rights,
