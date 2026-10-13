@@ -10,8 +10,7 @@ use std::path::Path;
 use anyhow::Context;
 use ipnet::Ipv4Net;
 use wgate_core::{
-    Compiled, CompiledNetwork, Id, render_base, render_network, render_network_cutoff, render_snat,
-    subtract_nets,
+    Compiled, CompiledNetwork, Id, render_base, render_network, render_snat, subtract_nets,
 };
 
 use crate::keys::Keys;
@@ -94,45 +93,45 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // What anyone loses, in every network, goes before any network's rules change or
     // grow: an address or LAN moving between peers or networks is never held twice.
     // What failed to be released stays held, and is nobody's this pass: no peer, no
-    // route and no right takes it.
+    // route and no right takes it. A network whose peers or routes cannot be read is
+    // left as it is this pass, and everything compiled for it is held.
     let mut held = gone.held;
+    let mut unreadable: Vec<Id> = vec![];
     for (n, _, plan) in &active {
-        let (result, still) = match &plan.peers {
-            Ok(d) => removals(r, &n.iface, d),
-            // Who holds what on it is unknown: all its peers' addresses are.
-            Err(e) => (
-                Err(anyhow::anyhow!("{e:#}")),
-                c.peers_of(n.id).flat_map(|p| p.addrs.clone()).collect(),
-            ),
+        let (Ok(peers), Ok((_, del))) = (&plan.peers, &plan.routes) else {
+            for e in [plan.peers.as_ref().err(), plan.routes.as_ref().err()]
+                .into_iter()
+                .flatten()
+            {
+                out.errors
+                    .push(format!("{}: left as it is: {e:#}", n.iface));
+            }
+            held.extend(c.peers_of(n.id).flat_map(|p| p.addrs.clone()));
+            unreadable.push(n.id);
+            continue;
         };
+        let (result, still) = removals(r, &n.iface, peers);
         held.extend(still);
         note(
             result.with_context(|| format!("{}: peers", n.iface)),
             &mut out.errors,
         );
-        let (result, still) = match &plan.routes {
-            Ok((_, del)) => route_deletions(r, &n.iface, del),
-            Err(e) => (Err(anyhow::anyhow!("{e:#}")), vec![]),
-        };
+        let (result, still) = route_deletions(r, &n.iface, del);
         held.extend(still);
         note(
             result.with_context(|| format!("{}: routes", n.iface)),
             &mut out.errors,
         );
     }
+    let active: Vec<_> = active
+        .into_iter()
+        .filter(|(n, _, _)| !unreadable.contains(&n.id))
+        .collect();
 
-    // With some network's peers or routes unknown, or what a stuck interface keeps,
-    // nothing is known to be free.
-    let grow = grow
-        && !gone.blind
-        && active
-            .iter()
-            .all(|(_, _, plan)| plan.peers.is_ok() && plan.routes.is_ok());
     // A registration stays only for a network compiled on that interface whose own
-    // interface is there or about to be made (or that cannot be told, without the
-    // links): otherwise nothing on that name keeps its rights.
-    // A deleted interface's own pair too: its chains may have outlived its
-    // registration (never a scratch one's: it was never registered).
+    // interface is there, about to be made, or cannot be told: otherwise nothing on
+    // that name keeps its rights. A deleted interface's own pair too: its chains may
+    // have outlived its registration (never a scratch one's: it was never registered).
     let extra = gone
         .deleted
         .iter()
@@ -150,35 +149,18 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     }
 
     if !grow {
-        // Rights revoked in a fragment still apply, cut down to what the guard covers;
-        // with the guard unknown, every network is cut off. A network whose link could
-        // not be read holds all its peers' addresses: who holds what on it is unknown.
-        let blind: Vec<Ipv4Net> = unknown
-            .iter()
-            .flat_map(|n| c.peers_of(n.id).flat_map(|p| p.addrs.clone()))
-            .collect();
-        let within = unguarded.map(|unguarded| c.within_guard(&[unguarded, held, blind].concat()));
-        let existing = active
-            .iter()
-            .filter(|(_, exists, _)| *exists)
-            .map(|(n, _, _)| *n);
-        // Without the links, only what is already registered is refreshed: who holds
-        // a name not registered yet is unknown.
-        let registered_unknown = unknown.iter().copied().filter(|n| {
-            registered
-                .iter()
-                .any(|(i, id)| *i == n.iface && *id == n.id)
-        });
-        for n in existing.chain(registered_unknown) {
-            let script = match &within {
-                Some(within) => render_network(within, n),
-                None => render_network_cutoff(n.id),
-            };
-            let result = nft(r, &script);
-            note(
-                result.with_context(|| format!("{}: nft", n.iface)),
-                &mut out.errors,
-            );
+        // Rights revoked in a fragment still apply, cut down to what the stale guard
+        // covers. With the guard unknown, the kernel is left as it is: the VPN keeps
+        // running and revocations wait for a pass that can see.
+        if let Some(unguarded) = unguarded {
+            let within = c.within_guard(&[unguarded, held].concat());
+            for (n, _, _) in active.iter().filter(|(_, exists, _)| *exists) {
+                let result = nft(r, &render_network(&within, n));
+                note(
+                    result.with_context(|| format!("{}: nft", n.iface)),
+                    &mut out.errors,
+                );
+            }
         }
         warn_unknown(c, links.as_deref());
         return out;

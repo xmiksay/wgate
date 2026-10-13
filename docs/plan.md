@@ -117,9 +117,8 @@ under sudo).
      (links and registry), nothing grows (nothing made, no peer added), but peer and
      route revocations apply, and then the fragments, cut down to what the stale
      guard covers and to what is not held (`Compiled::within_guard`); with the
-     guard unknown, every network is cut off (its chains end in `drop`). Unreadable
-     peers or LAN routes in any network, or the leftovers of a stuck gone interface,
-     also stop growth: nothing is known to be free
+     guard unknown, the kernel is left as it is (the VPN keeps running; revocations
+     in the rules wait for a pass that can see)
   3. what is gone. An interface is wgate's when its alias carries the mark
      `wgate:n<id>` (set at creation; survives a flushed table and a lost key file).
      A marked interface whose network is not compiled under that name, or an
@@ -129,17 +128,17 @@ under sudo).
      interface is there or about to be made; any other is removed (idempotently;
      one that still fails has its chains cut off to `drop`), so nothing on that
      name keeps a network's rights. The list of links falls back to
-     every link's details (`ip -j -d link show`); without either, nothing is made,
-     deleted or added, and every network's rules go in without its peers' addresses
-     (failing closed)
+     every link's details (`ip -j -d link show`); without either, the kernel is left
+     as it is, apart from unregistering networks no longer compiled
   4. ports another network wants are freed (parked on the first free spare port,
      51900–51999, outside `PORT_RANGE`). A name held by an unmarked interface, or by a link that is not
      WireGuard, is refused. Then, for **every** network: peer removals and
      narrowings (diffed against `wg show <if> allowed-ips`, never `dump`: it carries
      private and preshared keys) and stale LAN route deletions — before any network
      grows, so nothing is held twice while it moves; what a failed command could not
-     release (and every peer address of a network whose peers cannot be read) stays
-     held: no peer, route or right anywhere takes it this pass
+     release stays held: no peer, route or right anywhere takes it this pass. A
+     network whose peers or routes cannot be read is left as it is, and everything
+     compiled for it is held; the other networks go on
   5. **network by network**, every step attempted: the hub key `n<id>.key` in
      `keys_dir` first (issued only to an interface without a key, never deleted; a
      damaged or missing one for a keyed interface is an error, never a rotation; its

@@ -268,27 +268,21 @@ pub(super) fn link_exists(r: &dyn Runner, iface: &str) -> bool {
 
 /// Takes everything a gone network's interface carries away (peers, addresses, LAN
 /// routes) when the interface itself would not go.
-/// Returns, besides the outcome, what it still holds, and whether that could not even
-/// be read (peers, routes or addresses left in an unknown state).
-pub(super) fn disarm(r: &dyn Runner, iface: &str) -> (anyhow::Result<()>, Vec<Ipv4Net>, bool) {
+/// Returns, besides the outcome, what it still holds.
+pub(super) fn disarm(r: &dyn Runner, iface: &str) -> (anyhow::Result<()>, Vec<Ipv4Net>) {
     let mut held = vec![];
-    let mut blind = false;
-    let peers = current_peers(r, iface)
-        .inspect_err(|_| blind = true)
-        .and_then(|current| {
-            let (result, still) = removals(r, iface, &wg::diff(&current, &[]));
-            held.extend(still);
-            result
-        });
-    let routes = current_routes(r, iface)
-        .inspect_err(|_| blind = true)
-        .and_then(|current| {
-            let (result, still) = route_deletions(r, iface, &current);
-            held.extend(still);
-            result
-        });
-    let addresses = run(r, &["ip", "addr", "flush", "dev", iface]).inspect_err(|_| blind = true);
-    (peers.and(routes).and(addresses), held, blind)
+    let peers = current_peers(r, iface).and_then(|current| {
+        let (result, still) = removals(r, iface, &wg::diff(&current, &[]));
+        held.extend(still);
+        result
+    });
+    let routes = current_routes(r, iface).and_then(|current| {
+        let (result, still) = route_deletions(r, iface, &current);
+        held.extend(still);
+        result
+    });
+    let addresses = run(r, &["ip", "addr", "flush", "dev", iface]);
+    (peers.and(routes).and(addresses), held)
 }
 
 /// The LAN routes (wgate's protocol) via an interface.

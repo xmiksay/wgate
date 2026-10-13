@@ -1,5 +1,5 @@
-//! When a network's rules cannot be brought up to date, it is cut off rather than
-//! left on its old rights.
+//! A network whose rules fail to apply is cut off rather than left on its old
+//! rights; when the agent cannot see (no links, no guard), the kernel is left as it is.
 
 use super::*;
 
@@ -35,13 +35,20 @@ fn a_fragment_that_fails_cuts_its_network_off() {
 }
 
 #[test]
-fn with_the_guard_unknown_every_network_is_cut_off() {
+fn with_the_guard_unknown_the_kernel_is_left_as_it_is() {
     let dir = keys();
     // The base fails and its tenant space cannot be read.
-    let fake = owned_n1().fail_input("add set inet wgate tenant_space");
+    let fake = owned_n1()
+        .fail_input("add set inet wgate tenant_space")
+        .answer(
+            "wg show wg-n1 allowed-ips",
+            &format!("{K2}\t10.50.0.3/32\n"),
+        );
     reconcile(&fake, &compiled(), dir.path());
-    assert_eq!(cutoffs(&fake, 1), 1);
+    assert_eq!(cutoffs(&fake, 1), 0);
     assert!(fake.fragments_of(1).is_empty());
+    // Peer revocations need no guard.
+    position(&fake.log(), &format!("wg set wg-n1 peer {K2} remove"));
 }
 
 #[test]
@@ -99,12 +106,12 @@ fn the_list_of_links_falls_back_to_every_links_details() {
 }
 
 #[test]
-fn without_any_list_of_links_every_network_fails_closed() {
+fn without_any_list_of_links_the_kernel_is_left_as_it_is() {
     let dir = keys();
     let fake = Fake::default()
         .fail("ip -j link show type wireguard")
         .fail("ip -j -d link show")
-        .answer("nft -j list map", &registry(&[("wg-n1", 1)]));
+        .answer("nft -j list map", &registry(&[("wg-n1", 1), ("wg-old", 9)]));
     let out = reconcile(&fake, &compiled(), dir.path());
     assert!(
         out.errors.iter().any(|e| e.starts_with("inventory: ")),
@@ -112,35 +119,39 @@ fn without_any_list_of_links_every_network_fails_closed() {
         out.errors
     );
     let log = fake.log();
-    // Nothing is touched on an interface whose mark is unknown; registered networks'
-    // rules go in with none of their peers' addresses, and no name is newly registered.
     assert!(
         !log.iter()
             .any(|c| c.starts_with("wg set") || c.starts_with("ip link"))
     );
-    assert!(!fake.fragments_of(1)[0].contains("10.50.0.2"));
-    assert!(fake.fragments_of(2).is_empty());
+    assert!(fake.fragments_of(1).is_empty() && fake.fragments_of(2).is_empty());
+    // A network no longer compiled is still unregistered: that needs no links.
+    let removal = "delete element inet wgate from_net { \"wg-old\" }";
+    assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
 }
 
 #[test]
 fn a_network_not_made_gets_no_registration_while_nothing_grows() {
     let dir = keys();
-    let fake = owned_n1().fail("wg show wg-n1 allowed-ips");
+    let fake = owned_n1().fail("nft -j list map");
     reconcile(&fake, &compiled(), dir.path());
     assert_eq!(fake.fragments_of(1).len(), 1);
     assert!(fake.fragments_of(2).is_empty(), "wg-n2 does not exist");
 }
 
 #[test]
-fn an_unreadable_route_list_stops_growth_too() {
+fn an_unreadable_route_list_leaves_only_its_network_alone() {
     let dir = keys();
     let fake = owned_n1().fail("ip -j route show dev wg-n1");
     reconcile(&fake, &compiled(), dir.path());
-    assert!(!fake.log().iter().any(|c| c.starts_with("ip link add")));
+    let log = fake.log();
+    assert!(fake.fragments_of(1).is_empty());
+    assert!(!log.iter().any(|c| c.starts_with("wg set wg-n1 peer")));
+    // n2 is made as usual.
+    position(&log, "ip link add wgtmp-2");
 }
 
 #[test]
-fn a_stuck_interface_whose_leftovers_are_unknown_stops_growth() {
+fn a_stuck_interface_whose_leftovers_are_unknown_does_not_stop_the_others() {
     let dir = keys();
     let fake = Fake::default()
         .answer(
@@ -149,11 +160,15 @@ fn a_stuck_interface_whose_leftovers_are_unknown_stops_growth() {
         )
         .fail("ip link del wg-old")
         .fail("wg show wg-old allowed-ips");
-    reconcile(&fake, &compiled(), dir.path());
-    let log = fake.log();
-    assert!(!log.iter().any(|c| c.starts_with("ip link add")));
-    // Not registered: it is not unregistered over and over either.
-    assert_eq!(nft_runs(&log), 1, "the base only: {log:#?}");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.starts_with("wg-old (gone): disarm")),
+        "{:?}",
+        out.errors
+    );
+    position(&fake.log(), "ip link add wgtmp-1");
 }
 
 #[test]

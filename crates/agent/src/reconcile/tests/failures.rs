@@ -190,12 +190,17 @@ fn an_address_still_held_gets_no_rights_either() {
 }
 
 #[test]
-fn unreadable_peers_hold_their_networks_addresses() {
+fn unreadable_peers_leave_their_network_as_it_is() {
     let dir = keys();
     let fake = owned_n1().fail("wg show wg-n1 allowed-ips");
     reconcile(&fake, &compiled(), dir.path());
-    let fragments = fake.fragments_of(1);
-    assert!(!fragments[0].contains("10.50.0.2"), "{}", fragments[0]);
+    assert!(fake.fragments_of(1).is_empty());
+    assert!(
+        !fake
+            .log()
+            .iter()
+            .any(|c| c.starts_with("wg set wg-n1 peer"))
+    );
 }
 
 #[test]
@@ -229,4 +234,25 @@ fn without_the_registry_nothing_grows() {
             .any(|c| c.starts_with("ip link add") || c.contains(" allowed-ips "))
     );
     assert_eq!(fake.fragments_of(1).len(), 1, "n1's rules still refreshed");
+}
+
+#[test]
+fn what_an_unreadable_network_may_hold_is_taken_by_nobody() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer(
+            "ip -j link show type wireguard",
+            &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
+        )
+        .fail("wg show wg-n1 allowed-ips");
+    let mut c = lan_moving_to_n2();
+    // Still compiled for n1's router too, so n1's addresses cover it.
+    c.peers[0].addrs.push("192.168.1.0/24".parse().unwrap());
+    reconcile(&fake, &c, dir.path());
+    let log = fake.log();
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with(&format!("wg set wg-n2 peer {K3}")))
+    );
+    assert!(!fake.fragments_of(2)[0].contains("192.168.1.0/24"));
 }
