@@ -1,11 +1,12 @@
 //! The agent loop: reconcile on every `wgate_changed` notification and on a timer.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context;
 use sea_orm::{Database, DatabaseConnection};
 use tokio::time::MissedTickBehavior;
-use wgate_core::compile;
+use wgate_core::{Id, compile};
 use wgate_db::revision::{self, ListenError, Listener};
 
 use crate::config::Config;
@@ -21,6 +22,7 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
         .context("connect to the database")?;
     let runner = Arc::new(runner);
     let mut listener: Option<Listener> = None;
+    let mut published = HashMap::new();
     let mut tick = tokio::time::interval(config.interval());
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
@@ -41,7 +43,7 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
             }
         }
         // A database outage leaves the kernel as it is: the VPN keeps running.
-        if let Err(e) = reconcile_once(&db, &config, runner.clone()).await {
+        if let Err(e) = reconcile_once(&db, &config, runner.clone(), &mut published).await {
             tracing::error!(error = format!("{e:#}"), "reconcile failed");
         }
     }
@@ -62,11 +64,13 @@ async fn next(listener: &mut Option<Listener>) -> Result<(), ListenError> {
     Ok(())
 }
 
-/// One load → compile → apply → report round.
+/// One load → compile → apply → report round. `published` remembers the hub keys
+/// already written, so an unchanged key costs no write.
 pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
     db: &DatabaseConnection,
     config: &Config,
     runner: Arc<R>,
+    published: &mut HashMap<Id, String>,
 ) -> anyhow::Result<()> {
     let loaded = wgate_db::desired_state(db, &config.infra())
         .await
@@ -103,10 +107,16 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
         .await
         .context("reconcile task")?;
     problems.extend(outcome.errors);
-    for (network, key) in &outcome.hub_keys {
+    for (network, key) in outcome.hub_keys {
+        if published.get(&network) == Some(&key) {
+            continue;
+        }
         // A network deleted meanwhile (its row is gone) must not cost the status.
-        if let Err(e) = wgate_db::agent::set_hub_key(db, *network, key).await {
-            problems.push(format!("network {network}: hub key: {e}"));
+        match wgate_db::agent::set_hub_key(db, network, &key).await {
+            Ok(()) => {
+                published.insert(network, key);
+            }
+            Err(e) => problems.push(format!("network {network}: hub key: {e}")),
         }
     }
     for p in &problems {

@@ -1,5 +1,5 @@
 //! Hub private keys: one per network in the keys directory (0600), generated on first
-//! use and never deleted. They never leave the hub; only the public key goes to the
+//! use and never deleted or replaced. They never leave the hub; only the public key goes to the
 //! database.
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -7,7 +7,7 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use wgate_core::is_wg_key;
 
 use crate::runner::Runner;
@@ -22,12 +22,12 @@ pub fn ensure(r: &dyn Runner, dir: &Path, name: &str) -> anyhow::Result<(PathBuf
     let path = dir.join(format!("{name}.key"));
     let private = match fs::read_to_string(&path) {
         Ok(key) if is_wg_key(key.trim()) => key,
-        // Empty or truncated (a crash before it was ever used): its public key was
-        // never published, so a new one replaces it.
-        Ok(_) => {
-            tracing::warn!(path = %path.display(), "invalid hub key replaced");
-            generate(r, &path)?
-        }
+        // Keys are written whole (below), so a bad one was damaged after its public
+        // key went out: replacing it would cut every client off. Someone decides.
+        Ok(_) => bail!(
+            "{} is not a WireGuard key; restore it, or delete it to issue a new one",
+            path.display()
+        ),
         Err(e) if e.kind() == ErrorKind::NotFound => generate(r, &path)?,
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
@@ -78,21 +78,30 @@ mod tests {
     }
 
     #[test]
-    fn generates_once_keeps_a_good_key_and_replaces_a_broken_one() {
+    fn generates_once_keeps_its_key_and_refuses_a_damaged_one() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::default();
         let (path, public) = ensure(&tools, dir.path(), "n1").unwrap();
         let key = fs::read_to_string(&path).unwrap();
         assert_eq!(public, format!("pub-{}", key.trim()));
         assert_eq!(ensure(&tools, dir.path(), "n1").unwrap().1, public, "kept");
-        fs::write(&path, "").unwrap();
-        let (_, replaced) = ensure(&tools, dir.path(), "n1").unwrap();
-        assert_ne!(replaced, public, "regenerated");
-        assert_ne!(fs::read_to_string(&path).unwrap(), key);
         assert_ne!(
             ensure(&tools, dir.path(), "n2").unwrap().1,
-            replaced,
+            public,
             "own key"
+        );
+        fs::write(&path, "garbage").unwrap();
+        assert!(ensure(&tools, dir.path(), "n1").is_err());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "garbage",
+            "left for a human"
+        );
+        fs::remove_file(&path).unwrap();
+        assert_ne!(
+            ensure(&tools, dir.path(), "n1").unwrap().1,
+            public,
+            "reissued"
         );
     }
 }

@@ -74,7 +74,7 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
  │  wgate agent   (root, CAP_NET_ADMIN only)                        │    │
  │    LISTEN wgate_changed + reconcile every 60 s                   │    │
  │    ├─ netlink: wg-<slug> interfaces, peers, routes               │    │
- │    └─ nft: table inet wgate (atomic replace)                     │    │
+ │    └─ nft: table inet wgate (base + one transaction per network) │    │
  └──────────────────────────────────────────────────────────────────┼────┘
                                                                     ▼
                                          Postgres on the db VPS (172.19.9.2)
@@ -290,8 +290,8 @@ table inet wgate {
 |---|---|
 | Revoke a peer | `wg set wg-<slug> peer <pk> remove` + remove its tuples and routes (the `(peer_id, active)` foreign key deactivates its `peer_route` rows, freeing the LANs; a revoked peer cannot get new ones) |
 | Remove a device / disable a user | the same for all their peers |
-| Change rules, ceilings, federations or inbound grants | recompile the sets (atomic replace) |
-| Disable a network | delete the interface `wg-<slug>` + its tuples |
+| Change rules, ceilings, federations or inbound grants | recompile the sets (each affected network's fragment, one `nft -f` transaction each) |
+| Disable a network | delete the interface `wg-<slug>`, then its nft fragment (its hub key is kept) |
 | Disable a tenant | the same for all its networks |
 
 Order: wg peer first, then nft. Either step alone already cuts traffic off. Deferred
