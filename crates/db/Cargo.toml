@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 ipnet.workspace = true
-sea-orm = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-json", "with-ipnetwork"] }
+sea-orm = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-json", "with-ipnetwork", "postgres-array"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 wgate-core.workspace = true
 

@@ -14,6 +14,8 @@ pub struct Model {
     pub cidr: IpNetwork,
     pub port: i32,
     pub mesh: bool,
+    #[sea_orm(column_type = "Array(sea_orm::sea_query::RcOrArc::new(ColumnType::Inet))")]
+    pub dns: Vec<IpNetwork>,
     pub disabled_at: Option<DateTimeWithTimeZone>,
 }
 

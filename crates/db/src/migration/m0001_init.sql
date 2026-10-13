@@ -39,9 +39,14 @@ CREATE TRIGGER tenant_block_immutable BEFORE UPDATE OF tenant_id, cidr ON tenant
     FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id OR OLD.cidr IS DISTINCT FROM NEW.cidr)
     EXECUTE FUNCTION immutable('tenant_id, cidr');
 
+-- Every entry an IPv4 host address (a CHECK cannot hold the query itself).
+CREATE FUNCTION all_ipv4_hosts(addrs inet[]) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(bool_and(family(a) = 4 AND masklen(a) = 32), true) FROM unnest(addrs) a
+$$;
+
 -- A network lies inside one block of its own tenant. The (block, tenant) foreign key
--- keeps the block from disappearing under it at any isolation level (a tenant delete
--- cascades both away); the trigger checks containment against the immutable block.
+-- takes the network along when its block goes, at any isolation level; the trigger
+-- checks containment against the immutable block.
 CREATE TABLE network (
     id          bigserial PRIMARY KEY,
     tenant_id   bigint NOT NULL REFERENCES tenant ON DELETE CASCADE,
@@ -52,8 +57,10 @@ CREATE TABLE network (
     port        integer NOT NULL UNIQUE
                 CHECK (port BETWEEN 51800 AND 51899 AND port <> 51820),
     mesh        boolean NOT NULL DEFAULT false,
+    -- Resolvers written into client configs; empty = no DNS line.
+    dns         inet[] NOT NULL DEFAULT '{}' CHECK (all_ipv4_hosts(dns)),
     disabled_at timestamptz,
-    FOREIGN KEY (block_id, tenant_id) REFERENCES tenant_block (id, tenant_id),
+    FOREIGN KEY (block_id, tenant_id) REFERENCES tenant_block (id, tenant_id) ON DELETE CASCADE,
     UNIQUE (id, tenant_id),
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
@@ -124,6 +131,9 @@ CREATE TABLE peer (
     device_id  bigint NOT NULL REFERENCES device ON DELETE CASCADE,
     network_id bigint NOT NULL REFERENCES network ON DELETE CASCADE,
     public_key text NOT NULL CHECK (public_key ~ '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$'),
+    -- Who holds the private key: the server made it (shown once, rotated on every
+    -- download) or the user pasted the public key and keeps their own.
+    key_source text NOT NULL DEFAULT 'pasted' CHECK (key_source IN ('server', 'pasted')),
     ip         inet NOT NULL CHECK (family(ip) = 4 AND masklen(ip) = 32),
     created_at timestamptz NOT NULL DEFAULT now(),
     revoked_at timestamptz,
@@ -131,9 +141,23 @@ CREATE TABLE peer (
     active     boolean GENERATED ALWAYS AS (revoked_at IS NULL) STORED,
     UNIQUE (id, active)
 );
-CREATE TRIGGER peer_immutable BEFORE UPDATE OF device_id, network_id, ip, public_key ON peer
-    FOR EACH ROW WHEN (OLD.device_id IS DISTINCT FROM NEW.device_id OR OLD.network_id IS DISTINCT FROM NEW.network_id OR OLD.ip IS DISTINCT FROM NEW.ip OR OLD.public_key IS DISTINCT FROM NEW.public_key)
-    EXECUTE FUNCTION immutable('device_id, network_id, ip, public_key');
+CREATE TRIGGER peer_immutable BEFORE UPDATE OF device_id, network_id, ip, key_source ON peer
+    FOR EACH ROW WHEN (OLD.device_id IS DISTINCT FROM NEW.device_id OR OLD.network_id IS DISTINCT FROM NEW.network_id OR OLD.ip IS DISTINCT FROM NEW.ip OR OLD.key_source IS DISTINCT FROM NEW.key_source)
+    EXECUTE FUNCTION immutable('device_id, network_id, ip, key_source');
+-- A key rotates (a new download of a server-key peer) only while the peer is active:
+-- a revoked peer's key must never come back to life under it.
+CREATE FUNCTION key_rotates_while_active() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.revoked_at IS NOT NULL OR OLD.key_source <> 'server' THEN
+        RAISE EXCEPTION 'peer %: only an active peer with a server key rotates', OLD.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER key_rotates_while_active BEFORE UPDATE OF public_key ON peer
+    FOR EACH ROW WHEN (OLD.public_key IS DISTINCT FROM NEW.public_key)
+    EXECUTE FUNCTION key_rotates_while_active();
 
 -- A peer address is a host of its network other than the hub address (the first
 -- host), and only a global admin's device may join another tenant's network. Both
@@ -328,6 +352,26 @@ CREATE TABLE audit (
     detail        jsonb NOT NULL DEFAULT '{}'
 );
 
+-- Portal sessions: only a hash of the cookie's token is stored. A session ends at
+-- `expires_at` (the hard cap) or after the idle limit since `seen_at` (the server).
+CREATE TABLE session (
+    id         bigserial PRIMARY KEY,
+    token_hash bytea NOT NULL UNIQUE,
+    user_id    bigint NOT NULL REFERENCES app_user ON DELETE CASCADE,
+    csrf       text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    seen_at    timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL
+);
+
+-- An OIDC login between the redirect and the callback (a few minutes at most).
+CREATE TABLE login_state (
+    state         text PRIMARY KEY,
+    nonce         text NOT NULL,
+    pkce_verifier text NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
 -- Foreign keys get no index by themselves; cascades and per-peer lookups need them.
 CREATE INDEX ON tenant_block (tenant_id);
 CREATE INDEX ON network (tenant_id);
@@ -338,6 +382,7 @@ CREATE INDEX ON peer (device_id);
 CREATE INDEX ON peer (network_id);
 CREATE INDEX ON peer_route (peer_id);
 CREATE INDEX ON ceiling (tenant_id);
+CREATE INDEX ON session (user_id);
 CREATE INDEX ON rule (network_id);
 CREATE INDEX ON rule (target_network_id);
 CREATE INDEX ON federation (from_network_id);
