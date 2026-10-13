@@ -109,20 +109,25 @@ under sudo).
   `Compiled` lists its networks (interface, range, hub address, port).
 - Loop (`LISTEN wgate_changed` or a tick):
   1. load the desired state, `core::compile` it
-  2. apply the base
-  3. **network by network**: key in `keys_dir` (generate with `wg genkey` if missing,
-     write `hub_key`); interface (`ip link add … type wireguard`, `ip addr replace`
-     hub/prefix, up, `wg set … listen-port … private-key …`); peers diffed against
-     `wg show <if> dump` (removals first, then `wg set … peer K allowed-ips …`, with
-     `AllowedIPs` = `addrs(peer)`); routes for routed LANs (`ip route replace … proto
-     wgate`, stale ones deleted); then the network's nft fragment
-  4. networks the agent manages (its interfaces in `wg_ifaces`) that are no longer
-     compiled: nft fragment removed, then the interface deleted
-  5. `agent_status` (applied revision, and everything `Compiled` rejected — blocks,
+  2. apply the base (if it fails, nothing else is touched)
+  3. networks registered in the `from_net` map (interface + network id) that are no
+     longer compiled under that pair: interface deleted, then the nft fragment
+     removed (the map entry is the retry marker); skipped when the inventory
+     (`nft -j list map`, `ip -j link`) cannot be read
+  4. ports another network wants are freed (`listen-port 0`); stale LAN routes of
+     every network are deleted before any is added (a LAN can move networks)
+  5. **network by network**, every step attempted: interface (`ip link add … type
+     wireguard`); key `n<id>.key` in `keys_dir` (generated with `wg genkey` if
+     missing or invalid, never deleted; its public key goes to `hub_key`); `ip addr
+     replace` hub/prefix; `wg set … listen-port … private-key …`; up; peer removals
+     (diffed against `wg show <if> dump`); the network's nft fragment; peer additions
+     (`wg set … peer K allowed-ips …`, `AllowedIPs` = `addrs(peer)`); LAN routes
+     (`ip route add … proto 150`, never taking over another's route)
+  6. `agent_status` (applied revision, and everything `Compiled` rejected — blocks,
      networks, peers, routes — plus per-network failures as errors)
 - Tools: `ip` (iproute2), `wg` (wireguard-tools), `nft`; commands go through one
-  runner, so diffs are unit-tested against fake tool output.
-- Only manages interfaces it has registered (`wg_ifaces`); it never touches `wg0`. An
+  runner (each killed after 30 s), so diffs are unit-tested against fake tool output.
+- Only manages interfaces it has registered (`from_net`); it never touches `wg0`. An
   unknown `wg-*` interface → warn, do not delete (and its traffic is dropped).
 - An error in one network does not block the others; the error goes to `agent_status`
   + `tracing`.

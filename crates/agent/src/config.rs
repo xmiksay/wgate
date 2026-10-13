@@ -67,6 +67,10 @@ mod tests {
         assert_eq!(c.snat_source, Ipv4Addr::new(172, 19, 9, 10));
         assert_eq!(c.keys_dir, PathBuf::from("/var/lib/wgate/keys"));
         assert_eq!(c.interval(), Duration::from_secs(60));
-        assert!(toml::from_str::<Config>("database_url = 'x'\nbogus = 1").is_err());
+        // Valid but for one unknown key (a typo must not be ignored).
+        let example = include_str!("../agent.example.toml");
+        toml::from_str::<Config>(&format!("{example}\n")).unwrap();
+        let err = toml::from_str::<Config>(&format!("{example}\nbogus = 1")).unwrap_err();
+        assert!(err.to_string().contains("bogus"), "{err}");
     }
 }
