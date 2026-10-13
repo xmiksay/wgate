@@ -47,7 +47,8 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   deliberately.
 - The agent owns `table inet wgate` (a base plus one atomic `nft -f` fragment per
   network) and only the interfaces carrying its mark (alias `wgate:n<id>`, set when
-  it makes them). Never touch `wg0` or other nft tables.
+  it makes them) plus its scratch namespace `wgtmp-*` (where it makes them). Never
+  touch `wg0` or other nft tables.
 - nft interval sets reject overlapping elements: rights go through `RuleSet` (canonical,
   disjoint) before rendering — never emit raw rules into a set.
 - Every packet to or from a tenant is checked against the current sets in both

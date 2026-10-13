@@ -7,52 +7,62 @@ use wgate_core::{Compiled, Id, render_network_cutoff, render_network_removal};
 use super::steps::{Link, SCRATCH, disarm, nft, run};
 use crate::runner::Runner;
 
+/// What [`remove_gone_links`] left.
+#[derive(Default)]
+pub(super) struct Gone {
+    /// `(name, network)` of the marked interfaces deleted: to be unregistered too.
+    pub deleted: Vec<(String, Id)>,
+    /// Those that would not go (disarmed instead): their names are not reused, and
+    /// their ports may be freed, until they do.
+    pub stuck: Vec<(String, Option<Id>)>,
+    /// What the stuck ones still hold.
+    pub held: Vec<Ipv4Net>,
+    /// Whether what a stuck one holds could not even be read.
+    pub blind: bool,
+}
+
 /// Deletes the interfaces wgate made whose network is not compiled under that name,
-/// and unmarked scratch leftovers of a creation that crashed. Returns the ones that
-/// would not go (disarmed instead; their names are not reused until they do), and the
-/// `(name, network)` of every marked one, to be unregistered too, and what the ones
-/// that would not go still hold.
+/// and scratch links (`wgtmp-*`, wgate's own namespace) a crashed creation left.
 pub(super) fn remove_gone_links(
     r: &dyn Runner,
     c: &Compiled,
     links: &mut Vec<Link>,
     errors: &mut Vec<String>,
-) -> (Vec<String>, Vec<(String, Id)>, Vec<Ipv4Net>) {
-    let mut stuck = vec![];
-    let mut held = vec![];
-    let mut gone_pairs = vec![];
+) -> Gone {
+    let mut gone = Gone::default();
     for link in links.clone() {
-        let gone = match link.owner {
+        let is_gone = match link.owner {
             Some(id) => !c
                 .networks
                 .iter()
                 .any(|n| n.id == id && n.iface == link.name),
             None => link.name.starts_with(SCRATCH),
         };
-        if !gone {
+        if !is_gone {
             continue;
-        }
-        if let Some(id) = link.owner {
-            gone_pairs.push((link.name.clone(), id));
         }
         match run(r, &["ip", "link", "del", &link.name]) {
             Ok(()) => {
                 tracing::info!(link = %link.name, network = ?link.owner, "interface removed");
+                if let Some(id) = link.owner {
+                    gone.deleted.push((link.name.clone(), id));
+                }
                 links.retain(|l| *l != link);
             }
             Err(e) => {
                 errors.push(format!("{} (gone): {e:#}", link.name));
                 // Still there: it must at least stop carrying the gone network.
-                let (result, still) = disarm(r, &link.name);
-                held.extend(still);
+                let (result, held, blind) = disarm(r, &link.name);
+                gone.held.extend(held);
+                gone.blind |= blind;
                 if let Err(e) = result {
                     errors.push(format!("{} (gone): disarm: {e:#}", link.name));
                 }
-                stuck.push(link.name);
+                gone.stuck.push((link.name, link.owner));
             }
         }
     }
-    (stuck, gone_pairs, held)
+    gone
 }
 
 /// Takes `(iface, id)` out of the table: its map entries, chains and sets. Without

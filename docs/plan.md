@@ -118,7 +118,8 @@ under sudo).
      route revocations apply, and then the fragments, cut down to what the stale
      guard covers and to what is not held (`Compiled::within_guard`); with the
      guard unknown, every network is cut off (its chains end in `drop`). Unreadable
-     peers in any network also stop growth: nothing is known to be free
+     peers or LAN routes in any network, or the leftovers of a stuck gone interface,
+     also stop growth: nothing is known to be free
   3. what is gone. An interface is wgate's when its alias carries the mark
      `wgate:n<id>` (set at creation; survives a flushed table and a lost key file).
      A marked interface whose network is not compiled under that name, or an
