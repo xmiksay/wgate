@@ -10,7 +10,8 @@ use std::path::Path;
 use anyhow::Context;
 use ipnet::Ipv4Net;
 use wgate_core::{
-    Compiled, CompiledNetwork, Id, render_base, render_network, render_snat, subtract_nets,
+    Compiled, CompiledNetwork, Id, render_base, render_network, render_network_cutoff, render_snat,
+    subtract_nets,
 };
 
 use crate::keys::Keys;
@@ -70,7 +71,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         Some(links) => remove_gone_links(r, c, links, &mut out.errors),
         _ => Default::default(),
     };
-    let stuck: Vec<String> = gone.stuck.iter().map(|(name, _)| name.clone()).collect();
+    let stuck = gone.stuck;
 
     let mut owned = vec![];
     let mut new = vec![];
@@ -94,8 +95,10 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // grow: an address or LAN moving between peers or networks is never held twice.
     // What failed to be released stays held, and is nobody's this pass: no peer, no
     // route and no right takes it. A network whose peers or routes cannot be read is
-    // left as it is this pass, and everything compiled for it is held.
+    // left as it is this pass; what it may hold (its registered addresses, and what
+    // is compiled for it) no other network takes, but rights to it stay.
     let mut held = gone.held;
+    let mut taken = vec![];
     let mut unreadable: Vec<Id> = vec![];
     for (n, _, plan) in &active {
         let (Ok(peers), Ok((_, del))) = (&plan.peers, &plan.routes) else {
@@ -106,7 +109,8 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
                 out.errors
                     .push(format!("{}: left as it is: {e:#}", n.iface));
             }
-            held.extend(c.peers_of(n.id).flat_map(|p| p.addrs.clone()));
+            taken.extend(c.peers_of(n.id).flat_map(|p| p.addrs.clone()));
+            taken.extend(registered_addresses(r, n.id));
             unreadable.push(n.id);
             continue;
         };
@@ -154,25 +158,33 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         // running and revocations wait for a pass that can see.
         if let Some(unguarded) = unguarded {
             let within = c.within_guard(&[unguarded, held].concat());
-            for (n, _, _) in active.iter().filter(|(_, exists, _)| *exists) {
+            for (n, _, _) in &active {
                 let result = nft(r, &render_network(&within, n));
-                note(
-                    result.with_context(|| format!("{}: nft", n.iface)),
-                    &mut out.errors,
-                );
+                if let Err(e) = result {
+                    out.errors.push(format!("{}: nft: {e:#}", n.iface));
+                    // Its old rules would keep what was revoked.
+                    let cut = nft(r, &render_network_cutoff(n.id));
+                    note(
+                        cut.with_context(|| format!("{}: cutoff", n.iface)),
+                        &mut out.errors,
+                    );
+                }
             }
         }
         warn_unknown(c, links.as_deref());
         return out;
     }
     // Also the ports of gone interfaces that would not go.
-    let holders: Vec<&str> = owned
+    let holders: Vec<&str> = active
         .iter()
-        .map(|n| n.iface.as_str())
+        .filter(|(_, exists, _)| *exists)
+        .map(|(n, _, _)| n.iface.as_str())
         .chain(stuck.iter().map(String::as_str))
         .collect();
     free_ports(r, c, &holders, &mut out.errors);
 
+    // Growth waits for both; rights leave out only what failed to be released.
+    let waits = [held.as_slice(), &taken].concat();
     let within;
     let rules = if held.is_empty() {
         c
@@ -181,7 +193,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         &within
     };
     for (n, exists, plan) in active {
-        let (key, errors) = network(r, rules, n, keys, exists, plan, &held);
+        let (key, errors) = network(r, rules, n, keys, exists, plan, &waits);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
         }
@@ -203,6 +215,15 @@ fn warn_unknown(c: &Compiled, links: Option<&[Link]>) {
             tracing::warn!(link = %link.name, "unknown wg- interface left alone");
         }
     }
+}
+
+/// The addresses network `id`'s rules last gave (its `n<id>_peers` set): what its
+/// interface may still hold when it cannot be read.
+fn registered_addresses(r: &dyn Runner, id: Id) -> Vec<Ipv4Net> {
+    let set = format!("n{id}_peers");
+    r.run(&["nft", "-j", "list", "set", "inet", "wgate", &set], None)
+        .and_then(|json| nftmap::parse_ranges(&json))
+        .unwrap_or_default()
 }
 
 /// What of the compiled tenant space the kernel's `tenant_space` (the spoof guard's)

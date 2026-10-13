@@ -239,20 +239,28 @@ fn without_the_registry_nothing_grows() {
 #[test]
 fn what_an_unreadable_network_may_hold_is_taken_by_nobody() {
     let dir = keys();
+    // The LAN moved to n2; n1 cannot be read, but its rules last gave it the LAN.
     let fake = Fake::default()
         .answer(
             "ip -j link show type wireguard",
             &wg_links(&[("wg-n1", Some(1)), ("wg-n2", Some(2))]),
         )
-        .fail("wg show wg-n1 allowed-ips");
-    let mut c = lan_moving_to_n2();
-    // Still compiled for n1's router too, so n1's addresses cover it.
-    c.peers[0].addrs.push("192.168.1.0/24".parse().unwrap());
-    reconcile(&fake, &c, dir.path());
+        .fail("wg show wg-n1 allowed-ips")
+        .answer(
+            "nft -j list set inet wgate n1_peers",
+            r#"{"nftables": [{"set": {"name": "n1_peers", "elem": ["10.50.0.2", {"prefix": {"addr": "192.168.1.0", "len": 24}}]}}]}"#,
+        );
+    reconcile(&fake, &lan_moving_to_n2(), dir.path());
     let log = fake.log();
+    // n2's new router waits for the LAN, and so does its route.
     assert!(
         !log.iter()
             .any(|l| l.starts_with(&format!("wg set wg-n2 peer {K3}")))
     );
-    assert!(!fake.fragments_of(2)[0].contains("192.168.1.0/24"));
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("ip route add 192.168.1.0/24"))
+    );
+    // Rights are not cut for what is merely unreadable: n2's rules are whole.
+    assert!(fake.fragments_of(2)[0].contains("192.168.1.0-192.168.1.255"));
 }

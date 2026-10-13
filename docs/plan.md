@@ -137,8 +137,9 @@ under sudo).
      private and preshared keys) and stale LAN route deletions — before any network
      grows, so nothing is held twice while it moves; what a failed command could not
      release stays held: no peer, route or right anywhere takes it this pass. A
-     network whose peers or routes cannot be read is left as it is, and everything
-     compiled for it is held; the other networks go on
+     network whose peers or routes cannot be read is left as it is; what it may hold
+     (what its rules last gave, `n<id>_peers`, and what is compiled for it) no other
+     network takes, but rights to it stay; the other networks go on
   5. **network by network**, every step attempted: the hub key `n<id>.key` in
      `keys_dir` first (issued only to an interface without a key, never deleted; a
      damaged or missing one for a keyed interface is an error, never a rotation; its

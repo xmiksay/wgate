@@ -40,7 +40,9 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
         }
         if listener.is_none() {
             // Before the reconcile reads its snapshot, so nothing committed after it
-            // goes unnoticed. Without it the timer still reconciles.
+            // goes unnoticed. Without it the timer still reconciles. A pause first: a
+            // connection that keeps dropping must not turn into back-to-back passes.
+            tokio::time::sleep(Duration::from_secs(1)).await;
             match revision::listener(&config.database_url).await {
                 Ok(l) => listener = Some(l),
                 Err(e) => tracing::warn!(error = %e, "LISTEN failed; relying on the timer"),
