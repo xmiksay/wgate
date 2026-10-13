@@ -14,7 +14,8 @@ per packet in `table inet wgate`. Clients are plain WireGuard.
 | Path | What |
 |---|---|
 | `crates/core` | Pure logic: model, rights intersection, allocators, nft/client-config rendering |
-| `crates/server` | Axum REST API + embedded UI, OIDC, SeaORM + migrations |
+| `crates/db` | SeaORM entities, migrations, revision + NOTIFY, desired-state loader |
+| `crates/server` | Axum REST API + embedded UI, OIDC |
 | `crates/agent` | Root reconciler: netlink wg interfaces/peers, `nft -f` |
 | `crates/wgate` | The binary: `wgate server \| agent \| migrate` |
 | `web/` | Vue 3 + TS + Vite + Tailwind + Pinia UI |
@@ -27,7 +28,7 @@ from `web/.nvmrc`.
 ```sh
 make deps        # npm ci in web/
 make lint        # clippy -D warnings, rustfmt, eslint, vue-tsc
-make test        # unit + integration
+make test        # unit + integration (Docker: the db tests start Postgres containers)
 make golden      # rewrite core golden files (nft ruleset, client configs)
 make test-netns  # root-only tests in network namespaces (sudo, nft, wireguard module, python3)
 make release     # static x86_64 musl binary + sha256 in dist/

@@ -1,0 +1,17 @@
+use sea_orm::entity::prelude::*;
+use sea_orm::prelude::IpNetwork;
+
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+#[sea_orm(table_name = "tenant_block")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i64,
+    pub tenant_id: i64,
+    #[sea_orm(column_type = "Cidr")]
+    pub cidr: IpNetwork,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {}
+
+impl ActiveModelBehavior for ActiveModel {}

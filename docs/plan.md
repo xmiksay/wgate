@@ -59,12 +59,16 @@ under sudo).
   files for nft and the client config; netns: the golden ruleset loads, replaces, and
   filters real packets (veth links named `wg-*`: allowed vs. denied per chain).
 
-### 1.3 Database + migrations (`server`)
-- SeaORM entities + migrations for the tables in design.md → Data model. Unique:
-  `tenant.slug`, `network.slug`, `network.port`, `peer.public_key`, `peer.ip`,
-  `(issuer, oidc_sub)`. Postgres exclusion constraints (`btree_gist`, `inet &&`) keep
-  blocks, a tenant's networks and routed subnets disjoint; CHECKs for "exactly one
-  target" on `rule` and icmp ⇔ NULL ports.
+### 1.3 Database + migrations (`crates/db`)
+- SeaORM entities + one SQL migration for the tables in design.md → Data model. Unique:
+  `tenant.slug`, `network.slug`, `network.port`, `peer.public_key`, active `peer.ip`,
+  per-tenant email and OIDC subject. Exclusion constraints (GiST `inet_ops`, built in)
+  keep blocks, networks and routes disjoint; CHECKs: slug syntax, port range, ≤ /30,
+  "exactly one target" on `rule`, `valid_service` (icmp ⇔ NULL ports, never NULL).
+- `desired_state(db, &Infra)`: active rows → `core::DesiredState`; unmappable rows are
+  skipped with a warning (a load error would block revocations).
+- Postgres is reached directly (5432), not through pgbouncer (transaction pooling
+  breaks LISTEN).
 - Trigger-free NOTIFY: every write transaction ends with
   `SELECT pg_notify('wgate_changed', <revision>)`. `revision` is a counter in table
   `state_revision`.
