@@ -139,7 +139,7 @@ state into two sets per peer:
 ```
 addrs(peer)    = peer.ip/32 ∪ peer.routed
 addrs(network) = ∪ addrs(active peers of the network)
-tenant space   = pool ∪ all routed subnets
+tenant space   = pool ∪ accepted routed subnets of compiled peers
 
 outbound(p ∈ N of tenant T) =
       (ceiling(T) ∩ external rules(N)) − tenant space       # dst_cidr rules
@@ -153,6 +153,15 @@ inbound(p ∈ N) =
     ∪ addrs(N) − addrs(p)   if N.mesh
 ```
 
+- **Who owns an address is decided at save time.** The DB constraints (exclusion
+  constraints on blocks, network ranges and routes, unique slugs/IPs) and the API
+  checks refuse a conflicting row, so the first claim keeps it for good. `compile`
+  only re-checks as a safety net: if the DB ever holds a conflict anyway, the older
+  claim (lower id) wins and the newer one fails closed and is reported. Being
+  stateless, it cannot remember a claim that is currently invalid.
+- The API also refuses a routed LAN that overlaps another tenant's ceiling or an
+  inbound grant source: a LAN becomes tenant space, which would silently remove
+  those external rights and make the hub drop that range on non-wg interfaces.
 - **When saving**, the API rejects an external rule the tenant's ceiling does not
   cover (422 with the uncovered part), a network target of another tenant, a network
   CIDR outside the tenant's blocks, and an overlapping routed subnet. **When

@@ -8,7 +8,7 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
-ipnet = "2.12"
+ipnet.workspace = true
 wgate-core.workspace = true
 
 [lints]

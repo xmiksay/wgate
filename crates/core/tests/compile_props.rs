@@ -63,6 +63,8 @@ fn state() -> impl Strategy<Value = DesiredState> {
         let mut seen = Vec::new();
         DesiredState {
             pool: vec!["10.50.0.0/16".parse().expect("cidr")],
+            snat_source: Ipv4Addr::new(172, 19, 9, 10),
+            node_cidrs: vec!["172.19.9.0/24".parse().expect("cidr")],
             routed_space: vec!["192.168.0.0/16".parse().expect("cidr")],
             reserved: vec![],
             tenants: ceilings
