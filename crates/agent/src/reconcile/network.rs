@@ -181,12 +181,9 @@ pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors:
             // whatever else fails.
             .take(3)
             .find(|spare| run(r, &["wg", "set", iface, "listen-port", &spare.to_string()]).is_ok());
-        if let Some(spare) = parked {
-            in_use.push(spare);
-        }
-        let parked = parked.is_some();
-        if !parked {
-            errors.push(format!("{iface}: free port: no spare port is free"));
+        match parked {
+            Some(spare) => in_use.push(spare),
+            None => errors.push(format!("{iface}: free port: no spare port is free")),
         }
     }
 }

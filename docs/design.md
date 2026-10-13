@@ -260,6 +260,9 @@ table inet wgate {
   become three elements. Peer addresses are globally unique (pool + unique routed
   subnets), so elements of different peers never overlap. The inet family needs
   `snat ip to`.
+- **SNAT matches the whole tenant space** (pool blocks and routed LANs), not only
+  peer addresses: a hub process that binds a hub address (`10.50.x.1`) to reach the
+  node networks is translated to the SNAT source as well.
 - **Every packet to or from a peer is checked against the current sets**, in both
   directions, with no `ct state established` shortcut. On vpsFree LXC the host owns
   conntrack (`conntrack -D` may not work), so revocation must not depend on clearing
