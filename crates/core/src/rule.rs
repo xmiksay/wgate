@@ -7,7 +7,9 @@ use std::str::FromStr;
 
 use ipnet::Ipv4Net;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Proto {
     Tcp,
     Udp,
@@ -132,7 +134,9 @@ pub enum RuleError {
 }
 
 /// What a rule allows on its destination. Ports exist exactly for tcp and udp.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Service {
     Tcp(PortRange),
     Udp(PortRange),

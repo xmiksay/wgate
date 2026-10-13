@@ -25,7 +25,7 @@ pub(super) const C: Id = 3;
 
 /// Tenant 10: networks A (router a1 with a LAN) and B (mesh); tenant 20: network C,
 /// federated into B on 443.
-pub(super) fn state() -> DesiredState {
+pub(crate) fn state() -> DesiredState {
     let mut a = network(
         A,
         10,

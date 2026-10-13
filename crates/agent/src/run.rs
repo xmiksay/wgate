@@ -13,15 +13,14 @@ use wgate_db::revision::{self, ListenError, Listener};
 use crate::config::Config;
 use crate::reconcile::reconcile;
 use crate::runner::Runner;
+use crate::state;
 
 pub async fn run<R: Runner + Send + Sync + 'static>(
     config: Config,
     runner: R,
 ) -> anyhow::Result<()> {
-    let db = Database::connect(&config.database_url)
-        .await
-        .context("connect to the database")?;
     let runner = Arc::new(runner);
+    let db = connect(&config, &runner).await;
     let mut listener: Option<Listener> = None;
     let mut published = HashMap::new();
     let mut tick = tokio::time::interval(config.interval());
@@ -53,6 +52,43 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
             tracing::error!(error = format!("{e:#}"), "reconcile failed");
         }
     }
+}
+
+/// Connects, retrying on the timer. Meanwhile (a hub that boots during a database
+/// outage) the last state saved is served, so the VPN comes up as it was.
+async fn connect<R: Runner + Send + Sync + 'static>(
+    config: &Config,
+    runner: &Arc<R>,
+) -> DatabaseConnection {
+    loop {
+        match Database::connect(&config.database_url).await {
+            Ok(db) => return db,
+            Err(e) => {
+                tracing::warn!(error = %e, "database unreachable; serving the last state saved");
+                if let Err(e) = apply_saved(config, runner.clone()).await {
+                    tracing::error!(error = format!("{e:#}"), "no saved state served");
+                }
+                tokio::time::sleep(config.interval()).await;
+            }
+        }
+    }
+}
+
+/// Applies the last state saved, without the database.
+pub async fn apply_saved<R: Runner + Send + Sync + 'static>(
+    config: &Config,
+    runner: Arc<R>,
+) -> anyhow::Result<()> {
+    let saved = state::load(&config.state_file)?.context("no state saved yet")?;
+    let compiled = compile(&saved);
+    let keys_dir = config.keys_dir.clone();
+    let outcome = tokio::task::spawn_blocking(move || reconcile(&*runner, &compiled, &keys_dir))
+        .await
+        .context("reconcile task")?;
+    for e in &outcome.errors {
+        tracing::warn!(problem = %e, "not applied");
+    }
+    Ok(())
 }
 
 /// Waits for a notification: `true`, or `false` when the connection was lost
@@ -92,6 +128,12 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
     let loaded = wgate_db::desired_state(db, &config.infra())
         .await
         .context("load the desired state")?;
+    if let Err(e) = state::save(&config.state_file, &loaded.state) {
+        tracing::warn!(
+            error = format!("{e:#}"),
+            "state not saved for a start without the database"
+        );
+    }
     let compiled = compile(&loaded.state);
     let mut problems: Vec<String> = loaded.warnings.clone();
     problems.extend(

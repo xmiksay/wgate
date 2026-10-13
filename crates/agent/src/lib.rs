@@ -8,9 +8,10 @@ mod reconcile;
 mod routes;
 pub mod run;
 pub mod runner;
+mod state;
 mod wg;
 
 pub use config::Config;
 pub use reconcile::{Outcome, reconcile};
-pub use run::{reconcile_once, run};
+pub use run::{apply_saved, reconcile_once, run};
 pub use runner::{Runner, System};

@@ -64,6 +64,13 @@ fn points() -> impl Strategy<Value = Vec<(Proto, Ipv4Addr, u16)>> {
 
 proptest! {
     #[test]
+    fn a_rule_set_survives_being_stored(s in rule_set()) {
+        let json = serde_json::to_string(&s).expect("to json");
+        let back: RuleSet = serde_json::from_str(&json).expect("from json");
+        prop_assert_eq!(back, s);
+    }
+
+    #[test]
     fn ops_match_pointwise_semantics(a in rule_set(), b in rule_set(), pts in points()) {
         let (i, u, d) = (a.intersect(&b), a.union(&b), a.difference(&b));
         for (p, addr, port) in pts {

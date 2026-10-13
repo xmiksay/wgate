@@ -14,7 +14,7 @@ pub type Id = i64;
 
 /// Everything active: disabled tenants, networks and revoked peers are left out by
 /// the caller.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DesiredState {
     pub pool: Vec<Ipv4Net>,
     /// Hub address peers are SNATed to towards `node_cidrs`.
@@ -34,7 +34,7 @@ pub struct DesiredState {
     pub federations: Vec<Federation>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Tenant {
     pub id: Id,
     /// Pool blocks the global admin assigned; the tenant's networks lie inside them.
@@ -43,7 +43,7 @@ pub struct Tenant {
     pub ceiling: RuleSet,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Network {
     pub id: Id,
     pub tenant: Id,
@@ -61,7 +61,7 @@ pub struct Network {
     pub inbound: RuleSet,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum NetRule {
     /// An external destination, capped by the tenant's ceiling.
     External(Rule),
@@ -69,7 +69,7 @@ pub enum NetRule {
     To { network: Id, service: Service },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Peer {
     pub id: Id,
     pub network: Id,
@@ -85,14 +85,14 @@ pub struct Peer {
 
 /// An address range somebody claims (a tenant block, a routed LAN). Its id is its
 /// claim order: on a conflict the older claim keeps the range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Claim {
     pub id: Id,
     pub cidr: Ipv4Net,
 }
 
 /// Members of `from` may open to members of `to` (global admin, cross-tenant).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Federation {
     pub from: Id,
     pub to: Id,
@@ -331,4 +331,4 @@ pub fn compile(state: &DesiredState) -> Compiled {
 mod valid;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
