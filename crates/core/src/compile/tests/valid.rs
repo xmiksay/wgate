@@ -228,7 +228,10 @@ fn a_key_is_used_once() {
     s.peers
         .extend([twin, peer(63, B, "10.50.0.21", &[]), also_twin]);
     let c = compile(&s);
-    assert_eq!(c.skipped, [(62, Problem::Overlap), (64, Problem::Overlap)]);
+    assert_eq!(
+        c.skipped,
+        [(62, Problem::DuplicateKey), (64, Problem::DuplicateKey)]
+    );
     get(&c, 63);
 }
 

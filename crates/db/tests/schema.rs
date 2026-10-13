@@ -184,3 +184,26 @@ async fn rules_stay_inside_their_tenant() {
     refused(&pg.db, &rule(2, 1, 2)).await;
     ok(&pg.db, &rule(1, 1, 1)).await;
 }
+
+#[tokio::test]
+async fn federations_link_two_tenants() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        "INSERT INTO tenant_block (id, tenant_id, cidr) VALUES (3, 1, '10.50.2.0/24');
+         INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port) VALUES
+             (2, 2, 2, 'krcmar', 'Krcmar', '10.50.1.0/24', 51802),
+             (3, 1, 3, 'nexial2', 'Nexial 2', '10.50.2.0/24', 51803)",
+    )
+    .await;
+    let federation = |from: u32, to: u32| {
+        format!(
+            "INSERT INTO federation (from_network_id, to_network_id, proto, port_from, port_to)
+             VALUES ({from}, {to}, 'tcp', 443, 443)"
+        )
+    };
+    refused(&pg.db, &federation(1, 1)).await;
+    refused(&pg.db, &federation(1, 3)).await;
+    ok(&pg.db, &federation(1, 2)).await;
+}

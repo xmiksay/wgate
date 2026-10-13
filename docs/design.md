@@ -277,10 +277,11 @@ table inet wgate {
 | Disable a network | delete the interface `wg-<slug>` + its tuples |
 | Disable a tenant | the same for all its networks |
 
-Order: wg peer first, then nft. Either step alone already cuts traffic off. Statement
-triggers on the desired-state tables bump the revision and `NOTIFY wgate_changed` in
-the same transaction as the change (no write path can forget it; Postgres delivers it
-on commit only), so a delay comes only from the agent loop (milliseconds). The 60 s reconcile backs up a lost
+Order: wg peer first, then nft. Either step alone already cuts traffic off. Deferred
+triggers on the desired-state tables bump the revision and `NOTIFY wgate_changed` once
+per changing transaction, at its commit (no write path can forget it; a rolled-back
+write never notifies), so a delay comes only from the agent loop (milliseconds).
+Federations link two different tenants; inside a tenant, rules do. The 60 s reconcile backs up a lost
 notification. The UI shows "applied", taken from the agent's `applied_revision`.
 Other peers are unaffected; the interface never restarts.
 

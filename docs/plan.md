@@ -80,8 +80,11 @@ under sudo).
 - Own migrator (`wgate_migration`, one transaction under an advisory lock).
 - Postgres is reached directly (5432), not through pgbouncer (transaction pooling
   breaks LISTEN).
-- NOTIFY from statement triggers on every desired-state table: bump the counter in
-  `state_revision` and `pg_notify('wgate_changed', <revision>)`.
+- NOTIFY from deferred constraint triggers on the desired-state tables (only the
+  columns it depends on): once per transaction, at commit, bump the counter in
+  `state_revision` and `pg_notify('wgate_changed', <revision>)`. The hot row lock is
+  taken last, so writers neither serialize nor deadlock on it; writes run at READ
+  COMMITTED.
 - Table `agent_status (applied_revision, applied_at, error)`, which the agent writes.
 - Grants: `wgate` = owner; `wgate_agent` = SELECT on the tables `desired_state()`
   reads (on `app_user` only `id, tenant_id, role, disabled_at`), INSERT/UPDATE

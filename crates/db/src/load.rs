@@ -154,10 +154,13 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         .collect();
     // device id → owner's tenant, for active owners.
     let devices: HashMap<i64, Option<i64>> = device::Entity::find()
+        .select_only()
+        .columns([device::Column::Id, device::Column::UserId])
+        .into_tuple::<(i64, i64)>()
         .all(db)
         .await?
         .into_iter()
-        .filter_map(|d| Some((d.id, *users.get(&d.user_id)?)))
+        .filter_map(|(id, user)| Some((id, *users.get(&user)?)))
         .collect();
     let active_networks: HashSet<i64> = state_networks.iter().map(|n| n.id).collect();
     let mut routes: HashMap<i64, Vec<Claim>> = HashMap::new();
