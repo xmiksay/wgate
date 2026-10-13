@@ -110,15 +110,16 @@ under sudo).
   `Compiled` lists its networks (interface, range, hub address, port).
 - Loop (`LISTEN wgate_changed` or a tick):
   1. load the desired state, `core::compile` it
-  2. apply the base; read the inventory (`nft -j list map … from_net`, `ip -j link`).
+  2. apply the base, then SNAT as a transaction of its own; read the inventory (`nft -j list map … from_net`, `ip -j link`).
      A failed base still counts as guarding when the kernel's `tenant_space` covers
      the compiled one; otherwise only peer revocations apply (nothing grows where
      spoofed sources may pass)
   3. networks registered in `from_net` (interface + network id) that are no longer
      compiled under that pair: interface deleted (only if it carries that network's
-     key, or none), then the nft fragment removed (the map entry is the retry marker;
-     until it goes, the interface is not reused, loses its peers and frees a wanted
-     port). A failed key read never counts as "no key". Unregistered
+     key, or none; without the list of links only unregistered), then the nft
+     fragment removed (the map entry is the retry marker;
+     until it goes, the interface is not reused, loses its peers, addresses and LAN
+     routes, and frees a wanted port). A failed key read never counts as "no key". Unregistered
      `wg-*` interfaces carrying the key of a network not compiled on them (a flushed
      table) are deleted too
   4. ports another network wants are freed (`listen-port 0`). An existing interface
@@ -139,8 +140,9 @@ under sudo).
      networks, peers, routes — plus per-network failures as errors)
 - Tools: `ip` (iproute2), `wg` (wireguard-tools), `nft`; commands go through one
   runner (each killed after 30 s), so diffs are unit-tested against fake tool output.
-- Only manages interfaces it has registered (`from_net`); it never touches `wg0`. An
-  unknown `wg-*` interface → warn, do not delete (and its traffic is dropped).
+- Only manages `wg-*` interfaces registered in `from_net` or carrying one of its hub
+  keys (an unregistered one with a gone network's key is deleted); it never touches
+  `wg0`. Any other `wg-*` interface → warn, do not delete (its traffic is dropped).
 - An error in one network does not block the others; the error goes to `agent_status`
   + `tracing`.
 - systemd: `User=root`, `CapabilityBoundingSet=CAP_NET_ADMIN`, `ProtectSystem=strict`,

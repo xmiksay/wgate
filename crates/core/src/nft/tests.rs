@@ -168,6 +168,9 @@ fn a_network_fragment_holds_only_its_own_peers() {
     );
     // The base never touches a network's map entries, so re-applying it keeps them.
     assert!(!render_base(&c).contains("add element inet wgate from_net"));
+    // SNAT is a transaction of its own, after the base.
+    assert!(!render_base(&c).contains("snat"));
+    assert!(render_snat(&c).contains("snat ip to"));
 }
 
 #[test]

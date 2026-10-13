@@ -197,9 +197,10 @@ inbound(p ∈ N) =
 
 ## Enforcement on the hub — `table inet wgate`
 
-Owned by the agent; it never touches the other tables. The table is a **base** plus one
-**fragment per network**, each applied as its own atomic `nft -f` transaction, network
-by network (an update of one network never rewrites another's rules). The exact
+Owned by the agent; it never touches the other tables. The table is a **base**, its
+**SNAT** rule and one **fragment per network**, each applied as its own atomic `nft -f`
+transaction, network by network (an update of one network never rewrites another's
+rules; a broken SNAT setting never holds back the spoof guard). The exact
 rendering is the golden file `crates/core/tests/golden/ruleset.nft` (base + every
 fragment); in short:
 

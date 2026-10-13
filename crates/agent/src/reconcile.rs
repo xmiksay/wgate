@@ -5,7 +5,9 @@ use std::path::Path;
 
 use anyhow::Context;
 use ipnet::Ipv4Net;
-use wgate_core::{Compiled, CompiledNetwork, Id, render_base, render_network};
+use wgate_core::{
+    Compiled, CompiledNetwork, Id, render_base, render_network, render_snat, subtract_nets,
+};
 
 use crate::keys::Keys;
 use crate::nftmap;
@@ -16,7 +18,7 @@ use crate::wg::{self, PeerDiff};
 mod gone;
 mod steps;
 
-use gone::{Carried, carried, interface_key, remove_gone, remove_unregistered};
+use gone::{Blocked, Carried, carried, interface_key, remove_gone, remove_unregistered};
 
 use steps::{
     additions, desired_peers, lans, link_exists, links, nft, peer_diff, registered, removals,
@@ -45,14 +47,15 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // then only what else it holds (SNAT, …) waits for it.
     let guarded = base.is_ok() || tenant_space_covered(r, c);
     note(base, &mut out.errors);
+    note(nft(r, &render_snat(c)).context("snat"), &mut out.errors);
     let mut links = note(links(r).context("inventory"), &mut out.errors);
     let registered = note(registered(r).context("inventory"), &mut out.errors);
     // A gone network is told from a live one by both inventories, or by its key.
-    let blocked = match (&mut links, &registered) {
-        (Some(links), Some(registered)) => {
-            remove_gone(r, c, keys, registered, links, &mut out.errors)
-        }
-        _ => vec![],
+    // Unregistering a gone network cuts it off; deleting its interface also needs
+    // the list of links.
+    let blocked = match &registered {
+        Some(registered) => remove_gone(r, c, keys, registered, links.as_mut(), &mut out.errors),
+        None => vec![],
     };
     if let Some(links) = &mut links {
         remove_unregistered(r, c, keys, registered.as_deref(), links, &mut out.errors);
@@ -78,7 +81,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         // Nothing grows where spoofed sources may not be dropped, and rights revoked
         // inside a fragment wait for the base; peer revocations need none.
         for n in owned {
-            let result = peer_diff(r, c, n).and_then(|d| removals(r, n, &d));
+            let result = peer_diff(r, c, n).and_then(|d| removals(r, &n.iface, &d));
             note(
                 result.with_context(|| format!("{}: revocations", n.iface)),
                 &mut out.errors,
@@ -90,7 +93,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let holders: Vec<&str> = owned
         .iter()
         .map(|n| n.iface.as_str())
-        .chain(blocked.iter().map(String::as_str))
+        .chain(blocked.iter().filter(|b| b.ours).map(|b| b.iface.as_str()))
         .collect();
     free_ports(r, c, &holders, &mut out.errors);
 
@@ -104,7 +107,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     // or LAN moving between peers or networks is never held twice.
     for (n, _, plan) in &active {
         let result = match &plan.peers {
-            Ok(d) => removals(r, n, d),
+            Ok(d) => removals(r, &n.iface, d),
             Err(e) => Err(anyhow::anyhow!("{e:#}")),
         };
         note(
@@ -129,7 +132,8 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     }
 
     for link in links.iter().flatten() {
-        let known = c.networks.iter().any(|n| n.iface == *link) || blocked.contains(link);
+        let known =
+            c.networks.iter().any(|n| n.iface == *link) || blocked.iter().any(|b| b.iface == *link);
         if link.starts_with("wg-") && !known {
             // Not ours to delete; its traffic is dropped (an unknown wg-*).
             tracing::warn!(%link, "unknown wg- interface left alone");
@@ -145,7 +149,7 @@ fn tenant_space_covered(r: &dyn Runner, c: &Compiled) -> bool {
         None,
     )
     .and_then(|json| nftmap::parse_ranges(&json))
-    .is_ok_and(|ranges| nftmap::covers(&ranges, &c.tenant_space))
+    .is_ok_and(|kernel| subtract_nets(&c.tenant_space, &kernel).is_empty())
 }
 
 const NOT_MADE: &str = "an interface wgate did not make; left alone";
@@ -168,9 +172,9 @@ fn iface_of(
     keys: &Keys,
     links: Option<&[String]>,
     registered: Option<&[(String, Id)]>,
-    blocked: &[String],
+    blocked: &[Blocked],
 ) -> Result<Iface, String> {
-    if blocked.contains(&n.iface) {
+    if blocked.iter().any(|b| b.iface == n.iface) {
         return Err("waits for the previous network on it to be removed".into());
     }
     let exists = links.map(|l| l.contains(&n.iface));
@@ -201,26 +205,34 @@ fn iface_of(
 }
 
 /// Ports can swap: an interface holding the port another network wants lets go of it
-/// (it gets its own in its turn). Port 0 is random and can land on a port a later
-/// network wants; that network then fails until the next reconcile frees it again.
+/// (it gets its own in its turn).
 fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors: &mut Vec<String>) {
     let ports = match r.run(&["wg", "show", "all", "listen-port"], None) {
         Ok(ports) => ports,
         Err(e) => return errors.push(format!("ports: {e:#}")),
     };
+    let wanted = |iface: &str, port: &str| {
+        c.networks
+            .iter()
+            .any(|n| n.iface != iface && n.port.to_string() == port.trim())
+    };
     for line in ports.lines() {
         let Some((iface, port)) = line.split_once('\t') else {
             continue;
         };
-        let wanted_elsewhere = c
-            .networks
-            .iter()
-            .any(|n| n.iface != iface && n.port.to_string() == port.trim());
-        if wanted_elsewhere
-            && holders.contains(&iface)
-            && let Err(e) = run(r, &["wg", "set", iface, "listen-port", "0"])
-        {
-            errors.push(format!("{iface}: free port: {e:#}"));
+        if !wanted(iface, port) || !holders.contains(&iface) {
+            continue;
+        }
+        // Port 0 is random and can land on another wanted port: picked again then.
+        for _ in 0..5 {
+            if let Err(e) = run(r, &["wg", "set", iface, "listen-port", "0"]) {
+                errors.push(format!("{iface}: free port: {e:#}"));
+                break;
+            }
+            let now = r.run(&["wg", "show", iface, "listen-port"], None);
+            if !now.is_ok_and(|now| wanted(iface, &now)) {
+                break;
+            }
         }
     }
 }

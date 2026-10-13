@@ -29,8 +29,7 @@ pub(super) fn peer_diff(
     Ok(wg::diff(&current, &desired_peers(c, n)))
 }
 
-pub(super) fn removals(r: &dyn Runner, n: &CompiledNetwork, d: &PeerDiff) -> anyhow::Result<()> {
-    let iface = n.iface.as_str();
+pub(super) fn removals(r: &dyn Runner, iface: &str, d: &PeerDiff) -> anyhow::Result<()> {
     let remove = d
         .remove
         .iter()
@@ -151,12 +150,17 @@ pub(super) fn link_exists(r: &dyn Runner, iface: &str) -> bool {
         .is_ok_and(|json| json.trim() != "[]")
 }
 
-/// Removes every peer of an interface (a gone network whose interface would not go).
-pub(super) fn strip_peers(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
+/// Takes everything a gone network's interface carries away (peers, addresses, LAN
+/// routes) when the interface itself would not go.
+pub(super) fn disarm(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
     let current = wg::parse_allowed_ips(&r.run(&["wg", "show", iface, "allowed-ips"], None)?)?;
-    let commands: Vec<_> = current
-        .iter()
-        .map(|p| argv(&["wg", "set", iface, "peer", &p.public_key, "remove"]))
-        .collect();
-    all(r, &commands)
+    let peers = removals(r, iface, &wg::diff(&current, &[]));
+    let rest = all(
+        r,
+        &[
+            argv(&["ip", "addr", "flush", "dev", iface]),
+            argv(&["ip", "route", "flush", "dev", iface, "proto", routes::PROTO]),
+        ],
+    );
+    peers.and(rest)
 }

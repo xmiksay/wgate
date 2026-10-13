@@ -5,7 +5,7 @@
 use std::net::Ipv4Addr;
 
 use anyhow::Context;
-use ipnet::Ipv4Net;
+use ipnet::{Ipv4Net, Ipv4Subnets};
 use serde_json::Value;
 use wgate_core::{Id, network_of_chain};
 
@@ -27,8 +27,8 @@ pub fn parse(json: &str) -> anyhow::Result<Vec<(String, Id)>> {
     Ok(out)
 }
 
-/// The address ranges of an interval set (`nft -j list set …`).
-pub fn parse_ranges(json: &str) -> anyhow::Result<Vec<(Ipv4Addr, Ipv4Addr)>> {
+/// The addresses of an interval set (`nft -j list set …`), as networks.
+pub fn parse_ranges(json: &str) -> anyhow::Result<Vec<Ipv4Net>> {
     let v: Value = serde_json::from_str(json).context("nft -j")?;
     let addr = |v: &Value| -> anyhow::Result<Ipv4Addr> {
         v.as_str()
@@ -39,40 +39,17 @@ pub fn parse_ranges(json: &str) -> anyhow::Result<Vec<(Ipv4Addr, Ipv4Addr)>> {
     let mut out = Vec::new();
     for item in v["nftables"].as_array().context("no nftables array")? {
         for e in item["set"]["elem"].as_array().into_iter().flatten() {
-            out.push(if let Some(p) = e.get("prefix") {
+            if let Some(p) = e.get("prefix") {
                 let len = p["len"].as_u64().context("prefix length")?;
-                let net = Ipv4Net::new(addr(&p["addr"])?, u8::try_from(len)?)?;
-                (net.network(), net.broadcast())
+                out.push(Ipv4Net::new(addr(&p["addr"])?, u8::try_from(len)?)?.trunc());
             } else if let Some(r) = e.get("range") {
-                (addr(&r[0])?, addr(&r[1])?)
+                out.extend(Ipv4Subnets::new(addr(&r[0])?, addr(&r[1])?, 0));
             } else {
-                let a = addr(e)?;
-                (a, a)
-            });
+                out.push(Ipv4Net::from(addr(e)?));
+            }
         }
     }
     Ok(out)
-}
-
-/// Whether `ranges` cover every address of `nets`.
-pub fn covers(ranges: &[(Ipv4Addr, Ipv4Addr)], nets: &[Ipv4Net]) -> bool {
-    let mut ranges: Vec<(u32, u32)> = ranges
-        .iter()
-        .map(|(a, b)| ((*a).into(), (*b).into()))
-        .collect();
-    ranges.sort_unstable();
-    nets.iter().all(|net| {
-        let (mut next, end) = (
-            u64::from(u32::from(net.network())),
-            u64::from(u32::from(net.broadcast())),
-        );
-        for (lo, hi) in &ranges {
-            if u64::from(*lo) <= next && next <= u64::from(*hi) {
-                next = u64::from(*hi) + 1;
-            }
-        }
-        next > end
-    })
 }
 
 #[cfg(test)]
@@ -92,30 +69,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_and_checks_set_ranges() {
+    fn parses_set_ranges() {
         let json = r#"{"nftables": [{"metainfo": {"version": "1.1.7"}}, {"set": {"name": "tenant_space", "flags": ["interval"], "elem": [{"prefix": {"addr": "10.50.0.0", "len": 16}}, "10.60.0.1", {"range": ["10.70.0.0", "10.70.0.5"]}]}}]}"#;
-        let ranges = parse_ranges(json).unwrap();
-        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
-        assert_eq!(ranges[0], (ip("10.50.0.0"), ip("10.50.255.255")));
-        assert_eq!(ranges[1], (ip("10.60.0.1"), ip("10.60.0.1")));
-        let nets = |s: &[&str]| {
-            s.iter()
-                .map(|n| n.parse().unwrap())
-                .collect::<Vec<Ipv4Net>>()
-        };
-        assert!(covers(
-            &ranges,
-            &nets(&["10.50.3.0/24", "10.60.0.1/32", "10.70.0.4/31"])
-        ));
-        assert!(!covers(&ranges, &nets(&["10.70.0.0/29"])));
-        assert!(!covers(&ranges, &nets(&["10.51.0.0/24"])));
-        // Adjacent elements together cover a net neither covers alone.
-        let split = [
-            (ip("10.0.0.0"), ip("10.0.0.127")),
-            (ip("10.0.0.128"), ip("10.0.0.255")),
-        ];
-        assert!(covers(&split, &nets(&["10.0.0.0/24"])));
-        assert!(covers(&[], &[]));
-        assert!(!covers(&[], &nets(&["10.0.0.0/24"])));
+        let nets: Vec<String> = parse_ranges(json)
+            .unwrap()
+            .iter()
+            .map(Ipv4Net::to_string)
+            .collect();
+        assert_eq!(
+            nets,
+            [
+                "10.50.0.0/16",
+                "10.60.0.1/32",
+                "10.70.0.0/30",
+                "10.70.0.4/31"
+            ]
+        );
     }
 }

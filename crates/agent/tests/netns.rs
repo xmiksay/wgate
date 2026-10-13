@@ -7,7 +7,7 @@ mod common;
 use std::net::Ipv4Addr;
 
 use common::Netns;
-use wgate_core::{DesiredState, compile, render_base, render_network_removal};
+use wgate_core::{DesiredState, compile, render_base, render_network_removal, render_snat};
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
 /// with concatenated interval keys (design.md → Risks).
@@ -53,7 +53,7 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
             Some(&render_network_removal(id, iface)),
         );
     }
-    let empty = render_base(&compile(&DesiredState {
+    let empty = compile(&DesiredState {
         pool: vec![],
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
         node_cidrs: vec![],
@@ -63,8 +63,9 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
         networks: vec![],
         peers: vec![],
         federations: vec![],
-    }));
-    ns.exec(&["nft", "-f", "-"], Some(&empty));
+    });
+    ns.exec(&["nft", "-f", "-"], Some(&render_base(&empty)));
+    ns.exec(&["nft", "-f", "-"], Some(&render_snat(&empty)));
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
     for stale in ["10.50.", "n1_", "n2_", "wg-nexial", "snat"] {
         assert!(!listed.contains(stale), "{stale} survived:\n{listed}");
