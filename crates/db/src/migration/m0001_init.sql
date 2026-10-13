@@ -20,7 +20,7 @@ CREATE TABLE tenant (
 CREATE TABLE tenant_block (
     id        bigserial PRIMARY KEY,
     tenant_id bigint NOT NULL REFERENCES tenant ON DELETE CASCADE,
-    cidr      cidr NOT NULL,
+    cidr      cidr NOT NULL CHECK (family(cidr) = 4),
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
 
@@ -91,8 +91,10 @@ CREATE TABLE peer_route (
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
 
--- Revoking a peer frees its LANs; enforced here so no code path can leave a revoked
--- peer holding a range forever.
+-- A revoked peer never holds a range: revoking frees its LANs, and a LAN cannot be
+-- given to a revoked peer. The guard locks the peer row, so a route insert and a
+-- revocation running at the same time serialize (the foreign-key lock alone does not
+-- conflict with the revoke's row lock): whichever commits second sees the other.
 CREATE FUNCTION free_revoked_routes() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     DELETE FROM peer_route WHERE peer_id = NEW.id;
@@ -101,6 +103,19 @@ END
 $$;
 CREATE TRIGGER peer_revoked AFTER UPDATE OF revoked_at ON peer
     FOR EACH ROW WHEN (NEW.revoked_at IS NOT NULL) EXECUTE FUNCTION free_revoked_routes();
+
+CREATE FUNCTION route_needs_active_peer() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM 1 FROM peer WHERE id = NEW.peer_id AND revoked_at IS NULL FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'peer % is revoked or missing', NEW.peer_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER peer_route_active BEFORE INSERT OR UPDATE OF peer_id ON peer_route
+    FOR EACH ROW EXECUTE FUNCTION route_needs_active_peer();
 
 -- proto + ports, shared by every rule-like table: tcp/udp carry 1 <= from <= to, icmp
 -- none. Never NULL: a CHECK passes on NULL, so `tcp` with NULL ports would slip by.
@@ -176,6 +191,22 @@ CREATE TABLE audit (
     target        text NOT NULL,
     detail        jsonb NOT NULL DEFAULT '{}'
 );
+
+-- Foreign keys get no index by themselves; cascades and per-peer lookups need them.
+CREATE INDEX ON tenant_block (tenant_id);
+CREATE INDEX ON network (tenant_id);
+CREATE INDEX ON app_user (tenant_id);
+CREATE INDEX ON device (user_id);
+CREATE INDEX ON peer (device_id);
+CREATE INDEX ON peer (network_id);
+CREATE INDEX ON peer_route (peer_id);
+CREATE INDEX ON ceiling (tenant_id);
+CREATE INDEX ON rule (network_id);
+CREATE INDEX ON rule (target_network_id);
+CREATE INDEX ON federation (from_network_id);
+CREATE INDEX ON federation (to_network_id);
+CREATE INDEX ON inbound (network_id);
+CREATE INDEX ON audit (actor_user_id);
 
 -- Bumped by every write transaction, which also NOTIFYs wgate_changed with it.
 CREATE TABLE state_revision (

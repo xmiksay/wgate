@@ -1,33 +1,51 @@
-//! Schema migrations, applied by `wgate migrate` before the units restart.
+//! Schema migrations, applied in order by `wgate migrate` before the units restart.
+//! Plain SQL files and a bookkeeping table: wgate needs no more than that.
 
-use sea_orm_migration::prelude::*;
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, TransactionTrait};
 
-pub struct Migrator;
+/// In order; a name is recorded once its migration is applied.
+const MIGRATIONS: &[(&str, &str)] = &[("m0001_init", include_str!("m0001_init.sql"))];
 
-#[async_trait::async_trait]
-impl MigratorTrait for Migrator {
-    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Init)]
-    }
-}
-
-struct Init;
-
-// Named by hand: the derive names a migration after its file, which here is `mod.rs`
-// and would be the same for every later migration.
-impl MigrationName for Init {
-    fn name(&self) -> &str {
-        "m0001_init"
-    }
-}
-
-#[async_trait::async_trait]
-impl MigrationTrait for Init {
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(include_str!("m0001_init.sql"))
+/// Applies the pending migrations in one transaction, so a failure leaves the schema
+/// as it was. Returns the names applied now.
+pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr> {
+    db.execute_unprepared(
+        "CREATE TABLE IF NOT EXISTS wgate_migration (
+            name       text PRIMARY KEY,
+            applied_at timestamptz NOT NULL DEFAULT now()
+        )",
+    )
+    .await?;
+    let txn = db.begin().await?;
+    // Two concurrent `wgate migrate` runs must not both apply the same migration.
+    txn.execute_unprepared("LOCK TABLE wgate_migration IN EXCLUSIVE MODE")
+        .await?;
+    let mut applied = Vec::new();
+    for (name, sql) in MIGRATIONS {
+        let done = txn
+            .query_one_raw(sea_orm::Statement::from_sql_and_values(
+                sea_orm::DbBackend::Postgres,
+                "SELECT 1 FROM wgate_migration WHERE name = $1",
+                [(*name).into()],
+            ))
+            .await?
+            .is_some();
+        if !done {
+            txn.execute_unprepared(sql).await?;
+            txn.execute_raw(sea_orm::Statement::from_sql_and_values(
+                sea_orm::DbBackend::Postgres,
+                "INSERT INTO wgate_migration (name) VALUES ($1)",
+                [(*name).into()],
+            ))
             .await?;
-        Ok(())
+            applied.push(*name);
+        }
     }
+    txn.commit().await?;
+    Ok(applied)
+}
+
+/// Connects to `database_url` and applies the pending migrations.
+pub async fn migrate_url(database_url: &str) -> Result<Vec<&'static str>, DbErr> {
+    migrate(&Database::connect(database_url).await?).await
 }

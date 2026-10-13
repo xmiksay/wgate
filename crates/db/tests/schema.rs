@@ -7,8 +7,7 @@ use std::time::Duration;
 
 use common::{ok, pg, refused};
 use sea_orm::{ConnectionTrait, Database, TransactionTrait};
-use sea_orm_migration::MigratorTrait;
-use wgate_db::{Migrator, revision};
+use wgate_db::{migrate, revision};
 
 const BASE: &str = "
     INSERT INTO tenant (id, slug, name) VALUES (1, 'nexial', 'Nexial'), (2, 'krcmar', 'Krcmar');
@@ -23,9 +22,10 @@ const KEY: &str = "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=";
 #[tokio::test]
 async fn migrations_apply_and_reapply() {
     let pg = pg("").await;
-    Migrator::up(&pg.db, None)
-        .await
-        .expect("second run is a no-op");
+    assert!(
+        migrate(&pg.db).await.expect("second run").is_empty(),
+        "nothing pending"
+    );
     assert_eq!(revision::current(&pg.db).await.expect("revision"), 0);
 }
 
@@ -202,13 +202,13 @@ async fn the_migration_is_recorded_under_its_own_name() {
         .db
         .query_one_raw(sea_orm::Statement::from_string(
             sea_orm::DbBackend::Postgres,
-            "SELECT version FROM seaql_migrations",
+            "SELECT name FROM wgate_migration",
         ))
         .await
         .expect("query")
         .expect("one migration");
     assert_eq!(
-        row.try_get::<String>("", "version").expect("version"),
+        row.try_get::<String>("", "name").expect("name"),
         "m0001_init"
     );
 }
@@ -254,4 +254,74 @@ async fn tenants_may_share_an_identity_provider() {
         "INSERT INTO oidc_provider (tenant_id, issuer, client_id) VALUES (NULL, 'https://x', 'y')",
     )
     .await;
+}
+
+#[tokio::test]
+async fn a_revoked_peer_cannot_be_given_a_lan() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        &format!(
+            "INSERT INTO peer (id, device_id, network_id, public_key, ip, revoked_at)
+                 VALUES (1, 1, 1, '{KEY}', '10.50.0.2', now())"
+        ),
+    )
+    .await;
+    refused(
+        &pg.db,
+        "INSERT INTO peer_route (peer_id, cidr) VALUES (1, '192.168.1.0/24')",
+    )
+    .await;
+    refused(
+        &pg.db,
+        "INSERT INTO tenant_block (tenant_id, cidr) VALUES (1, 'fd00::/64')",
+    )
+    .await;
+}
+
+/// A route inserted while the peer is being revoked must not survive: the guard's
+/// row lock makes the revocation wait for the insert, and then free the new route.
+#[tokio::test]
+async fn a_route_racing_a_revocation_is_freed() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        &format!(
+            "INSERT INTO peer (id, device_id, network_id, public_key, ip) VALUES (1, 1, 1, '{KEY}', '10.50.0.2')"
+        ),
+    )
+    .await;
+    let insert = pg.db.begin().await.expect("begin");
+    insert
+        .execute_unprepared("INSERT INTO peer_route (peer_id, cidr) VALUES (1, '192.168.1.0/24')")
+        .await
+        .expect("insert route");
+    let other = sea_orm::Database::connect(&pg.url)
+        .await
+        .expect("second connection");
+    let revoke = tokio::spawn(async move {
+        other
+            .execute_unprepared("UPDATE peer SET revoked_at = now() WHERE id = 1")
+            .await
+            .expect("revoke");
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !revoke.is_finished(),
+        "the revocation waits for the route insert"
+    );
+    insert.commit().await.expect("commit route");
+    revoke.await.expect("revoke task");
+    let row = pg
+        .db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT count(*) AS n FROM peer_route",
+        ))
+        .await
+        .expect("count")
+        .expect("row");
+    assert_eq!(row.try_get::<i64>("", "n").expect("n"), 0);
 }
