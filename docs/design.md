@@ -73,7 +73,7 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
  │                                                                  │    │
  │  wgate agent   (root, CAP_NET_ADMIN only)                        │    │
  │    LISTEN wgate_changed + reconcile every 60 s                   │    │
- │    ├─ netlink: wg-<slug> interfaces, peers, routes               │    │
+ │    ├─ ip / wg: wg-<slug> interfaces, peers, routes               │    │
  │    └─ nft: table inet wgate (base + one transaction per network) │    │
  └──────────────────────────────────────────────────────────────────┼────┘
                                                                     ▼
@@ -327,7 +327,7 @@ Other peers are unaffected; the interface never restarts.
 Cargo.toml (workspace)   crates/core     model, allocation, rights, compile, nft/wg rendering — pure
                          crates/db       SeaORM entities, migrations, NOTIFY, state loader
                          crates/server   Axum, OIDC
-                         crates/agent    netlink (defguard_wireguard_rs), nft -f, LISTEN loop
+                         crates/agent    ip / wg / nft -f (behind a Runner), LISTEN loop
                          crates/wgate    the binary: `wgate server|agent|migrate`
 web/                     Vue UI
 Makefile                 build, lint, test, test-netns, golden, release

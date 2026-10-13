@@ -19,7 +19,8 @@ pub use net::{
     is_inside, is_peer_ip, is_wg_key, next_free_net, next_peer_ip, next_port, overlaps,
 };
 pub use nft::{
-    network_of_chain, render_all, render_base, render_network, render_network_removal, render_snat,
+    network_of_chain, render_all, render_base, render_network, render_network_purge,
+    render_network_removal, render_snat,
 };
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, merge_nets, subtract_nets};
 pub use rule::{PortRange, Proto, Rule, RuleError, Service};

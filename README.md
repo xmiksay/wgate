@@ -16,7 +16,7 @@ per packet in `table inet wgate`. Clients are plain WireGuard.
 | `crates/core` | Pure logic: model, rights intersection, allocators, nft/client-config rendering |
 | `crates/db` | SeaORM entities, migrations, revision + NOTIFY, desired-state loader |
 | `crates/server` | Axum REST API + embedded UI, OIDC |
-| `crates/agent` | Root reconciler: netlink wg interfaces/peers, `nft -f` |
+| `crates/agent` | Root reconciler: wg interfaces/peers and routes via `ip`/`wg`, `nft -f` |
 | `crates/wgate` | The binary: `wgate server \| agent \| migrate` |
 | `web/` | Vue 3 + TS + Vite + Tailwind + Pinia UI |
 

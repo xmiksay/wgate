@@ -172,6 +172,18 @@ pub struct Compiled {
     pub node_cidrs: Vec<Ipv4Net>,
 }
 
+impl Compiled {
+    /// The peers of network `id`.
+    pub fn peers_of(&self, id: Id) -> impl Iterator<Item = &CompiledPeer> {
+        self.peers.iter().filter(move |p| p.network == id)
+    }
+
+    /// Network `id`, if it compiled.
+    pub fn network(&self, id: Id) -> Option<&CompiledNetwork> {
+        self.networks.iter().find(|n| n.id == id)
+    }
+}
+
 pub fn compile(state: &DesiredState) -> Compiled {
     let valid::Networks {
         valid: networks,

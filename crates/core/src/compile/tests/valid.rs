@@ -126,14 +126,7 @@ fn network_slugs_and_blocks_follow_older_wins() {
             (101, Problem::InvalidNetwork),
         ]
     );
-    assert_eq!(
-        c.networks
-            .iter()
-            .find(|n| n.id == get(&c, 21).network)
-            .unwrap()
-            .iface,
-        "wg-n2"
-    );
+    assert_eq!(c.network(get(&c, 21).network).unwrap().iface, "wg-n2");
 }
 
 #[test]
@@ -157,14 +150,7 @@ fn a_range_loser_does_not_hold_its_slug() {
     s.networks.extend([loser, winner]);
     s.peers.push(peer(131, 13, "10.50.0.34", &[]));
     let c = compile(&s);
-    assert_eq!(
-        c.networks
-            .iter()
-            .find(|n| n.id == get(&c, 131).network)
-            .unwrap()
-            .iface,
-        "wg-x"
-    );
+    assert_eq!(c.network(get(&c, 131).network).unwrap().iface, "wg-x");
 }
 
 #[test]

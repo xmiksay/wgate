@@ -174,6 +174,17 @@ fn a_network_fragment_holds_only_its_own_peers() {
 }
 
 #[test]
+fn a_purge_is_the_removal_without_map_entries() {
+    let purge = render_network_purge(7);
+    assert!(!purge.contains("element"));
+    assert!(
+        purge.contains("delete chain inet wgate n7_from")
+            && purge.contains("delete set inet wgate n7_inbound_icmp")
+    );
+    assert!(render_network_removal(7, "wg-x").ends_with(&purge));
+}
+
+#[test]
 fn removal_deletes_map_entries_before_chains() {
     let script = render_network_removal(7, "wg-x");
     let entry = script.find("delete element inet wgate from_net").unwrap();

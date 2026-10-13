@@ -9,9 +9,7 @@ use crate::runner::Runner;
 use crate::wg::{self, PeerDiff, WgPeer};
 
 pub(super) fn desired_peers(c: &Compiled, n: &CompiledNetwork) -> Vec<WgPeer> {
-    c.peers
-        .iter()
-        .filter(|p| p.network == n.id)
+    c.peers_of(n.id)
         .map(|p| WgPeer {
             public_key: p.public_key.clone(),
             allowed: p.addrs.clone(),
@@ -25,8 +23,7 @@ pub(super) fn peer_diff(
     c: &Compiled,
     n: &CompiledNetwork,
 ) -> anyhow::Result<PeerDiff> {
-    let current = wg::parse_allowed_ips(&r.run(&["wg", "show", &n.iface, "allowed-ips"], None)?)?;
-    Ok(wg::diff(&current, &desired_peers(c, n)))
+    Ok(wg::diff(&current_peers(r, &n.iface)?, &desired_peers(c, n)))
 }
 
 pub(super) fn removals(r: &dyn Runner, iface: &str, d: &PeerDiff) -> anyhow::Result<()> {
@@ -58,9 +55,7 @@ pub(super) fn allowed_ips(iface: &str, p: &WgPeer) -> Vec<String> {
 
 /// A router's LANs: its addrs beyond its own /32.
 pub(super) fn lans(c: &Compiled, n: &CompiledNetwork) -> Vec<Ipv4Net> {
-    c.peers
-        .iter()
-        .filter(|p| p.network == n.id)
+    c.peers_of(n.id)
         .flat_map(|p| {
             p.addrs
                 .iter()
@@ -153,8 +148,8 @@ pub(super) fn link_exists(r: &dyn Runner, iface: &str) -> bool {
 /// Takes everything a gone network's interface carries away (peers, addresses, LAN
 /// routes) when the interface itself would not go.
 pub(super) fn disarm(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
-    let current = wg::parse_allowed_ips(&r.run(&["wg", "show", iface, "allowed-ips"], None)?)?;
-    let peers = removals(r, iface, &wg::diff(&current, &[]));
+    let peers =
+        current_peers(r, iface).and_then(|current| removals(r, iface, &wg::diff(&current, &[])));
     let rest = all(
         r,
         &[
@@ -163,4 +158,10 @@ pub(super) fn disarm(r: &dyn Runner, iface: &str) -> anyhow::Result<()> {
         ],
     );
     peers.and(rest)
+}
+
+/// The peers an interface has, read with `allowed-ips`, never `dump` (that carries
+/// the hub's private key and the peers' preshared keys).
+pub(super) fn current_peers(r: &dyn Runner, iface: &str) -> anyhow::Result<Vec<WgPeer>> {
+    wg::parse_allowed_ips(&r.run(&["wg", "show", iface, "allowed-ips"], None)?)
 }
