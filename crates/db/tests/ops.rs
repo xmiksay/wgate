@@ -135,3 +135,32 @@ async fn migrate_refuses_a_newer_schema_and_regrants() {
         .expect("connect as agent");
     ok(&agent, "SELECT * FROM peer").await;
 }
+
+#[tokio::test]
+async fn one_notification_per_changing_transaction() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    let base = revision::current(&pg.db).await.expect("revision");
+    // Several statements, one transaction: one bump.
+    ok(
+        &pg.db,
+        "BEGIN;
+         UPDATE network SET mesh = true;
+         UPDATE network SET mesh = false;
+         INSERT INTO tenant (id, slug, name) VALUES (3, 't3', 'x');
+         COMMIT",
+    )
+    .await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
+    // Nothing changed, or only data the state does not depend on: no bump.
+    ok(&pg.db, "UPDATE peer SET revoked_at = now() WHERE id = 999").await;
+    ok(
+        &pg.db,
+        "UPDATE app_user SET email = 'new@nexial.cz', oidc_sub = 's'",
+    )
+    .await;
+    ok(&pg.db, "UPDATE device SET name = 'renamed'").await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
+    ok(&pg.db, "UPDATE app_user SET disabled_at = now()").await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 2);
+}

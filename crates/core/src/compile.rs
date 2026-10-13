@@ -130,6 +130,8 @@ pub enum Problem {
     /// Its address (a peer) or range (a route) is held by an older claim, or a
     /// route overlaps another route of the same peer.
     Overlap,
+    /// Its public key is an older active peer's.
+    DuplicateKey,
     /// A routed subnet outside `routed_space`, over the pool or reserved
     /// infrastructure, or with host bits.
     RoutedNotAllowed,

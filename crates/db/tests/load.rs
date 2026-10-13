@@ -193,3 +193,18 @@ async fn a_disabled_tenant_takes_its_networks_along() {
     assert_eq!(state.networks.iter().map(|n| n.id).collect::<Vec<_>>(), [3]);
     assert_eq!(state.tenants.iter().map(|t| t.id).collect::<Vec<_>>(), [2]);
 }
+
+/// The grants and the loader must agree: the agent loads as `wgate_agent`.
+#[tokio::test]
+async fn the_agent_role_can_load_the_desired_state() {
+    let pg = pg("CREATE ROLE wgate_agent LOGIN PASSWORD 'agent'").await;
+    ok(&pg.db, SCENARIO).await;
+    ok(&pg.db, &peers()).await;
+    let agent = sea_orm::Database::connect(&common::as_agent(&pg.url))
+        .await
+        .expect("connect as agent");
+    let loaded = desired_state(&agent, &infra())
+        .await
+        .expect("load as wgate_agent");
+    assert_eq!(loaded.state.peers.len(), 3);
+}

@@ -168,7 +168,8 @@ CREATE TRIGGER revocation_is_final BEFORE UPDATE OF revoked_at ON peer
     EXECUTE FUNCTION revocation_is_final();
 
 -- An address and a key are free again once their peer is revoked; a device is a
--- member of a network at most once.
+-- member of a network at most once. Keys are unique across networks too: every
+-- membership has its own key pair (design.md → Decisions).
 CREATE UNIQUE INDEX peer_ip_active ON peer (ip) WHERE revoked_at IS NULL;
 CREATE UNIQUE INDEX peer_key_active ON peer (public_key) WHERE revoked_at IS NULL;
 CREATE UNIQUE INDEX peer_membership_active ON peer (device_id, network_id)
@@ -198,7 +199,8 @@ BEGIN
 END
 $$;
 CREATE TRIGGER peer_revoked AFTER UPDATE OF revoked_at ON peer
-    FOR EACH ROW WHEN (NEW.revoked_at IS NOT NULL) EXECUTE FUNCTION free_revoked_routes();
+    FOR EACH ROW WHEN (OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL)
+    EXECUTE FUNCTION free_revoked_routes();
 
 CREATE FUNCTION route_needs_active_peer() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -264,8 +266,24 @@ CREATE TABLE federation (
     proto           proto NOT NULL,
     port_from       integer,
     port_to         integer,
-    CHECK (valid_service(proto, port_from, port_to))
+    CHECK (valid_service(proto, port_from, port_to)),
+    CHECK (from_network_id <> to_network_id)
 );
+
+-- Federations link tenants; inside one tenant, rules do that (and are the tenant
+-- admin's). Network tenants are immutable, so this cannot race.
+CREATE FUNCTION federation_crosses_tenants() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF (SELECT tenant_id FROM network WHERE id = NEW.from_network_id)
+       = (SELECT tenant_id FROM network WHERE id = NEW.to_network_id) THEN
+        RAISE EXCEPTION 'a federation links two tenants; use a rule inside one'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER federation_crosses_tenants BEFORE INSERT OR UPDATE ON federation
+    FOR EACH ROW EXECUTE FUNCTION federation_crosses_tenants();
 
 -- Sources outside tenant space that may open to a network's members (global admin).
 CREATE TABLE inbound (
@@ -320,10 +338,18 @@ CREATE TABLE state_revision (
 );
 INSERT INTO state_revision (revision) VALUES (0);
 
+-- Deferred to commit and run once per transaction: the hot state_revision row lock
+-- is then the last lock a writer takes and is held only while it commits, so it can
+-- neither serialize writers for their whole duration nor close a deadlock cycle.
+-- Row-level, so a statement that changes nothing does not count.
 CREATE FUNCTION state_changed() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     rev bigint;
 BEGIN
+    IF current_setting('wgate.state_changed', true) = 'yes' THEN
+        RETURN NULL;
+    END IF;
+    PERFORM set_config('wgate.state_changed', 'yes', true);
     UPDATE state_revision SET revision = revision + 1 RETURNING revision INTO rev;
     PERFORM pg_notify('wgate_changed', rev::text);
     RETURN NULL;
@@ -331,13 +357,22 @@ END
 $$;
 DO $$
 DECLARE
-    t text;
+    t   text;
+    ops text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['tenant', 'tenant_block', 'network', 'app_user', 'device', 'peer',
                              'peer_route', 'ceiling', 'rule', 'federation', 'inbound'] LOOP
-        EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON %I
-                        FOR EACH STATEMENT EXECUTE FUNCTION state_changed()',
-                       t || '_changed', t);
+        -- Users and devices also carry data the state does not depend on (emails,
+        -- OIDC subjects, names): only the columns it does depend on count.
+        ops := CASE t
+            WHEN 'app_user' THEN 'INSERT OR DELETE OR UPDATE OF tenant_id, role, disabled_at'
+            WHEN 'device' THEN 'INSERT OR DELETE OR UPDATE OF user_id'
+            ELSE 'INSERT OR DELETE OR UPDATE'
+        END;
+        EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER %s ON %I
+                        DEFERRABLE INITIALLY DEFERRED
+                        FOR EACH ROW EXECUTE FUNCTION state_changed()',
+                       t || '_changed', ops, t);
     END LOOP;
 END
 $$;
