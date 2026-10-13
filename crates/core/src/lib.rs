@@ -16,7 +16,7 @@ pub use compile::{
 };
 pub use net::{
     InvalidSlug, MAX_NETWORK_PREFIX, PORT_RANGE, RESERVED_PORT, Slug, first_overlap, hub_address,
-    is_inside, is_peer_ip, next_free_net, next_peer_ip, next_port, overlaps,
+    is_inside, is_peer_ip, is_wg_key, next_free_net, next_peer_ip, next_port, overlaps,
 };
 pub use nft::render_nft;
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, merge_nets, subtract_nets};
@@ -48,7 +48,7 @@ mod testing {
             id,
             network,
             ip: ip(addr),
-            public_key: format!("key{id}"),
+            public_key: key(id),
             // A global admin's device: may join any network.
             owner_tenant: None,
             routed: routed
@@ -60,6 +60,11 @@ mod testing {
                 })
                 .collect(),
         }
+    }
+
+    /// A valid WireGuard key, distinct per `id`.
+    pub(crate) fn key(id: Id) -> String {
+        format!("{:0>42}A=", id.unsigned_abs())
     }
 
     /// A block claimed with `id`.

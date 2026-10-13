@@ -9,7 +9,7 @@ use ipnet::Ipv4Net;
 
 use super::{DesiredState, Id, Network, Peer, Problem};
 use crate::net::{
-    MAX_NETWORK_PREFIX, PORT_RANGE, RESERVED_PORT, first_overlap, is_inside, is_peer_ip,
+    MAX_NETWORK_PREFIX, PORT_RANGE, RESERVED_PORT, first_overlap, is_inside, is_peer_ip, is_wg_key,
 };
 use crate::rights::RuleSet;
 use crate::rights::merge_nets;
@@ -139,6 +139,7 @@ pub(super) fn peers<'a>(
                 Some(Problem::ForeignDevice)
             }
             Some(n) if !is_peer_ip(n.net.cidr, p.ip) => Some(Problem::InvalidIp),
+            Some(_) if !is_wg_key(&p.public_key) => Some(Problem::InvalidKey),
             // Networks are disjoint, so a duplicate is always an older peer's address.
             Some(_) if ips.contains(&p.ip) => Some(Problem::Overlap),
             Some(_) if keys.contains(p.public_key.as_str()) => Some(Problem::DuplicateKey),
