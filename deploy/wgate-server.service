@@ -1,0 +1,29 @@
+# Example unit; ansible (role wgate) installs the real one.
+[Unit]
+Description=wgate server: portal API and admin login
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/wgate server --config /etc/wgate/server.toml
+Restart=always
+RestartSec=5
+# Unprivileged: no capabilities at all. server.toml holds the OIDC client secret and
+# the DB password, readable by this user only.
+User=wgate
+Group=wgate
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

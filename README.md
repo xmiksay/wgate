@@ -29,7 +29,7 @@ from `web/.nvmrc`.
 make deps        # npm ci in web/
 make lint        # clippy -D warnings, rustfmt, eslint, vue-tsc
 make test        # unit + integration (Docker: the db tests start Postgres containers)
-make golden      # rewrite core golden files (nft ruleset, client configs)
+make golden      # rewrite golden files (nft ruleset, client configs, docs/openapi.json)
 make test-netns  # root-only tests in network namespaces (sudo, nft, wireguard module, python3)
 make release     # static x86_64 musl binary + sha256 in dist/
 make help        # all targets
@@ -39,11 +39,14 @@ make help        # all targets
 
 | Variable | Used by | What |
 |---|---|---|
-| `WGATE_DATABASE_URL` | `wgate migrate` | Postgres URL of the owner role, direct to Postgres (not pgbouncer) |
+| `WGATE_DATABASE_URL` | `wgate migrate`, `wgate admin grant <email>` | Postgres URL of the owner role, direct to Postgres (not pgbouncer); `admin grant` makes (or re-enables) a global admin |
 | `WGATE_AGENT_CONFIG` | `wgate agent` | Path of the agent config (default `/etc/wgate/agent.toml`, see `crates/agent/agent.example.toml`) |
+| `WGATE_SERVER_CONFIG` | `wgate server` | Path of the server config (default `/etc/wgate/server.toml`, see `crates/server/server.example.toml`) |
 
 The agent needs `ip` (iproute2), `wg` (wireguard-tools) and `nft` on the hub; an example
-systemd unit is `deploy/wgate-agent.service`.
+systemd unit is `deploy/wgate-agent.service`. The server runs unprivileged
+(`deploy/wgate-server.service`); its API is described in `docs/openapi.json` (also
+served at `/api/v1/openapi.json`).
 
 See `.env.example`. `make migrate` applies the migrations with it.
 

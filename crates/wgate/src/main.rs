@@ -12,7 +12,22 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Portal: REST API + UI (unprivileged)
-    Server,
+    Server {
+        #[arg(
+            long,
+            env = "WGATE_SERVER_CONFIG",
+            default_value = "/etc/wgate/server.toml"
+        )]
+        config: std::path::PathBuf,
+    },
+    /// Global admins
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+        /// Postgres URL (as for `migrate`)
+        #[arg(long, env = "WGATE_DATABASE_URL", hide_env_values = true)]
+        database_url: String,
+    },
     /// Reconciler: wg interfaces, peers and `table inet wgate` (CAP_NET_ADMIN)
     Agent {
         #[arg(
@@ -30,6 +45,12 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Make <email> a global admin (or enable one again); they log in with it
+    Grant { email: String },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -40,7 +61,20 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match Cli::parse().command {
-        Command::Server => anyhow::bail!("`wgate server` is not implemented yet"),
+        Command::Server { config } => {
+            wgate_server::serve(wgate_server::Config::load(&config)?).await
+        }
+        Command::Admin {
+            command: AdminCommand::Grant { email },
+            database_url,
+        } => {
+            let db = sea_orm::Database::connect(&database_url)
+                .await
+                .context("connect to the database")?;
+            let id = wgate_server::grant_admin(&db, &email).await?;
+            tracing::info!(user = id, %email, "global admin granted");
+            Ok(())
+        }
         Command::Agent { config } => {
             let config = wgate_agent::Config::load(&config)?;
             wgate_agent::run(config, wgate_agent::System::default()).await

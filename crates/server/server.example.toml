@@ -1,0 +1,18 @@
+# /etc/wgate/server.toml (rendered by ansible). The address settings must match the
+# agent's.
+listen = "172.19.9.10:8470"
+database_url = "postgres://wgate:secret@172.19.9.2:5432/wgate"
+public_url = "https://vpn.mmik.cz"
+endpoint_host = "vpn.mmik.cz"
+pool = ["10.50.0.0/16"]
+routed_space = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+reserved = ["172.19.9.0/24", "172.16.16.0/24"]
+snat_source = "172.19.9.10"
+node_cidrs = ["172.19.9.0/24"]
+
+# Global admins log in here; who is one is the database's app_user role
+# (`wgate admin grant <email>` makes the first).
+[admin_oidc]
+issuer = "https://accounts.google.com"
+client_id = "wgate"
+client_secret = "change-me"

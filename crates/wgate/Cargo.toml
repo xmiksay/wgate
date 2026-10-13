@@ -13,6 +13,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 wgate-agent.workspace = true
 wgate-db.workspace = true
+wgate-server.workspace = true
+sea-orm = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
 
 [lints]
 workspace = true
