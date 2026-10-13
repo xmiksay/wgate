@@ -26,16 +26,20 @@ async fn changes_notify_on_commit_only() {
     let mut listener = revision::listener(&pg.url).await.expect("listen");
 
     let txn = pg.db.begin().await.expect("begin");
-    txn.execute_unprepared("INSERT INTO tenant (slug, name) VALUES ('gone', 'x')")
-        .await
-        .expect("insert");
+    txn.execute_unprepared(
+        "INSERT INTO tenant (id, slug, name) VALUES (7, 'gone', 'x');
+         INSERT INTO tenant_block (tenant_id, cidr) VALUES (7, '10.50.7.0/24')",
+    )
+    .await
+    .expect("insert");
     txn.rollback().await.expect("rollback");
     assert_eq!(revision::current(&pg.db).await.expect("revision"), 0);
 
     // No write path calls anything: the triggers bump and notify.
     ok(
         &pg.db,
-        "INSERT INTO tenant (slug, name) VALUES ('kept', 'x')",
+        "INSERT INTO tenant (id, slug, name) VALUES (8, 'kept', 'x');
+         INSERT INTO tenant_block (tenant_id, cidr) VALUES (8, '10.50.8.0/24')",
     )
     .await;
     let note = tokio::time::timeout(Duration::from_secs(5), listener.recv())
@@ -191,7 +195,7 @@ async fn regranting_narrows_an_over_granted_agent() {
 }
 
 #[tokio::test]
-async fn state_is_written_at_read_committed_and_truncate_counts() {
+async fn state_is_written_at_read_committed_and_never_truncated() {
     let pg = pg("").await;
     ok(&pg.db, BASE).await;
     let txn = pg
@@ -199,16 +203,15 @@ async fn state_is_written_at_read_committed_and_truncate_counts() {
         .begin_with_config(Some(sea_orm::IsolationLevel::RepeatableRead), None)
         .await
         .expect("begin");
-    txn.execute_unprepared("UPDATE network SET mesh = true")
-        .await
-        .expect("update");
     assert!(
-        txn.commit().await.is_err(),
-        "a snapshot-isolated state write is refused"
+        txn.execute_unprepared("UPDATE network SET mesh = true")
+            .await
+            .is_err(),
+        "a snapshot-isolated state write fails at its first statement"
     );
-    let base = revision::current(&pg.db).await.expect("revision");
-    ok(&pg.db, "TRUNCATE inbound").await;
-    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
+    txn.rollback().await.expect("rollback");
+    refused(&pg.db, "TRUNCATE inbound").await;
+    refused(&pg.db, "UPDATE network SET id = 9 WHERE id = 1").await;
 }
 
 #[tokio::test]
@@ -234,4 +237,28 @@ async fn moving_a_rule_counts_and_presetting_the_marker_does_not_mute() {
     )
     .await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 2);
+}
+
+#[tokio::test]
+async fn the_once_per_transaction_marker_cannot_be_forged() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    let base = revision::current(&pg.db).await.expect("revision");
+    ok(
+        &pg.db,
+        "BEGIN;
+         SELECT set_config('wgate.state_changed', pg_current_xact_id()::text, true);
+         UPDATE network SET mesh = true;
+         COMMIT",
+    )
+    .await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
+    // Users and devices count only through their peers.
+    ok(
+        &pg.db,
+        "INSERT INTO app_user (id, tenant_id, email, role) VALUES (5, 1, 'n@nexial.cz', 'user')",
+    )
+    .await;
+    ok(&pg.db, "UPDATE app_user SET role = 'tenant_admin'").await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
 }

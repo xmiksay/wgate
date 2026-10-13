@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::net::RESERVED_PORT;
+use crate::testing::key;
 
 #[test]
 fn networks_outside_the_pool_or_overlapping_fail_closed() {
@@ -221,10 +222,10 @@ fn invalid_peers_and_routes_are_left_out() {
 fn a_key_is_used_once() {
     let mut s = state();
     let mut twin = peer(62, B, "10.50.0.21", &[]);
-    twin.public_key = "key21".into(); // b1's
+    twin.public_key = key(21); // b1's
     // A rejected peer holds nothing: 63 may take the address 62 asked for.
     let mut also_twin = peer(64, C, "10.50.1.9", &[]);
-    also_twin.public_key = "key21".into();
+    also_twin.public_key = key(21);
     s.peers
         .extend([twin, peer(63, B, "10.50.0.21", &[]), also_twin]);
     let c = compile(&s);
@@ -233,6 +234,15 @@ fn a_key_is_used_once() {
         [(62, Problem::DuplicateKey), (64, Problem::DuplicateKey)]
     );
     get(&c, 63);
+}
+
+#[test]
+fn a_malformed_key_fails_closed() {
+    let mut s = state();
+    let mut bad = peer(65, B, "10.50.0.25", &[]);
+    bad.public_key = "not a key".into();
+    s.peers.push(bad);
+    assert_eq!(compile(&s).skipped, [(65, Problem::InvalidKey)]);
 }
 
 #[test]

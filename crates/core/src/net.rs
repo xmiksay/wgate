@@ -63,6 +63,17 @@ impl fmt::Display for Slug {
     }
 }
 
+/// Whether `key` is a WireGuard key as `wg` prints it: 32 bytes of standard base64,
+/// 44 characters (the last group carries 2 padding bits, hence the narrow 43rd).
+pub fn is_wg_key(key: &str) -> bool {
+    let b = key.as_bytes();
+    let b64 = |c: &u8| c.is_ascii_alphanumeric() || *c == b'+' || *c == b'/';
+    b.len() == 44
+        && b[..42].iter().all(b64)
+        && b"AEIMQUYcgkosw480".contains(&b[42])
+        && b[43] == b'='
+}
+
 /// Whether two networks share any address.
 pub fn overlaps(a: Ipv4Net, b: Ipv4Net) -> bool {
     a.contains(&b.network()) || b.contains(&a.network())
@@ -127,6 +138,19 @@ pub fn next_port(used: &[u16]) -> Option<u16> {
 mod tests {
     use super::*;
     use crate::testing::net;
+
+    #[test]
+    fn wireguard_keys() {
+        assert!(is_wg_key("yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="));
+        for bad in [
+            "",
+            "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk",
+            "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmB=",
+            "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBm!=",
+        ] {
+            assert!(!is_wg_key(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn slug_validation() {

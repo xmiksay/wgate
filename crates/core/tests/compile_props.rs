@@ -57,7 +57,17 @@ fn state() -> impl Strategy<Value = DesiredState> {
     );
     let ceilings = prop::collection::vec(prop::collection::vec(external(), 0..4), 2);
     // Routed LAN: 192.168.0-3.0/24 (allowed, may collide) or 8.8.8.0/24 (not).
-    let peers = prop::collection::vec((0..NETWORKS, 2u8..8, prop::option::of(0u8..5)), 0..8);
+    // (network, host, LAN, shared-key seed, device of the other tenant's user)
+    let peers = prop::collection::vec(
+        (
+            0..NETWORKS,
+            2u8..8,
+            prop::option::of(0u8..5),
+            prop::option::weighted(0.2, 0u8..3),
+            prop::bool::weighted(0.15),
+        ),
+        0..8,
+    );
     let federations = prop::collection::vec((0..NETWORKS, 0..NETWORKS, service()), 0..3);
     (networks, ceilings, peers, federations).prop_map(|(networks, ceilings, peers, federations)| {
         let mut seen = Vec::new();
@@ -96,18 +106,25 @@ fn state() -> impl Strategy<Value = DesiredState> {
                 .collect(),
             peers: peers
                 .into_iter()
-                .filter(|(network, host, _)| {
+                .filter(|(network, host, _, _, _)| {
                     let fresh = !seen.contains(&(*network, *host));
                     seen.push((*network, *host));
                     fresh
                 })
                 .enumerate()
-                .map(|(id, (network, host, lan))| Peer {
+                .map(|(id, (network, host, lan, shared, foreign))| Peer {
                     id: id as i64,
                     network,
                     ip: Ipv4Addr::new(10, 50, network as u8, host),
-                    public_key: format!("key{id}"),
-                    owner_tenant: Some(tenant_of(network)),
+                    public_key: match shared {
+                        Some(k) => format!("{k:0>42}E="),
+                        None => format!("{id:0>42}A="),
+                    },
+                    owner_tenant: Some(if foreign {
+                        1 - tenant_of(network)
+                    } else {
+                        tenant_of(network)
+                    }),
                     routed: lan
                         .map(|l| match l {
                             4 => Ipv4Net::new(Ipv4Addr::new(8, 8, 8, 0), 24),
@@ -210,6 +227,17 @@ proptest! {
         let allowed: Vec<Ipv4Net> = s.pool.iter().chain(&s.routed_space).copied().collect();
         for net in compile(&s).tenant_space {
             prop_assert!(allowed.iter().any(|a| a.contains(&net)), "{}", net);
+        }
+    }
+
+    #[test]
+    fn compiled_peers_have_unique_keys_and_their_own_tenants_devices(s in state()) {
+        let c = compile(&s);
+        let mut keys = std::collections::HashSet::new();
+        for p in &c.peers {
+            prop_assert!(keys.insert(p.public_key.clone()), "key {} twice", p.public_key);
+            let peer = s.peers.iter().find(|q| q.id == p.id).expect("compiled from the state");
+            prop_assert_eq!(peer.owner_tenant, Some(tenant_of(network_of(p))));
         }
     }
 

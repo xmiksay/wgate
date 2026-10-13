@@ -74,8 +74,10 @@ under sudo).
 - The migrator records a checksum per migration and refuses a database with an
   unknown or edited migration; it re-applies the agent grants (revoke, then grant) on
   every run.
-- All state writes run at READ COMMITTED (the triggers refuse other levels) and never
-  `SET CONSTRAINTS … IMMEDIATE`; TRUNCATE bumps too; re-revoking is a no-op.
+- All state writes run at READ COMMITTED (refused at the first statement otherwise)
+  and never `SET CONSTRAINTS … IMMEDIATE`; TRUNCATE is refused (use DELETE); ids are
+  immutable; re-revoking is a no-op. The once-per-transaction marker is the counter
+  row's own xmin, so no caller can mute it.
 - `desired_state(db, &Infra)`: one REPEATABLE READ read-only snapshot, active rows →
   `core::DesiredState` (+ its revision, peer keys, owner tenants); unmappable rows are
   skipped with a warning (a load error would block revocations). Cross-tenant devices

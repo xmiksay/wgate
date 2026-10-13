@@ -172,7 +172,7 @@ fn state() -> DesiredState {
         id,
         network,
         ip: ip.parse().expect("addr"),
-        public_key: format!("key{id}"),
+        public_key: format!("{id:0>42}A="),
         owner_tenant: None,
         routed: vec![],
     };

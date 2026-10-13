@@ -61,10 +61,11 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
     for (name, sql) in MIGRATIONS {
         if !done.contains(*name) {
             txn.execute_unprepared(sql).await?;
+            let checksum = md5(&txn, sql).await?;
             txn.execute_raw(sea_orm::Statement::from_sql_and_values(
                 sea_orm::DbBackend::Postgres,
-                "INSERT INTO wgate_migration (name, checksum) VALUES ($1, md5($2))",
-                [(*name).into(), (*sql).into()],
+                "INSERT INTO wgate_migration (name, checksum) VALUES ($1, $2)",
+                [(*name).into(), checksum.into()],
             ))
             .await?;
             applied.push(*name);

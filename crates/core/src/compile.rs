@@ -132,6 +132,8 @@ pub enum Problem {
     Overlap,
     /// Its public key is an older active peer's.
     DuplicateKey,
+    /// Its public key is not a WireGuard key; the interface would refuse it.
+    InvalidKey,
     /// A routed subnet outside `routed_space`, over the pool or reserved
     /// infrastructure, or with host bits.
     RoutedNotAllowed,
