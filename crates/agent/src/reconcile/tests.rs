@@ -62,6 +62,8 @@ impl Runner for Fake {
             // wg-n1 and wg-n2 carry their network's key, other interfaces none.
             None if cmd == "wg show wg-n1 public-key" => Ok(format!("{}\n", hub_pub(1))),
             None if cmd == "wg show wg-n2 public-key" => Ok(format!("{}\n", hub_pub(2))),
+            // wg-old is gone network 9's.
+            None if cmd == "wg show wg-old public-key" => Ok(format!("{}\n", hub_pub(9))),
             None if cmd.ends_with(" public-key") => Ok("(none)\n".into()),
             None if cmd.starts_with("wg show") => Ok(String::new()),
             None if cmd.starts_with("ip -j") => Ok("[]".into()),
@@ -120,10 +122,10 @@ fn compiled() -> Compiled {
     })
 }
 
-/// A keys directory holding the keys of networks 1 and 2.
+/// A keys directory holding the keys of networks 1, 2 and (gone) 9.
 fn keys() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    for id in [1, 2] {
+    for id in [1, 2, 9] {
         std::fs::write(dir.path().join(format!("n{id}.key")), hub_private(id)).unwrap();
     }
     dir

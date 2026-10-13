@@ -2,7 +2,9 @@
 //! Also what decides whether an interface carries a network's key.
 
 use anyhow::Context;
-use wgate_core::{Compiled, Id, render_network_purge, render_network_removal};
+use wgate_core::{
+    Compiled, Id, render_network_cutoff, render_network_purge, render_network_removal,
+};
 
 use super::steps::{disarm, nft, run};
 use crate::keys::Keys;
@@ -60,11 +62,18 @@ pub(super) fn remove_gone(
             continue;
         }
         // The name may have been taken again after wgate's interface went: one with
-        // another key, or with a key that cannot be checked, is left alone.
+        // another key, with none (wgate's always get theirs right after creation) or
+        // with one that cannot be checked is left alone; unregistered, it is cut off.
         let ours = match links.as_ref().map(|l| l.contains(iface)) {
             Some(false) => false,
             _ => match carried(r, keys, iface, *id) {
-                Ok(Carried::Its | Carried::Nothing) => true,
+                Ok(Carried::Its) => true,
+                Ok(Carried::Nothing) => {
+                    errors.push(format!(
+                        "{iface}: has no key, so it is not network {id}'s; left alone"
+                    ));
+                    false
+                }
                 Ok(Carried::Other) => {
                     errors.push(format!(
                         "{iface}: carries a key that is not network {id}'s; left alone"
@@ -110,6 +119,10 @@ pub(super) fn remove_gone(
         if let Err(e) = &unregistered {
             done = false;
             errors.push(format!("{iface} (removing network {id}): {e:#}"));
+            // Still registered: its chains at least must stop granting anything.
+            if let Err(e) = nft(r, &render_network_cutoff(*id)) {
+                errors.push(format!("{iface} (removing network {id}): cutoff: {e:#}"));
+            }
         }
         if !done {
             blocked.push(Blocked {

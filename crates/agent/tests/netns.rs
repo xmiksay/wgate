@@ -7,7 +7,10 @@ mod common;
 use std::net::Ipv4Addr;
 
 use common::Netns;
-use wgate_core::{DesiredState, compile, render_base, render_network_removal, render_snat};
+use wgate_core::{
+    DesiredState, compile, render_base, render_network_cutoff, render_network_purge,
+    render_network_removal, render_snat,
+};
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
 /// with concatenated interval keys (design.md → Risks).
@@ -48,11 +51,18 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
     assert!(listed.contains("10.50.1.2 . "), "{listed}");
 
     for (id, iface) in [(1, "wg-nexial"), (2, "wg-nexial-dev"), (3, "wg-krcmar")] {
-        ns.exec(
-            &["nft", "-f", "-"],
-            Some(&render_network_removal(id, iface)),
-        );
+        // Twice: a removal applies whatever is already gone.
+        for _ in 0..2 {
+            ns.exec(
+                &["nft", "-f", "-"],
+                Some(&render_network_removal(id, iface)),
+            );
+        }
     }
+    // A cutoff, then a purge, of a network that never existed.
+    ns.exec(&["nft", "-f", "-"], Some(&render_network_cutoff(9)));
+    ns.exec(&["nft", "-f", "-"], Some(&render_network_purge(9)));
+    ns.exec(&["nft", "-f", "-"], Some(&render_network_purge(9)));
     let empty = compile(&DesiredState {
         pool: vec![],
         snat_source: Ipv4Addr::new(172, 19, 9, 10),
@@ -67,7 +77,7 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
     ns.exec(&["nft", "-f", "-"], Some(&render_base(&empty)));
     ns.exec(&["nft", "-f", "-"], Some(&render_snat(&empty)));
     let listed = ns.output(&["nft", "list", "table", "inet", "wgate"]);
-    for stale in ["10.50.", "n1_", "n2_", "wg-nexial", "snat"] {
+    for stale in ["10.50.", "n1_", "n2_", "n9_", "wg-nexial", "snat"] {
         assert!(!listed.contains(stale), "{stale} survived:\n{listed}");
     }
 }

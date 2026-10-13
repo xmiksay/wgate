@@ -145,6 +145,7 @@ fn a_gone_network_is_unregistered_even_when_its_interface_stays() {
 #[test]
 fn a_gone_interface_whose_key_cannot_be_checked_is_left_alone() {
     let dir = keys();
+    std::fs::remove_file(dir.path().join("n9.key")).unwrap();
     let fake = Fake::default()
         .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
         .answer(
@@ -207,13 +208,18 @@ fn a_freed_port_landing_on_a_wanted_one_is_picked_again() {
         .answer("wg show all listen-port", "wg-n1\t51802\n")
         // The kernel keeps handing out a port network 2 wants.
         .answer("wg show wg-n1 listen-port", "51802\n");
-    reconcile(&fake, &compiled(), dir.path());
+    let out = reconcile(&fake, &compiled(), dir.path());
     let picks = fake
         .log()
         .iter()
         .filter(|c| *c == "wg set wg-n1 listen-port 0")
         .count();
     assert_eq!(picks, 5, "bounded retries");
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.ends_with("every pick was a wanted port"))
+    );
 }
 
 #[test]
@@ -243,4 +249,52 @@ fn a_leftover_takes_its_chains_along() {
     let log = fake.log();
     let del = position(&log, "ip link del wg-old");
     assert_eq!(log[del + 1], "nft -f -", "the purge right after: {log:#?}");
+}
+
+#[test]
+fn a_gone_network_that_stays_registered_is_cut_off() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
+        .answer(
+            "nft -j list map",
+            &registered(r#"["wg-old", {"jump": {"target": "n9_from"}}]"#),
+        )
+        .fail_input("delete element inet wgate wg_ifaces");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.starts_with("wg-old (removing network 9)")),
+        "{:?}",
+        out.errors
+    );
+    assert!(
+        !out.errors.iter().any(|e| e.contains("cutoff")),
+        "{:?}",
+        out.errors
+    );
+    // base, snat, removal, cutoff, then both networks.
+    assert_eq!(nft_runs(&fake.log()), 5);
+}
+
+#[test]
+fn a_keyless_gone_interface_is_left_alone() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer("ip -j link show type wireguard", r#"[{"ifname":"wg-old"}]"#)
+        .answer(
+            "nft -j list map",
+            &registered(r#"["wg-old", {"jump": {"target": "n9_from"}}]"#),
+        )
+        .answer("wg show wg-old public-key", "(none)\n");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.starts_with("wg-old: has no key")),
+        "{:?}",
+        out.errors
+    );
+    assert!(!fake.log().iter().any(|c| c.starts_with("ip link del")));
 }

@@ -197,7 +197,14 @@ fn a_stale_base_that_still_guards_lets_everything_else_apply() {
             r#"{"nftables": [{"set": {"name": "tenant_space", "elem": [{"prefix": {"addr": "10.50.0.0", "len": 24}}]}}]}"#,
         );
     reconcile(&narrow, &compiled(), dir.path());
-    assert_eq!(nft_runs(&narrow.log()), 1);
+    let log = narrow.log();
+    // Nothing grows (n1's router has a LAN outside the guard, and n2 is not built),
+    // but n1's fragment applies, cut down to what the stale guard covers.
+    assert!(
+        !log.iter()
+            .any(|c| c.contains(" allowed-ips ") || c.starts_with("ip link add"))
+    );
+    assert_eq!(nft_runs(&log), 2, "base + n1's fragment");
 }
 
 #[test]

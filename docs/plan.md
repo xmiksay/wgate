@@ -112,12 +112,15 @@ under sudo).
   1. load the desired state, `core::compile` it
   2. apply the base, then SNAT as a transaction of its own; read the inventory (`nft -j list map … from_net`, `ip -j link`).
      A failed base still counts as guarding when the kernel's `tenant_space` covers
-     the compiled one; otherwise only peer revocations apply (nothing grows where
-     spoofed sources may pass)
+     the compiled one. Otherwise nothing grows (nothing built, no peer added), but
+     peer and route revocations apply, and so do the fragments, cut down to what
+     the stale guard covers (`Compiled::within_guard`)
   3. networks registered in `from_net` (interface + network id) that are no longer
      compiled under that pair: interface deleted (only if it carries that network's
-     key, or none; never on a failed or unverifiable key read), then the nft fragment
-     removed whatever became of the interface (unregistered, its traffic is dropped).
+     key; never keyless, nor on a failed or unverifiable key read), then the nft
+     fragment removed whatever became of the interface (unregistered, its traffic is
+     dropped; removals are idempotent, and one that still fails cuts the network's
+     chains off to `drop`).
      An interface that would not go loses its peers, addresses and LAN routes, frees
      a wanted port and is not reused until its removal finishes. Unregistered `wg-*`
      interfaces carrying the key of a network not compiled on them (a flushed table)
