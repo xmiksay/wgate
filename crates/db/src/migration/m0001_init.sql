@@ -63,6 +63,10 @@ CREATE TRIGGER network_immutable BEFORE UPDATE OF tenant_id, block_id, cidr ON n
 
 CREATE FUNCTION network_in_block() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    IF NOT EXISTS (SELECT FROM tenant_block WHERE id = NEW.block_id) THEN
+        RAISE EXCEPTION 'block % does not exist', NEW.block_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
     IF NOT EXISTS (SELECT FROM tenant_block WHERE id = NEW.block_id AND cidr >>= NEW.cidr) THEN
         RAISE EXCEPTION 'network % lies outside block %', NEW.cidr, NEW.block_id
             USING ERRCODE = 'check_violation';
@@ -120,7 +124,10 @@ CREATE TABLE peer (
     public_key text NOT NULL CHECK (public_key ~ '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$'),
     ip         inet NOT NULL CHECK (family(ip) = 4 AND masklen(ip) = 32),
     created_at timestamptz NOT NULL DEFAULT now(),
-    revoked_at timestamptz
+    revoked_at timestamptz,
+    -- What the routes reference: revoking flips it, which cascades to the routes.
+    active     boolean GENERATED ALWAYS AS (revoked_at IS NULL) STORED,
+    UNIQUE (id, active)
 );
 CREATE TRIGGER peer_immutable BEFORE UPDATE OF device_id, network_id, ip, public_key ON peer
     FOR EACH ROW WHEN (OLD.device_id IS DISTINCT FROM NEW.device_id OR OLD.network_id IS DISTINCT FROM NEW.network_id OR OLD.ip IS DISTINCT FROM NEW.ip OR OLD.public_key IS DISTINCT FROM NEW.public_key)
@@ -139,6 +146,10 @@ BEGIN
     SELECT cidr, tenant_id INTO net, net_tenant FROM network WHERE id = NEW.network_id;
     SELECT u.tenant_id, u.role INTO owner, owner_role
         FROM device d JOIN app_user u ON u.id = d.user_id WHERE d.id = NEW.device_id;
+    IF net IS NULL OR owner_role IS NULL THEN
+        RAISE EXCEPTION 'network % or device % does not exist', NEW.network_id, NEW.device_id
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
     -- host() drops the netmask: inet equality would compare masks too.
     IF NOT (net >>= NEW.ip AND host(NEW.ip) NOT IN
             (host(network(net)), host(broadcast(net)), host(network(net) + 1))) THEN
@@ -180,45 +191,19 @@ CREATE UNIQUE INDEX peer_key_active ON peer (public_key) WHERE revoked_at IS NUL
 CREATE UNIQUE INDEX peer_membership_active ON peer (device_id, network_id)
     WHERE revoked_at IS NULL;
 
--- A router's LAN.
+-- A router's LAN. Only an active route holds its range. The (peer, active) foreign
+-- key does the rest at any isolation level: revoking the peer cascades `active` to
+-- false, freeing the LAN, and a route cannot be added as active to a revoked peer
+-- (the foreign key's row locks also serialize a route insert racing a revocation).
 CREATE TABLE peer_route (
     id      bigserial PRIMARY KEY,
-    peer_id bigint NOT NULL REFERENCES peer ON DELETE CASCADE,
+    peer_id bigint NOT NULL,
+    active  boolean NOT NULL DEFAULT true,
     cidr    cidr NOT NULL CHECK (family(cidr) = 4),
-    EXCLUDE USING gist (cidr inet_ops WITH &&)
+    FOREIGN KEY (peer_id, active) REFERENCES peer (id, active)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    EXCLUDE USING gist (cidr inet_ops WITH &&) WHERE (active)
 );
-
--- A revoked peer never holds a range: revoking frees its LANs, and a LAN cannot be
--- given to a revoked peer. The guard locks the peer row, so a route insert and a
--- revocation running at the same time serialize (the foreign-key lock alone does not
--- conflict with the revoke's row lock): whichever commits second sees the other.
-CREATE FUNCTION free_revoked_routes() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    -- Under a snapshot isolation level this DELETE would not see a route committed
-    -- while the revocation waited for the peer's row lock.
-    IF current_setting('transaction_isolation') <> 'read committed' THEN
-        RAISE EXCEPTION 'revoke peers at READ COMMITTED';
-    END IF;
-    DELETE FROM peer_route WHERE peer_id = NEW.id;
-    RETURN NEW;
-END
-$$;
-CREATE TRIGGER peer_revoked AFTER UPDATE OF revoked_at ON peer
-    FOR EACH ROW WHEN (OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL)
-    EXECUTE FUNCTION free_revoked_routes();
-
-CREATE FUNCTION route_needs_active_peer() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    PERFORM 1 FROM peer WHERE id = NEW.peer_id AND revoked_at IS NULL FOR UPDATE;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'peer % is revoked or missing', NEW.peer_id
-            USING ERRCODE = 'foreign_key_violation';
-    END IF;
-    RETURN NEW;
-END
-$$;
-CREATE TRIGGER peer_route_active BEFORE INSERT OR UPDATE OF peer_id ON peer_route
-    FOR EACH ROW EXECUTE FUNCTION route_needs_active_peer();
 
 -- proto + ports, shared by every rule-like table: tcp/udp carry 1 <= from <= to, icmp
 -- none. Never NULL: a CHECK passes on NULL, so `tcp` with NULL ports would slip by.
@@ -320,6 +305,7 @@ CREATE TABLE audit (
 -- Foreign keys get no index by themselves; cascades and per-peer lookups need them.
 CREATE INDEX ON tenant_block (tenant_id);
 CREATE INDEX ON network (tenant_id);
+CREATE INDEX ON network (block_id, tenant_id);
 CREATE INDEX ON app_user (tenant_id);
 CREATE INDEX ON device (user_id);
 CREATE INDEX ON peer (device_id);
@@ -332,70 +318,3 @@ CREATE INDEX ON federation (from_network_id);
 CREATE INDEX ON federation (to_network_id);
 CREATE INDEX ON inbound (network_id);
 CREATE INDEX ON audit (actor_user_id);
-
--- Every statement that changes the desired state bumps the revision and NOTIFYs the
--- agent, from a trigger, so no write path can forget it. Postgres delivers a NOTIFY
--- only on commit, so a rolled-back write never wakes the agent. The agent's own
--- tables (hub_key, agent_status) and audit do not count.
-CREATE TABLE state_revision (
-    id       boolean PRIMARY KEY DEFAULT true CHECK (id),
-    revision bigint NOT NULL
-);
-INSERT INTO state_revision (revision) VALUES (0);
-
--- Deferred to commit and run once per transaction: the hot state_revision row lock
--- is then the last lock a writer takes and is held only while it commits, so it can
--- neither serialize writers for their whole duration nor close a deadlock cycle
--- (writers must not `SET CONSTRAINTS ... IMMEDIATE`, which would fire it early).
--- Row-level, so a statement that changes nothing does not count.
-CREATE FUNCTION state_changed() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE
-    rev bigint;
-BEGIN
-    -- At a snapshot isolation level this UPDATE fails whenever another change
-    -- committed meanwhile; say so instead of a random serialization error.
-    IF current_setting('transaction_isolation') <> 'read committed' THEN
-        RAISE EXCEPTION 'write the wgate state at READ COMMITTED';
-    END IF;
-    IF current_setting('wgate.state_changed', true) = 'yes' THEN
-        RETURN NULL;
-    END IF;
-    PERFORM set_config('wgate.state_changed', 'yes', true);
-    UPDATE state_revision SET revision = revision + 1 RETURNING revision INTO rev;
-    PERFORM pg_notify('wgate_changed', rev::text);
-    RETURN NULL;
-END
-$$;
-DO $$
-DECLARE
-    t   text;
-    ops text;
-BEGIN
-    FOREACH t IN ARRAY ARRAY['tenant', 'tenant_block', 'network', 'app_user', 'device', 'peer',
-                             'peer_route', 'ceiling', 'rule', 'federation', 'inbound'] LOOP
-        -- Users and devices also carry data the state does not depend on (emails,
-        -- OIDC subjects, names): only the columns it does depend on count.
-        ops := CASE t
-            WHEN 'app_user' THEN 'INSERT OR DELETE OR UPDATE OF tenant_id, role, disabled_at'
-            WHEN 'device' THEN 'INSERT OR DELETE OR UPDATE OF user_id'
-            ELSE 'INSERT OR DELETE OR UPDATE'
-        END;
-        EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER %s ON %I
-                        DEFERRABLE INITIALLY DEFERRED
-                        FOR EACH ROW EXECUTE FUNCTION state_changed()',
-                       t || '_changed', ops, t);
-        -- TRUNCATE has no rows; it bumps right away (an operator's tool, not a hot path).
-        EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %I
-                        FOR EACH STATEMENT EXECUTE FUNCTION state_changed()',
-                       t || '_truncated', t);
-    END LOOP;
-END
-$$;
-
--- Written by the agent: what it last applied.
-CREATE TABLE agent_status (
-    id               boolean PRIMARY KEY DEFAULT true CHECK (id),
-    applied_revision bigint NOT NULL,
-    applied_at       timestamptz NOT NULL,
-    error            text
-);

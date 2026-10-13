@@ -160,6 +160,8 @@ async fn one_notification_per_changing_transaction() {
     )
     .await;
     ok(&pg.db, "UPDATE device SET name = 'renamed'").await;
+    ok(&pg.db, "UPDATE network SET name = 'renamed', mesh = mesh").await;
+    ok(&pg.db, "UPDATE tenant SET name = 'renamed'").await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
     ok(&pg.db, "UPDATE app_user SET disabled_at = now()").await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 2);

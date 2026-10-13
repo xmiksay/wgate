@@ -73,8 +73,8 @@ async fn a_revoked_peer_cannot_be_given_a_lan() {
     .await;
 }
 
-/// A route inserted while the peer is being revoked must not survive: the guard's
-/// row lock makes the revocation wait for the insert, and then free the new route.
+/// A route inserted while the peer is being revoked must not survive: the foreign
+/// key's lock makes the revocation wait for the insert, then deactivates the route.
 #[tokio::test]
 async fn a_route_racing_a_revocation_is_freed() {
     let pg = pg("").await;
@@ -118,8 +118,9 @@ async fn a_route_racing_a_revocation_is_freed() {
     }
     insert.commit().await.expect("commit route");
     revoke.await.expect("revoke task");
+    // The route stays as history but holds nothing.
     assert_eq!(
-        count(&pg.db, "SELECT count(*) AS n FROM peer_route").await,
+        count(&pg.db, "SELECT count(*) AS n FROM peer_route WHERE active").await,
         0
     );
 }
@@ -137,7 +138,7 @@ async fn count(db: &sea_orm::DatabaseConnection, sql: &str) -> i64 {
 }
 
 #[tokio::test]
-async fn a_device_joins_a_network_once_and_revokes_at_read_committed() {
+async fn a_device_joins_a_network_once() {
     let pg = pg("").await;
     ok(&pg.db, BASE).await;
     let insert = |id: u32, key: &str, ip: &str| {
@@ -155,18 +156,6 @@ async fn a_device_joins_a_network_once_and_revokes_at_read_committed() {
         ),
     )
     .await;
-    let txn = pg
-        .db
-        .begin_with_config(Some(sea_orm::IsolationLevel::RepeatableRead), None)
-        .await
-        .expect("begin");
-    assert!(
-        txn.execute_unprepared("UPDATE peer SET revoked_at = now() WHERE id = 1")
-            .await
-            .is_err(),
-        "a snapshot-isolated revoke could miss a racing route"
-    );
-    txn.rollback().await.expect("rollback");
     ok(&pg.db, "UPDATE peer SET revoked_at = now() WHERE id = 1").await;
 }
 
@@ -244,4 +233,31 @@ async fn revocation_is_final_and_unchanged_values_may_be_rewritten() {
         .await,
         1
     );
+}
+
+#[tokio::test]
+async fn a_revoked_peer_gets_no_lan_at_any_isolation_level() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        &format!(
+            "INSERT INTO peer (id, device_id, network_id, public_key, ip, revoked_at)
+                 VALUES (1, 1, 1, '{KEY}', '10.50.0.2', now())"
+        ),
+    )
+    .await;
+    let txn = pg
+        .db
+        .begin_with_config(Some(sea_orm::IsolationLevel::Serializable), None)
+        .await
+        .expect("begin");
+    assert!(
+        txn.execute_unprepared(
+            "INSERT INTO peer_route (peer_id, cidr) VALUES (1, '192.168.1.0/24')"
+        )
+        .await
+        .is_err()
+    );
+    txn.rollback().await.expect("rollback");
 }

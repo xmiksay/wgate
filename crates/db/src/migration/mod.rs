@@ -4,7 +4,13 @@
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, TransactionTrait};
 
 /// In order; a name is recorded once its migration is applied.
-const MIGRATIONS: &[(&str, &str)] = &[("m0001_init", include_str!("m0001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[(
+    "m0001_init",
+    concat!(
+        include_str!("m0001_init.sql"),
+        include_str!("m0001_state.sql")
+    ),
+)];
 /// Idempotent; applied on every run, after the migrations.
 const GRANTS: &str = include_str!("grants.sql");
 
