@@ -71,8 +71,11 @@ under sudo).
   revoked peer never holds a LAN (revoking frees its routes, routes need an active
   peer; row locks serialize the race; revocations must run at READ COMMITTED). One
   active peer per (device, network); keys and IPs unique among active peers.
-- The migrator refuses a database with migrations it does not know and re-applies the
-  agent grants on every run.
+- The migrator records a checksum per migration and refuses a database with an
+  unknown or edited migration; it re-applies the agent grants (revoke, then grant) on
+  every run.
+- All state writes run at READ COMMITTED (the triggers refuse other levels) and never
+  `SET CONSTRAINTS … IMMEDIATE`; TRUNCATE bumps too; re-revoking is a no-op.
 - `desired_state(db, &Infra)`: one REPEATABLE READ read-only snapshot, active rows →
   `core::DesiredState` (+ its revision, peer keys, owner tenants); unmappable rows are
   skipped with a warning (a load error would block revocations). Cross-tenant devices

@@ -232,11 +232,16 @@ async fn revocation_is_final_and_unchanged_values_may_be_rewritten() {
         "UPDATE network SET name = 'renamed', tenant_id = 1, block_id = 1, cidr = '10.50.0.0/25'",
     )
     .await;
-    ok(&pg.db, "UPDATE peer SET revoked_at = now()").await;
+    ok(&pg.db, "UPDATE peer SET revoked_at = '2026-01-01'").await;
     refused(&pg.db, "UPDATE peer SET revoked_at = NULL").await;
-    refused(
-        &pg.db,
-        "UPDATE peer SET revoked_at = now() - interval '1 day'",
-    )
-    .await;
+    // Revoking again succeeds and keeps the original time.
+    ok(&pg.db, "UPDATE peer SET revoked_at = now()").await;
+    assert_eq!(
+        count(
+            &pg.db,
+            "SELECT count(*) AS n FROM peer WHERE revoked_at = '2026-01-01'"
+        )
+        .await,
+        1
+    );
 }
