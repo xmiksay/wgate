@@ -124,14 +124,16 @@ under sudo).
      it goes. Registrations stay only for a network compiled on that name whose own
      interface is there or about to be made; any other is removed (idempotently;
      one that still fails has its chains cut off to `drop`), so nothing on that
-     name keeps a network's rights. Without the list of links only registrations of
-     networks no longer compiled go
-  4. ports another network wants are freed (`listen-port 0`, re-picked if it lands
-     on a wanted one). A name held by an unmarked interface, or by a link that is not
+     name keeps a network's rights. Without the list of links each
+     network's own interface is read: wgate's still get their revocations (peers,
+     routes, the fragment), but nothing is made, deleted or added
+  4. ports another network wants are freed (parked on the first free spare port,
+     51900–51999, outside `PORT_RANGE`). A name held by an unmarked interface, or by a link that is not
      WireGuard, is refused. Then, for **every** network: peer removals and
      narrowings (diffed against `wg show <if> allowed-ips`, never `dump`: it carries
      private and preshared keys) and stale LAN route deletions — before any network
-     grows, so nothing is held twice while it moves
+     grows, so nothing is held twice while it moves; what a failed command could not
+     release stays held, and no peer or route anywhere takes it this pass
   5. **network by network**, every step attempted: the hub key `n<id>.key` in
      `keys_dir` first (issued only to an interface without a key, never deleted; a
      damaged or missing one for a keyed interface is an error, never a rotation; its

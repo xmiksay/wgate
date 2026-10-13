@@ -26,8 +26,8 @@ mod steps;
 use gone::{remove_gone_links, unregister};
 use network::{free_ports, network};
 use steps::{
-    Link, desired_peers, lans, link_exists, links, nft, peer_diff, registered, removals,
-    route_commands,
+    Link, desired_peers, lans, link_exists, links, links_of, nft, peer_diff, registered, removals,
+    route_deletions,
 };
 
 #[derive(Debug, Default)]
@@ -60,17 +60,34 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let guarded = unguarded.as_ref().is_some_and(Vec::is_empty);
     note(base, &mut out.errors);
     note(nft(r, &render_snat(c)).context("snat"), &mut out.errors);
-    let mut links = note(links(r).context("inventory"), &mut out.errors);
+    // Without the full list, each network's own interface is read: enough to keep
+    // revoking on wgate's, not to tell what is gone or free.
+    let (mut links, complete) = match links(r).context("inventory") {
+        Ok(links) => (Some(links), true),
+        Err(e) => {
+            out.errors.push(format!("{e:#}"));
+            (links_of(r, c), false)
+        }
+    };
     let registered = note(registered(r).context("inventory"), &mut out.errors).unwrap_or_default();
     let (stuck, gone_pairs) = match &mut links {
-        Some(links) => remove_gone_links(r, c, links, &mut out.errors),
-        None => (vec![], vec![]),
+        Some(links) if complete => remove_gone_links(r, c, links, &mut out.errors),
+        _ => (vec![], vec![]),
     };
 
     let mut owned = vec![];
     let mut new = vec![];
     for n in &c.networks {
-        match iface_of(r, n, links.as_deref(), &stuck) {
+        match iface_of(r, n, links.as_deref().filter(|_| complete), &stuck) {
+            // Read on its own, wgate's interface is managed (revocations included).
+            Ok(None)
+                if links
+                    .iter()
+                    .flatten()
+                    .any(|l| l.name == n.iface && l.owner == Some(n.id)) =>
+            {
+                owned.push(n)
+            }
             Ok(Some(true)) => owned.push(n),
             Ok(Some(false)) => new.push(n),
             Ok(None) => {}
@@ -84,19 +101,20 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
     let extra = gone_pairs.into_iter().filter(|p| !registered.contains(p));
     for (iface, id) in &registered.iter().cloned().chain(extra).collect::<Vec<_>>() {
         let pair = |n: &&CompiledNetwork| n.iface == *iface && n.id == *id;
-        let kept = match &links {
-            Some(_) => owned.iter().chain(&new).any(pair),
-            None => c.networks.iter().any(|n| pair(&n)),
+        let kept = if complete {
+            owned.iter().chain(&new).any(pair)
+        } else {
+            c.networks.iter().any(|n| pair(&n))
         };
         if !kept {
             unregister(r, iface, *id, &mut out.errors);
         }
     }
 
-    if !guarded {
-        // Nothing grows where spoofed sources may not be dropped. Peer and route
-        // revocations need no base; rights revoked in a fragment apply with the
-        // fragment cut down to what the stale guard covers.
+    if !guarded || !complete {
+        // Nothing grows where spoofed sources may not be dropped, nor without knowing
+        // what is free. Peer and route revocations need neither; rights revoked in a
+        // fragment apply with the fragment cut down to what the guard covers.
         let within = unguarded.map(|space| c.within_guard(&space));
         for &n in &owned {
             if let Some(within) = &within {
@@ -107,10 +125,10 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
                 );
             }
             let plan = plan(r, c, n, true);
-            let peers = plan.peers.and_then(|d| removals(r, &n.iface, &d));
+            let peers = plan.peers.and_then(|d| removals(r, &n.iface, &d).0);
             let routes = plan
                 .routes
-                .and_then(|(_, del)| route_commands(r, n, "del", &del));
+                .and_then(|(_, del)| route_deletions(r, n, &del).0);
             let result = peers.and(routes);
             note(
                 result.with_context(|| format!("{}: revocations", n.iface)),
@@ -135,17 +153,21 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         .collect();
     // What anyone loses, in every network, goes before any network grows: an address
     // or LAN moving between peers or networks is never held twice.
+    // What failed to be released stays held: nobody else takes it this pass.
+    let mut held = vec![];
     for (n, _, plan) in &active {
-        let result = match &plan.peers {
+        let (result, still) = match &plan.peers {
             Ok(d) => removals(r, &n.iface, d),
-            Err(e) => Err(anyhow::anyhow!("{e:#}")),
+            Err(e) => (Err(anyhow::anyhow!("{e:#}")), vec![]),
         };
+        held.extend(still);
         note(
             result.with_context(|| format!("{}: peers", n.iface)),
             &mut out.errors,
         );
         if let Ok((_, del)) = &plan.routes {
-            let result = route_commands(r, n, "del", del);
+            let (result, still) = route_deletions(r, n, del);
+            held.extend(still);
             note(
                 result.with_context(|| format!("{}: routes", n.iface)),
                 &mut out.errors,
@@ -153,7 +175,7 @@ pub fn reconcile(r: &dyn Runner, c: &Compiled, keys_dir: &Path) -> Outcome {
         }
     }
     for (n, exists, plan) in active {
-        let (key, errors) = network(r, c, n, keys, exists, plan);
+        let (key, errors) = network(r, c, n, keys, exists, plan, &held);
         if let Some(key) = key {
             out.hub_keys.push((n.id, key));
         }

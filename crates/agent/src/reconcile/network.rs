@@ -4,9 +4,10 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use wgate_core::{Compiled, CompiledNetwork, render_network};
+use ipnet::Ipv4Net;
+use wgate_core::{Compiled, CompiledNetwork, PORT_RANGE, render_network};
 
-use super::steps::{SCRATCH, additions, nft, owner_mark, route_commands, run};
+use super::steps::{SCRATCH, additions, nft, owner_mark, route_commands, run, touches};
 use super::{Plan, note};
 use crate::keys::Keys;
 use crate::runner::Runner;
@@ -22,6 +23,7 @@ pub(super) fn network(
     keys: &Keys,
     exists: bool,
     plan: Plan,
+    held: &[Ipv4Net],
 ) -> (Option<String>, Vec<String>) {
     let iface = n.iface.as_str();
     // Before the interface: one that is never keyed must not be left behind.
@@ -58,12 +60,24 @@ pub(super) fn network(
     if step("nft", nft(r, &render_network(c, n))) {
         // A failed read was reported with the removals.
         if let Ok(d) = &plan.peers {
-            step("peers", additions(r, n, d));
+            step("peers", additions(r, n, d, held));
         }
         step(
             "routes",
-            plan.routes
-                .and_then(|(add, _)| route_commands(r, n, "add", &add)),
+            plan.routes.and_then(|(add, _)| {
+                // A LAN still routed elsewhere waits for that route to go.
+                let (free, waiting): (Vec<_>, Vec<_>) =
+                    add.iter().partition(|lan| !touches(&[**lan], held));
+                let added = route_commands(r, n, "add", &free);
+                if waiting.is_empty() {
+                    return added;
+                }
+                let waiting: Vec<String> = waiting.iter().map(ToString::to_string).collect();
+                added.and(Err(anyhow::anyhow!(
+                    "{} wait for routes still held elsewhere",
+                    waiting.join(", ")
+                )))
+            }),
         );
     } else {
         // Growing on stale rules would hand a new holder its predecessor's rights.
@@ -128,6 +142,9 @@ fn interface_key(r: &dyn Runner, iface: &str) -> anyhow::Result<Option<String>> 
     Ok((!key.is_empty() && key != "(none)").then(|| key.to_owned()))
 }
 
+/// Where a port another network wants is parked meanwhile: outside `PORT_RANGE`.
+const SPARE_PORTS: std::ops::RangeInclusive<u16> = 51900..=51999;
+
 /// Ports can swap: an interface of wgate's holding the port another network wants lets
 /// go of it (it gets its own in its turn).
 pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors: &mut Vec<String>) {
@@ -140,6 +157,7 @@ pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors:
             .iter()
             .any(|n| n.iface != iface && n.port.to_string() == port.trim())
     };
+    debug_assert!(!PORT_RANGE.contains(SPARE_PORTS.start()));
     for line in ports.lines() {
         let Some((iface, port)) = line.split_once('\t') else {
             continue;
@@ -147,22 +165,13 @@ pub(super) fn free_ports(r: &dyn Runner, c: &Compiled, holders: &[&str], errors:
         if !wanted(iface, port) || !holders.contains(&iface) {
             continue;
         }
-        // Port 0 is random and can land on another wanted port: picked again then.
-        let mut freed = false;
-        for _ in 0..5 {
-            if let Err(e) = run(r, &["wg", "set", iface, "listen-port", "0"]) {
-                errors.push(format!("{iface}: free port: {e:#}"));
-                freed = true;
-                break;
-            }
-            let now = r.run(&["wg", "show", iface, "listen-port"], None);
-            if !now.is_ok_and(|now| wanted(iface, &now)) {
-                freed = true;
-                break;
-            }
-        }
-        if !freed {
-            errors.push(format!("{iface}: free port: every pick was a wanted port"));
+        // Parked on a spare port no network can want (past PORT_RANGE): the first
+        // one free.
+        let parked = SPARE_PORTS
+            .into_iter()
+            .any(|spare| run(r, &["wg", "set", iface, "listen-port", &spare.to_string()]).is_ok());
+        if !parked {
+            errors.push(format!("{iface}: free port: no spare port is free"));
         }
     }
 }
