@@ -29,6 +29,10 @@ build: web ## Debug build of the whole workspace
 run-server: web ## Run the portal (WGATE_CONFIG or /etc/wgate/server.toml)
 	cargo run -p wgate -- server
 
+.PHONY: migrate
+migrate: ## Apply database migrations (WGATE_DATABASE_URL, see .env.example)
+	cargo run -p wgate -- migrate
+
 .PHONY: run-agent
 run-agent: ## Run the agent as root (needs CAP_NET_ADMIN)
 	cargo build -p wgate

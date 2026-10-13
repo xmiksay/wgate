@@ -11,8 +11,15 @@ impl MigratorTrait for Migrator {
     }
 }
 
-#[derive(DeriveMigrationName)]
 struct Init;
+
+// Named by hand: the derive names a migration after its file, which here is `mod.rs`
+// and would be the same for every later migration.
+impl MigrationName for Init {
+    fn name(&self) -> &str {
+        "m0001_init"
+    }
+}
 
 #[async_trait::async_trait]
 impl MigrationTrait for Init {

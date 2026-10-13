@@ -115,6 +115,66 @@ async fn rows_compile_to_the_rights_they_describe() {
 }
 
 #[tokio::test]
+async fn the_snapshot_carries_its_revision() {
+    let pg = pg("").await;
+    ok(&pg.db, "UPDATE state_revision SET revision = 41").await;
+    assert_eq!(
+        desired_state(&pg.db, &infra())
+            .await
+            .expect("load")
+            .revision,
+        41
+    );
+}
+
+#[tokio::test]
+async fn peers_of_inactive_networks_are_simply_absent() {
+    let pg = pg("").await;
+    ok(&pg.db, SCENARIO).await;
+    ok(&pg.db, &peers()).await;
+    ok(
+        &pg.db,
+        "UPDATE network SET disabled_at = now() WHERE id = 2",
+    )
+    .await;
+    let loaded = desired_state(&pg.db, &infra()).await.expect("load");
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.state.peers.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [1, 3]
+    );
+    assert!(compile(&loaded.state).skipped.is_empty());
+}
+
+#[tokio::test]
+async fn a_device_cannot_join_another_tenants_network() {
+    let pg = pg("").await;
+    ok(&pg.db, SCENARIO).await;
+    ok(
+        &pg.db,
+        &format!(
+            "INSERT INTO app_user (id, email, role) VALUES (9, 'admin@mmik.cz', 'global_admin');
+             INSERT INTO device (id, user_id, name) VALUES (9, 9, 'admin');
+             INSERT INTO peer (id, device_id, network_id, public_key, ip) VALUES
+                (5, 1, 3, '{}', '10.50.2.5'),
+                (6, 9, 3, '{}', '10.50.2.6')",
+            KEYS[0], KEYS[1]
+        ),
+    )
+    .await;
+    let loaded = desired_state(&pg.db, &infra()).await.expect("load");
+    // nexial's device in krcmar's network is refused; the global admin's is fine.
+    assert_eq!(
+        loaded.warnings,
+        ["peer 5: its device belongs to another tenant"]
+    );
+    assert_eq!(
+        loaded.state.peers.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [6]
+    );
+}
+
+#[tokio::test]
 async fn a_disabled_user_loses_every_peer() {
     let pg = pg("").await;
     ok(&pg.db, SCENARIO).await;

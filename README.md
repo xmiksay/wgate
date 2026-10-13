@@ -35,6 +35,14 @@ make release     # static x86_64 musl binary + sha256 in dist/
 make help        # all targets
 ```
 
+## Configuration
+
+| Variable | Used by | What |
+|---|---|---|
+| `WGATE_DATABASE_URL` | `wgate migrate` | Postgres URL of the owner role, direct to Postgres (not pgbouncer) |
+
+See `.env.example`. `make migrate` applies the migrations with it.
+
 ## Release
 
 Push a `v*` tag; CI publishes `wgate-x86_64-unknown-linux-musl` + `.sha256` to the

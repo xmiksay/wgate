@@ -38,10 +38,12 @@ CREATE TABLE network (
 );
 
 -- tenant_id NULL = the global admin's provider. Client secrets live in the config.
+-- Issuers may repeat: tenants can share an IdP (Google, one Keycloak realm), since a
+-- login first picks the tenant and matches users within it.
 CREATE TABLE oidc_provider (
     id        bigserial PRIMARY KEY,
     tenant_id bigint UNIQUE REFERENCES tenant ON DELETE CASCADE,
-    issuer    text NOT NULL UNIQUE,
+    issuer    text NOT NULL,
     client_id text NOT NULL
 );
 CREATE UNIQUE INDEX oidc_provider_global ON oidc_provider ((tenant_id IS NULL))
@@ -72,21 +74,33 @@ CREATE TABLE peer (
     id         bigserial PRIMARY KEY,
     device_id  bigint NOT NULL REFERENCES device ON DELETE CASCADE,
     network_id bigint NOT NULL REFERENCES network ON DELETE CASCADE,
-    public_key text NOT NULL UNIQUE CHECK (public_key ~ '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$'),
+    public_key text NOT NULL CHECK (public_key ~ '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$'),
     ip         inet NOT NULL CHECK (family(ip) = 4 AND masklen(ip) = 32),
     created_at timestamptz NOT NULL DEFAULT now(),
     revoked_at timestamptz
 );
--- An address is free again once its peer is revoked.
+-- An address and a key are free again once their peer is revoked.
 CREATE UNIQUE INDEX peer_ip_active ON peer (ip) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX peer_key_active ON peer (public_key) WHERE revoked_at IS NULL;
 
--- A router's LAN. Revoking a peer deletes its routes, freeing the ranges.
+-- A router's LAN.
 CREATE TABLE peer_route (
     id      bigserial PRIMARY KEY,
     peer_id bigint NOT NULL REFERENCES peer ON DELETE CASCADE,
     cidr    cidr NOT NULL CHECK (family(cidr) = 4),
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
+
+-- Revoking a peer frees its LANs; enforced here so no code path can leave a revoked
+-- peer holding a range forever.
+CREATE FUNCTION free_revoked_routes() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    DELETE FROM peer_route WHERE peer_id = NEW.id;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER peer_revoked AFTER UPDATE OF revoked_at ON peer
+    FOR EACH ROW WHEN (NEW.revoked_at IS NOT NULL) EXECUTE FUNCTION free_revoked_routes();
 
 -- proto + ports, shared by every rule-like table: tcp/udp carry 1 <= from <= to, icmp
 -- none. Never NULL: a CHECK passes on NULL, so `tcp` with NULL ports would slip by.
@@ -178,12 +192,14 @@ CREATE TABLE agent_status (
     error            text
 );
 
--- The agent role reads everything and writes only what it owns. It is created by
--- ansible; a database without it (e.g. tests) simply gets no grants.
+-- The agent role reads everything and writes only what it owns. Ansible creates it
+-- before the first migrate; a database without it (e.g. tests) gets no grants. The
+-- default privileges cover tables later migrations create (they run as this owner).
 DO $$
 BEGIN
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'wgate_agent') THEN
         GRANT SELECT ON ALL TABLES IN SCHEMA public TO wgate_agent;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO wgate_agent;
         GRANT INSERT, UPDATE ON hub_key, agent_status TO wgate_agent;
     END IF;
 END
