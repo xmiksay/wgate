@@ -17,16 +17,34 @@ CREATE TABLE tenant (
 
 -- Pool blocks the global admin assigned. Being inside the pool is checked by the
 -- API and by compile (the pool is configuration, not data).
+-- Ownership columns never change after insert: the checks below read them from
+-- other rows, and a check against immutable data cannot race (unlike one that reads
+-- data a concurrent transaction may still change under the caller's snapshot).
+-- Moving something means delete + insert.
+CREATE FUNCTION immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION '%: % cannot change; delete and re-create instead', TG_TABLE_NAME, TG_ARGV[0]
+        USING ERRCODE = 'check_violation';
+END
+$$;
+
 CREATE TABLE tenant_block (
     id        bigserial PRIMARY KEY,
     tenant_id bigint NOT NULL REFERENCES tenant ON DELETE CASCADE,
     cidr      cidr NOT NULL CHECK (family(cidr) = 4),
+    UNIQUE (id, tenant_id),
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
+CREATE TRIGGER tenant_block_immutable BEFORE UPDATE OF tenant_id, cidr ON tenant_block
+    FOR EACH ROW EXECUTE FUNCTION immutable('tenant_id, cidr');
 
+-- A network lies inside one block of its own tenant. The (block, tenant) foreign key
+-- keeps the block from disappearing under it at any isolation level (a tenant delete
+-- cascades both away); the trigger checks containment against the immutable block.
 CREATE TABLE network (
     id          bigserial PRIMARY KEY,
     tenant_id   bigint NOT NULL REFERENCES tenant ON DELETE CASCADE,
+    block_id    bigint NOT NULL,
     slug        slug NOT NULL UNIQUE,
     name        text NOT NULL,
     cidr        cidr NOT NULL CHECK (family(cidr) = 4 AND masklen(cidr) <= 30),
@@ -34,42 +52,24 @@ CREATE TABLE network (
                 CHECK (port BETWEEN 51800 AND 51899 AND port <> 51820),
     mesh        boolean NOT NULL DEFAULT false,
     disabled_at timestamptz,
+    FOREIGN KEY (block_id, tenant_id) REFERENCES tenant_block (id, tenant_id),
+    UNIQUE (id, tenant_id),
     EXCLUDE USING gist (cidr inet_ops WITH &&)
 );
+CREATE TRIGGER network_immutable BEFORE UPDATE OF tenant_id, block_id, cidr ON network
+    FOR EACH ROW EXECUTE FUNCTION immutable('tenant_id, block_id, cidr');
 
--- A network lies inside one block of its tenant, and a block keeps its networks: a
--- network outside its blocks would hold its range (EXCLUDE above) while compile
--- refuses it, losing the range for everyone. The block row is locked, so a network
--- insert and a block removal running at the same time serialize.
 CREATE FUNCTION network_in_block() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    PERFORM 1 FROM tenant_block
-        WHERE tenant_id = NEW.tenant_id AND cidr >>= NEW.cidr FOR SHARE;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'network % lies outside the blocks of tenant %', NEW.cidr, NEW.tenant_id
+    IF NOT EXISTS (SELECT FROM tenant_block WHERE id = NEW.block_id AND cidr >>= NEW.cidr) THEN
+        RAISE EXCEPTION 'network % lies outside block %', NEW.cidr, NEW.block_id
             USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
 END
 $$;
-CREATE TRIGGER network_in_block BEFORE INSERT OR UPDATE OF tenant_id, cidr ON network
+CREATE TRIGGER network_in_block BEFORE INSERT ON network
     FOR EACH ROW EXECUTE FUNCTION network_in_block();
-
-CREATE FUNCTION block_keeps_networks() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    IF EXISTS (
-        SELECT FROM network n
-        WHERE n.tenant_id = OLD.tenant_id AND OLD.cidr >>= n.cidr
-          AND (TG_OP = 'DELETE' OR NOT NEW.cidr >>= n.cidr OR NEW.tenant_id <> n.tenant_id)
-    ) THEN
-        RAISE EXCEPTION 'block % still holds networks', OLD.cidr
-            USING ERRCODE = 'foreign_key_violation';
-    END IF;
-    RETURN coalesce(NEW, OLD);
-END
-$$;
-CREATE TRIGGER block_keeps_networks BEFORE DELETE OR UPDATE OF tenant_id, cidr ON tenant_block
-    FOR EACH ROW EXECUTE FUNCTION block_keeps_networks();
 
 -- tenant_id NULL = the global admin's provider. Client secrets live in the config.
 -- Issuers may repeat: tenants can share an IdP (Google, one Keycloak realm), since a
@@ -94,6 +94,8 @@ CREATE TABLE app_user (
 );
 -- One account per email per tenant (NULL tenant = global admins), and a subject binds
 -- to one account per provider.
+CREATE TRIGGER app_user_immutable BEFORE UPDATE OF tenant_id ON app_user
+    FOR EACH ROW EXECUTE FUNCTION immutable('tenant_id');
 CREATE UNIQUE INDEX app_user_email ON app_user (coalesce(tenant_id, 0), lower(email));
 CREATE UNIQUE INDEX app_user_sub ON app_user (coalesce(tenant_id, 0), oidc_sub);
 
@@ -103,6 +105,8 @@ CREATE TABLE device (
     name       text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TRIGGER device_immutable BEFORE UPDATE OF user_id ON device
+    FOR EACH ROW EXECUTE FUNCTION immutable('user_id');
 
 CREATE TABLE peer (
     id         bigserial PRIMARY KEY,
@@ -113,6 +117,37 @@ CREATE TABLE peer (
     created_at timestamptz NOT NULL DEFAULT now(),
     revoked_at timestamptz
 );
+CREATE TRIGGER peer_immutable BEFORE UPDATE OF device_id, network_id, ip, public_key ON peer
+    FOR EACH ROW EXECUTE FUNCTION immutable('device_id, network_id, ip, public_key');
+
+-- A peer address is a host of its network other than the hub address (the first
+-- host), and only a global admin's device may join another tenant's network. Both
+-- read immutable columns only.
+CREATE FUNCTION peer_fits() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    net        cidr;
+    net_tenant bigint;
+    owner      bigint;
+    owner_role text;
+BEGIN
+    SELECT cidr, tenant_id INTO net, net_tenant FROM network WHERE id = NEW.network_id;
+    SELECT u.tenant_id, u.role INTO owner, owner_role
+        FROM device d JOIN app_user u ON u.id = d.user_id WHERE d.id = NEW.device_id;
+    -- host() drops the netmask: inet equality would compare masks too.
+    IF NOT (net >>= NEW.ip AND host(NEW.ip) NOT IN
+            (host(network(net)), host(broadcast(net)), host(network(net) + 1))) THEN
+        RAISE EXCEPTION '% is not a peer address of %', NEW.ip, net
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF owner_role <> 'global_admin' AND owner IS DISTINCT FROM net_tenant THEN
+        RAISE EXCEPTION 'device % belongs to another tenant than network %', NEW.device_id, NEW.network_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER peer_fits BEFORE INSERT ON peer FOR EACH ROW EXECUTE FUNCTION peer_fits();
+
 -- An address and a key are free again once their peer is revoked; a device is a
 -- member of a network at most once.
 CREATE UNIQUE INDEX peer_ip_active ON peer (ip) WHERE revoked_at IS NULL;
@@ -183,15 +218,21 @@ CREATE TABLE ceiling (
 
 -- What members of a network may open (tenant admin): an external destination, or
 -- another network of the same tenant.
+-- Both networks of a rule belong to its tenant (composite foreign keys; a NULL
+-- target skips its key): across tenants only federations exist.
 CREATE TABLE rule (
     id                bigserial PRIMARY KEY,
-    network_id        bigint NOT NULL REFERENCES network ON DELETE CASCADE,
+    tenant_id         bigint NOT NULL,
+    network_id        bigint NOT NULL,
     proto             proto NOT NULL,
     port_from         integer,
     port_to           integer,
     dst               cidr CHECK (family(dst) = 4),
-    target_network_id bigint REFERENCES network ON DELETE CASCADE,
+    target_network_id bigint,
     comment           text NOT NULL DEFAULT '',
+    FOREIGN KEY (network_id, tenant_id) REFERENCES network (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (target_network_id, tenant_id) REFERENCES network (id, tenant_id)
+        ON DELETE CASCADE,
     CHECK (valid_service(proto, port_from, port_to)),
     CHECK ((dst IS NULL) <> (target_network_id IS NULL))
 );
@@ -264,16 +305,3 @@ CREATE TABLE agent_status (
     applied_at       timestamptz NOT NULL,
     error            text
 );
-
--- The agent role reads everything and writes only what it owns. Ansible creates it
--- before the first migrate; a database without it (e.g. tests) gets no grants. The
--- default privileges cover tables later migrations create (they run as this owner).
-DO $$
-BEGIN
-    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'wgate_agent') THEN
-        GRANT SELECT ON ALL TABLES IN SCHEMA public TO wgate_agent;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO wgate_agent;
-        GRANT INSERT, UPDATE ON hub_key, agent_status TO wgate_agent;
-    END IF;
-END
-$$;

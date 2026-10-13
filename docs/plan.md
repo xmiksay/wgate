@@ -65,11 +65,14 @@ under sudo).
   per-tenant email and OIDC subject. Exclusion constraints (GiST `inet_ops`, built in)
   keep blocks, networks and routes disjoint; CHECKs: slug syntax, port range, ≤ /30,
   "exactly one target" on `rule`, `valid_service` (icmp ⇔ NULL ports, never NULL).
-- Triggers: a network lies inside one block of its tenant (and a block keeps its
-  networks); a revoked peer never holds a LAN (revoking frees its routes, routes need
-  an active peer; peer row locks serialize the race; revocations must run at READ
-  COMMITTED). One active peer per (device, network); keys and IPs unique among active
-  peers.
+- Immutable ownership columns; networks reference their block (composite FK with the
+  tenant), rules reference both networks with the tenant; triggers check a network
+  inside its block and a peer inside its network and tenant (immutable data only); a
+  revoked peer never holds a LAN (revoking frees its routes, routes need an active
+  peer; row locks serialize the race; revocations must run at READ COMMITTED). One
+  active peer per (device, network); keys and IPs unique among active peers.
+- The migrator refuses a database with migrations it does not know and re-applies the
+  agent grants on every run.
 - `desired_state(db, &Infra)`: one REPEATABLE READ read-only snapshot, active rows →
   `core::DesiredState` (+ its revision, peer keys, owner tenants); unmappable rows are
   skipped with a warning (a load error would block revocations). Cross-tenant devices

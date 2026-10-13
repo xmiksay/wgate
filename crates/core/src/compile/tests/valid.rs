@@ -218,6 +218,15 @@ fn invalid_peers_and_routes_are_left_out() {
 }
 
 #[test]
+fn a_key_is_used_once_per_network() {
+    let mut s = state();
+    let mut twin = peer(62, B, "10.50.0.21", &[]);
+    twin.public_key = "key21".into(); // b1's
+    s.peers.push(twin);
+    assert_eq!(compile(&s).skipped, [(62, Problem::Overlap)]);
+}
+
+#[test]
 fn a_device_of_another_tenant_cannot_join() {
     let mut s = state();
     let mut foreign = peer(60, C, "10.50.1.6", &[]);

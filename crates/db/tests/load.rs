@@ -35,15 +35,15 @@ const SCENARIO: &str = "
         VALUES (1, 1, '10.50.0.0/23'), (2, 2, '10.50.2.0/24'), (3, 1, '10.50.3.0/24');
     INSERT INTO ceiling (tenant_id, proto, dst, port_from, port_to)
         VALUES (1, 'tcp', '172.16.16.1/32', 6443, 6443);
-    INSERT INTO network (id, tenant_id, slug, name, cidr, port) VALUES
-        (1, 1, 'nexial', 'Nexial', '10.50.0.0/24', 51801),
-        (2, 1, 'dev', 'Dev', '10.50.1.0/24', 51802),
-        (3, 2, 'krcmar', 'Krcmar', '10.50.2.0/24', 51803);
-    INSERT INTO network (id, tenant_id, slug, name, cidr, port, disabled_at)
-        VALUES (4, 1, 'old', 'Old', '10.50.3.0/24', 51804, now());
-    INSERT INTO rule (network_id, proto, port_from, port_to, dst, target_network_id) VALUES
-        (1, 'tcp', 6443, 6443, '172.16.16.1/32', NULL),
-        (1, 'tcp', 22, 22, NULL, 2);
+    INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port) VALUES
+        (1, 1, 1, 'nexial', 'Nexial', '10.50.0.0/24', 51801),
+        (2, 1, 1, 'dev', 'Dev', '10.50.1.0/24', 51802),
+        (3, 2, 2, 'krcmar', 'Krcmar', '10.50.2.0/24', 51803);
+    INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port, disabled_at)
+        VALUES (4, 1, 3, 'old', 'Old', '10.50.3.0/24', 51804, now());
+    INSERT INTO rule (tenant_id, network_id, proto, port_from, port_to, dst, target_network_id) VALUES
+        (1, 1, 'tcp', 6443, 6443, '172.16.16.1/32', NULL),
+        (1, 1, 'tcp', 22, 22, NULL, 2);
     INSERT INTO inbound (network_id, source, proto, port_from, port_to)
         VALUES (2, '10.244.0.0/16', 'tcp', 8080, 8080);
     INSERT INTO federation (from_network_id, to_network_id, proto, port_from, port_to)
@@ -148,7 +148,7 @@ async fn peers_of_inactive_networks_are_simply_absent() {
 }
 
 #[tokio::test]
-async fn a_device_cannot_join_another_tenants_network() {
+async fn a_global_admins_device_joins_any_network() {
     let pg = pg("").await;
     ok(&pg.db, SCENARIO).await;
     ok(
@@ -156,19 +156,18 @@ async fn a_device_cannot_join_another_tenants_network() {
         &format!(
             "INSERT INTO app_user (id, email, role) VALUES (9, 'admin@mmik.cz', 'global_admin');
              INSERT INTO device (id, user_id, name) VALUES (9, 9, 'admin');
-             INSERT INTO peer (id, device_id, network_id, public_key, ip) VALUES
-                (5, 1, 3, '{}', '10.50.2.5'),
-                (6, 9, 3, '{}', '10.50.2.6')",
-            KEYS[0], KEYS[1]
+             INSERT INTO peer (id, device_id, network_id, public_key, ip)
+                VALUES (6, 9, 3, '{}', '10.50.2.6')",
+            KEYS[1]
         ),
     )
     .await;
-    let loaded = desired_state(&pg.db, &infra()).await.expect("load");
-    // nexial's device in krcmar's network is refused; the global admin's is fine.
-    let c = compile(&loaded.state);
-    assert_eq!(c.skipped, [(5, wgate_core::Problem::ForeignDevice)]);
-    assert_eq!(c.peers.iter().map(|p| p.id).collect::<Vec<_>>(), [6]);
-    assert_eq!(c.peers[0].public_key, KEYS[1]);
+    // (A tenant user's device in another tenant's network is refused on insert, see
+    // the schema tests; compile refuses it too, see core.)
+    let c = compile(&desired_state(&pg.db, &infra()).await.expect("load").state);
+    assert!(c.skipped.is_empty(), "{:?}", c.skipped);
+    let admin = c.peers.iter().find(|p| p.id == 6).expect("admin peer");
+    assert_eq!(admin.public_key, KEYS[1]);
 }
 
 #[tokio::test]

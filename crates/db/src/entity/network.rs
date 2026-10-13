@@ -7,6 +7,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     pub tenant_id: i64,
+    pub block_id: i64,
     pub slug: String,
     pub name: String,
     #[sea_orm(column_type = "Cidr")]

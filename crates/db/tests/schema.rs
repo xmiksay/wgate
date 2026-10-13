@@ -11,9 +11,9 @@ use wgate_db::{migrate, revision};
 
 const BASE: &str = "
     INSERT INTO tenant (id, slug, name) VALUES (1, 'nexial', 'Nexial'), (2, 'krcmar', 'Krcmar');
-    INSERT INTO tenant_block (tenant_id, cidr) VALUES (1, '10.50.0.0/24'), (2, '10.50.1.0/24');
-    INSERT INTO network (id, tenant_id, slug, name, cidr, port)
-        VALUES (1, 1, 'nexial', 'Nexial', '10.50.0.0/25', 51801);
+    INSERT INTO tenant_block (id, tenant_id, cidr) VALUES (1, 1, '10.50.0.0/24'), (2, 2, '10.50.1.0/24');
+    INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port)
+        VALUES (1, 1, 1, 'nexial', 'Nexial', '10.50.0.0/25', 51801);
     INSERT INTO app_user (id, tenant_id, email, role) VALUES (1, 1, 'a@nexial.cz', 'user');
     INSERT INTO device (id, user_id, name) VALUES (1, 1, 'laptop');
 ";
@@ -41,7 +41,7 @@ async fn ranges_are_exclusive() {
     .await;
     refused(
         &pg.db,
-        "INSERT INTO network (tenant_id, slug, name, cidr, port) VALUES (1, 'other', 'x', '10.50.0.64/26', 51802)",
+        "INSERT INTO network (tenant_id, block_id, slug, name, cidr, port) VALUES (1, 1, 'other', 'x', '10.50.0.64/26', 51802)",
     )
     .await;
     ok(
@@ -66,7 +66,7 @@ async fn columns_are_checked() {
     ok(&pg.db, BASE).await;
     let network = |slug: &str, cidr: &str, port: u32| {
         format!(
-            "INSERT INTO network (tenant_id, slug, name, cidr, port) VALUES (1, '{slug}', 'x', '{cidr}', {port})"
+            "INSERT INTO network (tenant_id, block_id, slug, name, cidr, port) VALUES (1, 1, '{slug}', 'x', '{cidr}', {port})"
         )
     };
     refused(&pg.db, &network("-bad", "10.50.0.128/28", 51802)).await;
@@ -79,8 +79,8 @@ async fn columns_are_checked() {
 
     let rule = |proto: &str, from: &str, to: &str, dst: &str, target: &str| {
         format!(
-            "INSERT INTO rule (network_id, proto, port_from, port_to, dst, target_network_id)
-             VALUES (1, '{proto}', {from}, {to}, {dst}, {target})"
+            "INSERT INTO rule (tenant_id, network_id, proto, port_from, port_to, dst, target_network_id)
+             VALUES (1, 1, '{proto}', {from}, {to}, {dst}, {target})"
         )
     };
     ok(
@@ -336,16 +336,17 @@ async fn tenant_blocks_are_ipv4() {
 async fn networks_stay_inside_their_tenants_blocks() {
     let pg = pg("").await;
     ok(&pg.db, BASE).await;
-    let network = |tenant: u32, cidr: &str| {
+    let network = |tenant: u32, block: u32, cidr: &str| {
         format!(
-            "INSERT INTO network (tenant_id, slug, name, cidr, port) VALUES ({tenant}, 'n2', 'x', '{cidr}', 51802)"
+            "INSERT INTO network (tenant_id, block_id, slug, name, cidr, port) VALUES ({tenant}, {block}, 'n2', 'x', '{cidr}', 51802)"
         )
     };
     // In tenant 2's block, and in no block at all.
-    refused(&pg.db, &network(1, "10.50.1.0/28")).await;
-    refused(&pg.db, &network(1, "10.50.9.0/28")).await;
-    ok(&pg.db, &network(2, "10.50.1.0/28")).await;
-    // A block cannot be removed or shrunk away from its networks.
+    refused(&pg.db, &network(1, 1, "10.50.1.0/28")).await;
+    refused(&pg.db, &network(1, 2, "10.50.1.0/28")).await;
+    refused(&pg.db, &network(1, 1, "10.50.9.0/28")).await;
+    ok(&pg.db, &network(2, 2, "10.50.1.0/28")).await;
+    // A block cannot be removed under its networks, and blocks never change.
     refused(&pg.db, "DELETE FROM tenant_block WHERE tenant_id = 2").await;
     refused(
         &pg.db,
@@ -388,4 +389,105 @@ async fn a_device_joins_a_network_once_and_revokes_at_read_committed() {
     );
     txn.rollback().await.expect("rollback");
     ok(&pg.db, "UPDATE peer SET revoked_at = now() WHERE id = 1").await;
+}
+
+#[tokio::test]
+async fn deleting_a_tenant_cascades_through_everything() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        &format!(
+            "INSERT INTO peer (id, device_id, network_id, public_key, ip) VALUES (1, 1, 1, '{KEY}', '10.50.0.2');
+             INSERT INTO peer_route (peer_id, cidr) VALUES (1, '192.168.1.0/24')"
+        ),
+    )
+    .await;
+    ok(&pg.db, "DELETE FROM tenant WHERE id = 1").await;
+}
+
+#[tokio::test]
+async fn a_peer_fits_its_network_and_tenant() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        "INSERT INTO app_user (id, tenant_id, email, role) VALUES (2, 2, 'b@krcmar.cz', 'user');
+         INSERT INTO device (id, user_id, name) VALUES (2, 2, 'other tenant');
+         INSERT INTO app_user (id, email, role) VALUES (3, 'admin@mmik.cz', 'global_admin');
+         INSERT INTO device (id, user_id, name) VALUES (3, 3, 'admin');
+         INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port)
+             VALUES (2, 2, 2, 'krcmar', 'Krcmar', '10.50.1.0/24', 51802)",
+    )
+    .await;
+    let peer = |device: u32, network: u32, ip: &str| {
+        format!(
+            "INSERT INTO peer (device_id, network_id, public_key, ip) VALUES ({device}, {network}, '{KEY}', '{ip}')"
+        )
+    };
+    // Another network's address, the hub, network and broadcast addresses.
+    for ip in ["10.50.1.5", "10.50.0.1", "10.50.0.0", "10.50.0.127"] {
+        refused(&pg.db, &peer(1, 1, ip)).await;
+    }
+    // A device of tenant 2's user in tenant 1's network.
+    refused(&pg.db, &peer(2, 1, "10.50.0.5")).await;
+    // A global admin's device may join any network.
+    ok(&pg.db, &peer(3, 1, "10.50.0.5")).await;
+    // Ownership never changes once saved.
+    refused(&pg.db, "UPDATE peer SET ip = '10.50.0.6'").await;
+    refused(&pg.db, "UPDATE device SET user_id = 1 WHERE id = 2").await;
+    refused(&pg.db, "UPDATE app_user SET tenant_id = 1 WHERE id = 2").await;
+    refused(
+        &pg.db,
+        "UPDATE network SET cidr = '10.50.0.0/26' WHERE id = 1",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rules_stay_inside_their_tenant() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        "INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port)
+             VALUES (2, 2, 2, 'krcmar', 'Krcmar', '10.50.1.0/24', 51802)",
+    )
+    .await;
+    let rule = |tenant: u32, network: u32, target: u32| {
+        format!(
+            "INSERT INTO rule (tenant_id, network_id, proto, port_from, port_to, target_network_id)
+             VALUES ({tenant}, {network}, 'tcp', 22, 22, {target})"
+        )
+    };
+    refused(&pg.db, &rule(1, 1, 2)).await;
+    refused(&pg.db, &rule(2, 1, 2)).await;
+    ok(&pg.db, &rule(1, 1, 1)).await;
+}
+
+#[tokio::test]
+async fn migrate_refuses_a_newer_schema_and_regrants() {
+    let pg = pg("").await;
+    ok(
+        &pg.db,
+        "INSERT INTO wgate_migration (name) VALUES ('m9999_future')",
+    )
+    .await;
+    assert!(
+        migrate(&pg.db).await.is_err(),
+        "unknown migration must stop the rollout"
+    );
+    ok(
+        &pg.db,
+        "DELETE FROM wgate_migration WHERE name = 'm9999_future'",
+    )
+    .await;
+    // A role created after the first migration gets its rights on the next run.
+    ok(&pg.db, "CREATE ROLE wgate_agent LOGIN PASSWORD 'agent'").await;
+    migrate(&pg.db).await.expect("migrate");
+    let agent_url = pg.url.replace("postgres:postgres@", "wgate_agent:agent@");
+    let agent = Database::connect(&agent_url)
+        .await
+        .expect("connect as agent");
+    ok(&agent, "SELECT * FROM peer").await;
 }
