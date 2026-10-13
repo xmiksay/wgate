@@ -16,7 +16,9 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/wgate
+# Creates /var/lib/wgate (0700) if missing; the hub keys live in keys/.
+StateDirectory=wgate
+StateDirectoryMode=0700
 RestrictAddressFamilies=AF_NETLINK AF_UNIX AF_INET AF_INET6
 
 [Install]

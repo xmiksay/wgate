@@ -47,11 +47,19 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
     }
 }
 
+/// Waits for a notification. A lost connection (`try_recv` → `None`; sqlx then
+/// reconnects) also wakes us: notifications sent meanwhile are gone, so reconcile now
+/// rather than at the next tick. Whatever else is already queued is drained, so a
+/// burst of changes costs one reconcile.
 async fn next(listener: &mut Option<Listener>) -> Result<(), ListenError> {
-    match listener {
-        Some(l) => l.recv().await.map(drop),
-        None => std::future::pending().await,
-    }
+    let Some(l) = listener else {
+        return std::future::pending().await;
+    };
+    l.try_recv().await?;
+    while let Ok(Ok(Some(_))) =
+        tokio::time::timeout(std::time::Duration::from_millis(50), l.try_recv()).await
+    {}
+    Ok(())
 }
 
 /// One load → compile → apply → report round.
@@ -94,12 +102,13 @@ pub async fn reconcile_once<R: Runner + Send + Sync + 'static>(
     let outcome = tokio::task::spawn_blocking(move || reconcile(&*runner, &compiled, &keys_dir))
         .await
         .context("reconcile task")?;
-    for (network, key) in &outcome.hub_keys {
-        wgate_db::agent::set_hub_key(db, *network, key)
-            .await
-            .context("record a hub key")?;
-    }
     problems.extend(outcome.errors);
+    for (network, key) in &outcome.hub_keys {
+        // A network deleted meanwhile (its row is gone) must not cost the status.
+        if let Err(e) = wgate_db::agent::set_hub_key(db, *network, key).await {
+            problems.push(format!("network {network}: hub key: {e}"));
+        }
+    }
     for p in &problems {
         tracing::warn!(problem = %p, "not applied");
     }

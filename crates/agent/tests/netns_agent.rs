@@ -127,4 +127,25 @@ async fn the_agent_builds_updates_and_tears_down_a_network() {
         !hub.output(&["nft", "list", "table", "inet", "wgate"])
             .contains("n1_")
     );
+
+    // A new network reusing the slug comes up fresh: its own chains, no old key.
+    sql(&db, "DELETE FROM network WHERE id = 1").await;
+    sql(
+        &db,
+        "INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port)
+             VALUES (2, 1, 1, 'n1', 'N1 again', '10.50.0.0/25', 51802)",
+    )
+    .await;
+    apply().await.expect("reconcile after re-create");
+    let table = hub.output(&["nft", "list", "table", "inet", "wgate"]);
+    assert!(
+        table.contains("jump n2_from") && !table.contains("n1_"),
+        "{table}"
+    );
+    assert!(hub.output(&["wg", "show", "wg-n1", "public-key"]).trim() != hub_key);
+    let addrs = hub.output(&["ip", "-4", "addr", "show", "dev", "wg-n1"]);
+    assert!(
+        addrs.contains("10.50.0.1/25") && !addrs.contains("/24"),
+        "{addrs}"
+    );
 }
