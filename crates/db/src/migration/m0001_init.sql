@@ -62,12 +62,15 @@ CREATE TRIGGER network_immutable BEFORE UPDATE OF tenant_id, block_id, cidr ON n
     EXECUTE FUNCTION immutable('tenant_id, block_id, cidr');
 
 CREATE FUNCTION network_in_block() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    block cidr;
 BEGIN
-    IF NOT EXISTS (SELECT FROM tenant_block WHERE id = NEW.block_id) THEN
+    SELECT cidr INTO block FROM tenant_block WHERE id = NEW.block_id;
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'block % does not exist', NEW.block_id
             USING ERRCODE = 'foreign_key_violation';
     END IF;
-    IF NOT EXISTS (SELECT FROM tenant_block WHERE id = NEW.block_id AND cidr >>= NEW.cidr) THEN
+    IF NOT block >>= NEW.cidr THEN
         RAISE EXCEPTION 'network % lies outside block %', NEW.cidr, NEW.block_id
             USING ERRCODE = 'check_violation';
     END IF;
@@ -82,12 +85,10 @@ CREATE TRIGGER network_in_block BEFORE INSERT ON network
 -- login first picks the tenant and matches users within it.
 CREATE TABLE oidc_provider (
     id        bigserial PRIMARY KEY,
-    tenant_id bigint UNIQUE REFERENCES tenant ON DELETE CASCADE,
+    tenant_id bigint UNIQUE NULLS NOT DISTINCT REFERENCES tenant ON DELETE CASCADE,
     issuer    text NOT NULL,
     client_id text NOT NULL
 );
-CREATE UNIQUE INDEX oidc_provider_global ON oidc_provider ((tenant_id IS NULL))
-    WHERE tenant_id IS NULL;
 
 CREATE TABLE app_user (
     id          bigserial PRIMARY KEY,
@@ -256,12 +257,12 @@ CREATE TABLE federation (
     proto           proto NOT NULL,
     port_from       integer,
     port_to         integer,
-    CHECK (valid_service(proto, port_from, port_to)),
-    CHECK (from_network_id <> to_network_id)
+    CHECK (valid_service(proto, port_from, port_to))
 );
 
--- Federations link tenants; inside one tenant, rules do that (and are the tenant
--- admin's). Network tenants are immutable, so this cannot race.
+-- Federations link two different tenants (so never a network to itself); inside one
+-- tenant, rules do that (and are the tenant admin's). Network tenants are immutable,
+-- so this cannot race.
 CREATE FUNCTION federation_crosses_tenants() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF (SELECT tenant_id FROM network WHERE id = NEW.from_network_id)

@@ -210,3 +210,28 @@ async fn state_is_written_at_read_committed_and_truncate_counts() {
     ok(&pg.db, "TRUNCATE inbound").await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
 }
+
+#[tokio::test]
+async fn moving_a_rule_counts_and_presetting_the_marker_does_not_mute() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    ok(
+        &pg.db,
+        "INSERT INTO tenant_block (id, tenant_id, cidr) VALUES (3, 1, '10.50.2.0/24');
+         INSERT INTO network (id, tenant_id, block_id, slug, name, cidr, port)
+             VALUES (2, 1, 3, 'second', 'x', '10.50.2.0/24', 51802);
+         INSERT INTO rule (id, tenant_id, network_id, proto, port_from, port_to, dst)
+             VALUES (1, 1, 1, 'tcp', 22, 22, '172.16.16.1/32')",
+    )
+    .await;
+    let base = revision::current(&pg.db).await.expect("revision");
+    ok(&pg.db, "UPDATE rule SET network_id = 2").await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
+    // A session-level preset of the once-per-transaction marker changes nothing.
+    ok(
+        &pg.db,
+        "SET wgate.state_changed = 'yes'; UPDATE network SET mesh = true WHERE id = 1",
+    )
+    .await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 2);
+}
