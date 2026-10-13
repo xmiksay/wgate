@@ -22,7 +22,8 @@ pub fn parse_dump(dump: &str) -> anyhow::Result<Vec<WgPeer>> {
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
             let (Some(key), Some(allowed)) = (fields.first(), fields.get(3)) else {
-                bail!("unexpected wg dump line: {line}");
+                // Not the line itself: its second field is the preshared key.
+                bail!("unexpected wg dump line ({} fields)", fields.len());
             };
             let entries: Vec<&str> = match *allowed {
                 "(none)" => vec![],

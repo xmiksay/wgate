@@ -26,6 +26,11 @@ impl Fake {
         self
     }
 
+    fn fail_input(mut self, needle: &str) -> Self {
+        self.fail_input = Some(needle.into());
+        self
+    }
+
     fn log(&self) -> Vec<String> {
         self.log.borrow().clone()
     }
@@ -52,6 +57,8 @@ impl Runner for Fake {
             Some((_, Err(e))) => Err(anyhow::anyhow!("{e}")),
             None if cmd.starts_with("wg genkey") => Ok(format!("{GENERATED}\n")),
             None if cmd.starts_with("wg pubkey") => Ok("hubpub\n".into()),
+            // Existing interfaces carry their network's key (the fake pubkey).
+            None if cmd.ends_with(" public-key") => Ok("hubpub\n".into()),
             None if cmd.starts_with("wg show") => Ok("iface\tpub\t1\toff\n".into()),
             None if cmd.starts_with("ip -j") => Ok("[]".into()),
             None if cmd.starts_with("nft -j list map") => Ok(r#"{"nftables": []}"#.into()),
@@ -61,8 +68,9 @@ impl Runner for Fake {
 }
 
 /// What the fake `wg genkey` prints.
-const GENERATED: &str = "0000000000000000000000000000000000000000007A=";
+const GENERATED: &str = "000000000000000000000000000000000000000007A=";
 const K1: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
+const K3: &str = "000000000000000000000000000000000000000003A=";
 const K2: &str = "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=";
 
 /// Two networks of one tenant: n1 with a router (LAN 192.168.1.0/24), n2 empty.
@@ -118,6 +126,10 @@ fn position(log: &[String], needle: &str) -> usize {
         .unwrap_or_else(|| panic!("no `{needle}` in {log:#?}"))
 }
 
+fn nft_runs(log: &[String]) -> usize {
+    log.iter().filter(|c| c.as_str() == "nft -f -").count()
+}
+
 /// Where the `n`th (from 0) nft transaction ran: the base, then fragments in order.
 fn nft_run(log: &[String], n: usize) -> usize {
     log.iter()
@@ -139,7 +151,9 @@ fn a_new_network_is_registered_then_built() {
     let base = position(&log, "nft -f -");
     let link = position(&log, "ip link add wg-n1 type wireguard");
     let addr = position(&log, "ip addr replace 10.50.0.1/24 dev wg-n1");
-    let port = position(&log, "wg set wg-n1 listen-port 51801 private-key ");
+    let keyed = position(&log, "wg set wg-n1 private-key ");
+    let port = position(&log, "wg set wg-n1 listen-port 51801");
+    assert!(addr < keyed && keyed < port);
     let peer = position(
         &log,
         &format!("wg set wg-n1 peer {K1} allowed-ips 10.50.0.2/32,192.168.1.0/24"),
@@ -157,7 +171,7 @@ fn a_new_network_is_registered_then_built() {
     // Nothing asks about an interface before it exists.
     assert!(
         !log.iter()
-            .any(|c| c.contains("show dev wg-n1") || c.starts_with("wg show wg-n1"))
+            .any(|c| c.contains("route show dev wg-n1") || c.starts_with("wg show wg-n1"))
     );
     // The key is the network's (by id) and stays private (0600).
     let key = dir.path().join("n1.key");
@@ -185,6 +199,10 @@ fn revocations_come_before_additions_and_stale_routes_go() {
             &format!("priv\tpub\t51801\toff\n{K2}\t(none)\t(none)\t10.50.0.3/32\t0\t0\t0\toff\n"),
         )
         .answer(
+            "wg show wg-n2 dump",
+            &format!("priv\tpub\t51802\toff\n{K3}\t(none)\t(none)\t10.50.1.9/32\t0\t0\t0\toff\n"),
+        )
+        .answer(
             "ip -j route show dev wg-n1",
             r#"[{"dst":"192.168.9.0/24","scope":"link","flags":[]}]"#,
         );
@@ -198,6 +216,8 @@ fn revocations_come_before_additions_and_stale_routes_go() {
     let removal = position(&log, &format!("wg set wg-n1 peer {K2} remove"));
     let addition = position(&log, &format!("wg set wg-n1 peer {K1} allowed-ips"));
     assert!(removal < nft_run(&log, 1) && nft_run(&log, 1) < addition);
+    // n2's losses also go before n1's rules or peers grow.
+    assert!(position(&log, &format!("wg set wg-n2 peer {K3} remove")) < nft_run(&log, 1));
     position(&log, "ip route del 192.168.9.0/24 dev wg-n1 proto 150");
 }
 
@@ -242,7 +262,7 @@ fn swapped_ports_are_freed_first() {
     let log = fake.log();
     let free1 = position(&log, "wg set wg-n1 listen-port 0");
     let free2 = position(&log, "wg set wg-n2 listen-port 0");
-    let take1 = position(&log, "wg set wg-n1 listen-port 51801 ");
+    let take1 = position(&log, "wg set wg-n1 listen-port 51801");
     assert!(free1 < take1 && free2 < take1);
 }
 
@@ -319,4 +339,5 @@ fn what_a_peer_loses_goes_before_the_rules_change() {
     assert!(narrow < nft_run(&log, 1));
 }
 
+mod ownership;
 mod removal;

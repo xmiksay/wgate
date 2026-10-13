@@ -87,7 +87,14 @@ async fn rows_compile_to_the_rights_they_describe() {
     let get = |id| c.peers.iter().find(|p| p.id == id).expect("peer");
     let ip = |s: &str| s.parse().expect("addr");
     let router = get(1);
-    assert_eq!(router.iface, "wg-nexial");
+    let iface = |p: &wgate_core::CompiledPeer| {
+        &c.networks
+            .iter()
+            .find(|n| n.id == p.network)
+            .expect("network")
+            .iface
+    };
+    assert_eq!(iface(router), "wg-nexial");
     assert!(router.outbound.allows(Proto::Tcp, ip("172.16.16.1"), 6443));
     assert!(router.outbound.allows(Proto::Tcp, ip("10.50.1.2"), 22));
     assert!(

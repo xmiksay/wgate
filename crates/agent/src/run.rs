@@ -34,7 +34,8 @@ pub async fn run<R: Runner + Send + Sync + 'static>(
             }
         }
         tokio::select! {
-            _ = tick.tick() => {}
+            // The timer rewrites every hub key: a row lost meanwhile comes back.
+            _ = tick.tick() => published.clear(),
             note = next(&mut listener) => {
                 if let Err(e) = note {
                     tracing::warn!(error = %e, "LISTEN connection lost");
