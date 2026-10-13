@@ -18,7 +18,7 @@ pub use net::{
     InvalidSlug, MAX_NETWORK_PREFIX, PORT_RANGE, RESERVED_PORT, Slug, first_overlap, hub_address,
     is_inside, is_peer_ip, next_free_net, next_peer_ip, next_port, overlaps,
 };
-pub use nft::{NftRender, NftState, render_nft};
+pub use nft::{NftState, render_nft};
 pub use rights::{AddrRange, Element, RuleSet, Uncovered, covers, merge_nets, subtract_nets};
 pub use rule::{PortRange, Proto, Rule, RuleError, Service};
 

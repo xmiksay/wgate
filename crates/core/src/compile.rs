@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-use crate::net::{Slug, first_overlap, hub_address, is_inside, is_peer_ip};
+use crate::net::{MAX_NETWORK_PREFIX, Slug, first_overlap, hub_address, is_inside, is_peer_ip};
 use crate::rights::{RuleSet, merge_nets, subtract_nets};
 use crate::rule::{Rule, Service};
 
@@ -29,6 +29,8 @@ pub struct DesiredState {
 #[derive(Clone, Debug)]
 pub struct Tenant {
     pub id: Id,
+    /// Pool blocks the global admin assigned; the tenant's networks lie inside them.
+    pub blocks: Vec<Ipv4Net>,
     /// External destinations the tenant's networks may be granted (global admin).
     pub ceiling: RuleSet,
 }
@@ -92,13 +94,13 @@ pub struct CompiledPeer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
     UnknownNetwork,
-    /// Its network lies outside the pool, has an unknown tenant or overlaps an older
-    /// network.
+    /// Its network lies outside its tenant's blocks or the pool, has an unknown
+    /// tenant, is longer than `MAX_NETWORK_PREFIX` or overlaps an older network.
     InvalidNetwork,
     /// Not a peer address of its network (outside it, the hub address, network or
     /// broadcast).
     InvalidIp,
-    /// A routed subnet outside `routed_space` (or inside the pool).
+    /// A routed subnet outside `routed_space`, inside the pool, or with host bits.
     RoutedNotAllowed,
     /// Its addresses overlap another peer's.
     Overlap,
@@ -114,14 +116,18 @@ pub struct Compiled {
 }
 
 pub fn compile(state: &DesiredState) -> Compiled {
-    // A network outside the pool, with an unknown tenant or overlapping an older one
-    // fails closed. Only networks that could be valid compete for addresses, so a bad
-    // row cannot knock out a good one.
-    let tenants: HashSet<Id> = state.tenants.iter().map(|t| t.id).collect();
-    let (eligible, mut invalid): (Vec<&Network>, Vec<&Network>) = state
-        .networks
-        .iter()
-        .partition(|n| is_inside(n.cidr, &state.pool) && tenants.contains(&n.tenant));
+    // A network outside its tenant's blocks (or the pool), with an unknown tenant, too
+    // small for a peer or overlapping an older one fails closed. Only networks that
+    // could be valid compete for addresses, so a bad row cannot knock out a good one.
+    let tenants: HashMap<Id, &Tenant> = state.tenants.iter().map(|t| (t.id, t)).collect();
+    let (eligible, mut invalid): (Vec<&Network>, Vec<&Network>) =
+        state.networks.iter().partition(|n| {
+            n.cidr.prefix_len() <= MAX_NETWORK_PREFIX
+                && is_inside(n.cidr, &state.pool)
+                && tenants
+                    .get(&n.tenant)
+                    .is_some_and(|t| is_inside(n.cidr, &t.blocks))
+        });
     let ranges: Vec<(Id, Vec<Ipv4Net>)> = eligible.iter().map(|n| (n.id, vec![n.cidr])).collect();
     let clashing = conflicting(&ranges);
     let (networks, clashed): (Vec<&Network>, Vec<&Network>) = eligible
@@ -131,8 +137,11 @@ pub fn compile(state: &DesiredState) -> Compiled {
     let invalid: HashSet<Id> = invalid.iter().map(|n| n.id).collect();
     let networks: HashMap<Id, &Network> = networks.into_iter().map(|n| (n.id, n)).collect();
     let mut skipped = Vec::new();
-    let routable =
-        |r: Ipv4Net| is_inside(r, &state.routed_space) && first_overlap(r, &state.pool).is_none();
+    let routable = |r: Ipv4Net| {
+        r == r.trunc()
+            && is_inside(r, &state.routed_space)
+            && first_overlap(r, &state.pool).is_none()
+    };
 
     let mut candidates = Vec::new();
     for p in &state.peers {
@@ -191,8 +200,6 @@ pub fn compile(state: &DesiredState) -> Compiled {
         .map(|n| Ipv4Net::from(hub_address(n.cidr)))
         .collect();
     let not_grantable = RuleSet::everything(&subtract_nets(&tenant_nets, &hubs));
-    let ceilings: HashMap<Id, &RuleSet> =
-        state.tenants.iter().map(|t| (t.id, &t.ceiling)).collect();
 
     // Per network first; every member then only loses its own addresses.
     let mut per_network: HashMap<Id, (RuleSet, RuleSet)> = HashMap::new();
@@ -209,11 +216,11 @@ pub fn compile(state: &DesiredState) -> Compiled {
                 NetRule::To { .. } => {}
             }
         }
-        let ceiling = ceilings
-            .get(&n.tenant)
-            .map_or_else(RuleSet::new, |c| (*c).clone());
+        // Eligibility guarantees the tenant exists.
+        let empty = RuleSet::new();
+        let ceiling = tenants.get(&n.tenant).map_or(&empty, |t| &t.ceiling);
         let external = RuleSet::from_rules(&external)
-            .intersect(&ceiling)
+            .intersect(ceiling)
             .difference(&tenant_space);
         outbound = outbound.union(&external);
 

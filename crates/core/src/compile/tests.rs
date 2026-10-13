@@ -47,10 +47,12 @@ fn state() -> DesiredState {
         tenants: vec![
             Tenant {
                 id: 10,
+                blocks: vec![net("10.50.0.0/24")],
                 ceiling: rule_set(&["tcp 172.16.16.1/32 6443", "tcp 10.0.0.0/8 443"]),
             },
             Tenant {
                 id: 20,
+                blocks: vec![net("10.50.1.0/24")],
                 ceiling: RuleSet::new(),
             },
         ],
@@ -186,6 +188,27 @@ fn bad_networks_do_not_knock_out_good_ones() {
     get(&c, 11);
     // The tenant-less network's mesh grants nothing.
     assert!(!get(&c, 11).inbound.allows(Proto::Tcp, ip("10.50.0.9"), 1));
+}
+
+#[test]
+fn networks_outside_their_tenant_blocks_or_too_small_fail_closed() {
+    let mut s = state();
+    // In the pool, but in tenant 20's block.
+    s.networks
+        .push(network(6, 10, "10.50.1.64/28", true, vec![]));
+    // In tenant 10's block, but no room for a peer.
+    s.networks
+        .push(network(7, 10, "10.50.0.255/32", true, vec![]));
+    s.peers.push(peer(61, 6, "10.50.1.66", &[]));
+    let c = compile(&s);
+    assert_eq!(c.skipped, [(61, Problem::InvalidNetwork)]);
+}
+
+#[test]
+fn routed_lans_with_host_bits_are_refused() {
+    let mut s = state();
+    s.peers.push(peer(13, A, "10.50.0.4", &["192.168.7.5/24"]));
+    assert_eq!(compile(&s).skipped, [(13, Problem::RoutedNotAllowed)]);
 }
 
 #[test]

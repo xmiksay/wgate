@@ -125,10 +125,7 @@ pub fn next_port(used: &[u16]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn net(s: &str) -> Ipv4Net {
-        s.parse().unwrap()
-    }
+    use crate::testing::net;
 
     #[test]
     fn slug_validation() {

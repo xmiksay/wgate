@@ -165,13 +165,13 @@ impl Lab {
     fn apply(&self, state: &DesiredState) {
         let compiled = compile(state);
         assert!(compiled.skipped.is_empty(), "{:?}", compiled.skipped);
-        let render = render_nft(&NftState {
+        let script = render_nft(&NftState {
             snat_source: "172.19.9.10".parse().expect("addr"),
             node_cidrs: vec![net("172.19.9.0/24")],
             tenant_space: compiled.tenant_space,
             peers: compiled.peers,
         });
-        self.hub.exec(&["nft", "-f", "-"], Some(&render.script));
+        self.hub.exec(&["nft", "-f", "-"], Some(&script));
     }
 }
 
@@ -220,10 +220,12 @@ fn state() -> DesiredState {
         tenants: vec![
             Tenant {
                 id: 1,
+                blocks: vec![net("10.50.0.0/23")],
                 ceiling: rules(&["icmp 172.19.9.0/24", "tcp 172.19.9.0/24 8080"]),
             },
             Tenant {
                 id: 2,
+                blocks: vec![net("10.50.2.0/24")],
                 ceiling: RuleSet::new(),
             },
         ],
