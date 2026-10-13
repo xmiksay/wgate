@@ -8,8 +8,7 @@ use std::net::Ipv4Addr;
 
 use common::Netns;
 use wgate_core::{
-    DesiredState, compile, render_base, render_network_cutoff, render_network_purge,
-    render_network_removal, render_snat,
+    DesiredState, compile, render_base, render_network_cutoff, render_network_purge, render_snat,
 };
 
 /// The kernel features the design depends on: a `wg-*` interface and an nft set
@@ -65,21 +64,22 @@ fn rendered_ruleset_loads_reapplies_and_removes() {
         "{listed}"
     );
 
+    // As the agent takes a network out: its entries, map by map, then its chains and
+    // sets (a purge applies twice, and for a network that never existed).
     for (id, iface) in [(1, "wg-nexial"), (2, "wg-nexial-dev"), (3, "wg-krcmar")] {
-        // Twice: a removal applies whatever is already gone.
-        for _ in 0..2 {
+        for map in ["from_net", "ingress", "to_net"] {
             ns.exec(
                 &["nft", "-f", "-"],
-                Some(&render_network_removal(id, iface)),
+                Some(&format!(
+                    "delete element inet wgate {map} {{ \"{iface}\" }}\n"
+                )),
             );
         }
+        for _ in 0..2 {
+            ns.exec(&["nft", "-f", "-"], Some(&render_network_purge(id)));
+        }
     }
-    // A cutoff, then a removal and a purge (twice), of a network that never existed.
     ns.exec(&["nft", "-f", "-"], Some(&render_network_cutoff(9)));
-    ns.exec(
-        &["nft", "-f", "-"],
-        Some(&render_network_removal(9, "wg-gone")),
-    );
     for _ in 0..2 {
         ns.exec(&["nft", "-f", "-"], Some(&render_network_purge(9)));
     }

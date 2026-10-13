@@ -306,8 +306,8 @@ pub(super) fn registered(r: &dyn Runner) -> anyhow::Result<Dispatch> {
     })
 }
 
-/// Takes an element that is not wgate's out of its map: the network's own entry could
-/// not go in otherwise. Until it does, the base drops the interface's traffic.
+/// Takes an interface's element out of a dispatch map (one that is not wgate's, or a
+/// registration that goes). Until another goes in, the base drops its traffic.
 pub(super) fn clear_stray(r: &dyn Runner, map: &str, iface: &str) -> anyhow::Result<()> {
     nft(
         r,

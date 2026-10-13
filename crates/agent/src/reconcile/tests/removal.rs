@@ -319,3 +319,27 @@ fn a_stale_name_pointing_at_two_live_networks_loses_each_entry_alone() {
     // Both networks live on: their chains stay.
     assert!(!inputs.iter().any(|i| i.contains("delete chain")));
 }
+
+#[test]
+fn an_entry_cleared_as_stray_is_not_deleted_again() {
+    let dir = keys();
+    let fake = Fake::default()
+        .answer(
+            "nft -j list map inet wgate from_net",
+            &registry(&[("wg-old", 9)]),
+        )
+        .answer(
+            "nft -j list map inet wgate to_net",
+            r#"{"nftables": [{"map": {"name": "to_net", "elem": [["wg-old", "accept"]]}}]}"#,
+        );
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let to_net = "delete element inet wgate to_net { \"wg-old\" }";
+    let deletes = fake
+        .inputs
+        .borrow()
+        .iter()
+        .filter(|i| i.trim() == to_net)
+        .count();
+    assert_eq!(deletes, 1);
+}

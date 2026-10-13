@@ -4,7 +4,7 @@
 use ipnet::Ipv4Net;
 use wgate_core::{Compiled, Id, render_network_cutoff, render_network_purge};
 
-use super::steps::{Link, SCRATCH, disarm, nft, run};
+use super::steps::{Link, SCRATCH, clear_stray, disarm, nft, run};
 use crate::runner::Runner;
 
 /// What [`remove_gone_links`] left.
@@ -76,14 +76,18 @@ pub(super) fn remove_gone_links(
 pub(super) fn unregister(
     r: &dyn Runner,
     c: &Compiled,
-    entries: &[(&str, String)],
+    entries: &mut Vec<(&str, String)>,
     iface: &str,
     id: Id,
     errors: &mut Vec<String>,
 ) {
-    for (map, _) in entries.iter().filter(|(_, i)| i == iface) {
-        let script = format!("delete element inet wgate {map} {{ \"{iface}\" }}\n");
-        if let Err(e) = nft(r, &script) {
+    // Each entry goes once: what an earlier step of this pass took off is not there.
+    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(entries)
+        .into_iter()
+        .partition(|(_, i)| i == iface);
+    *entries = rest;
+    for (map, _) in mine {
+        if let Err(e) = clear_stray(r, map, iface) {
             errors.push(format!(
                 "{iface} (unregistering network {id}): {map}: {e:#}"
             ));

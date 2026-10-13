@@ -229,3 +229,13 @@ fn a_full_tenant_space_without_its_guard_rules_guards_nothing() {
     assert!(fake.fragments_of(1).is_empty());
     assert!(!fake.log().iter().any(|c| c.starts_with("ip link add")));
 }
+
+#[test]
+fn an_unreadable_route_list_does_not_block_its_own_peers() {
+    let dir = keys();
+    let fake = owned_n1().fail("ip -j route show dev wg-n1");
+    reconcile(&fake, &compiled(), dir.path());
+    // Its new router joins; only its LAN route waits.
+    position(&fake.log(), &format!("wg set wg-n1 peer {K1} allowed-ips"));
+    assert!(!fake.log().iter().any(|c| c.starts_with("ip route add")));
+}

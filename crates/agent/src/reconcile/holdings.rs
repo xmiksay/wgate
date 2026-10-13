@@ -17,14 +17,18 @@ use crate::runner::Runner;
 #[derive(Debug, Default)]
 pub(super) struct Ledger {
     unreleased: Vec<Ipv4Net>,
-    elsewhere: Vec<Ipv4Net>,
+    /// By the network whose interface may hold it (its own additions are not blocked
+    /// by it), or `None` for an interface of no compiled network.
+    elsewhere: Vec<(Option<Id>, Vec<Ipv4Net>)>,
     /// What networks whose peers cannot be read may hold: their own rules give it to
     /// nobody, so a revocation holds while the read fails.
     unread: Vec<Ipv4Net>,
     /// Some holdings cannot even be told: nothing is known to be free.
     unknown: bool,
-    /// What the previous pass left held, still counted while a network is unread.
+    /// What the previous pass left held: still counted (and carried on) while some
+    /// network is unread, as that network may still hold it.
     before: Vec<Ipv4Net>,
+    before_used: bool,
 }
 
 impl Ledger {
@@ -42,28 +46,26 @@ impl Ledger {
     pub fn kept(&mut self, r: &dyn Runner, link: &Link) {
         match (current_peers(r, &link.name), current_routes(r, &link.name)) {
             (Ok(peers), Ok(routes)) => {
-                self.elsewhere
-                    .extend(peers.into_iter().flat_map(|p| p.allowed));
-                self.elsewhere.extend(routes);
+                let held = peers.into_iter().flat_map(|p| p.allowed).chain(routes);
+                self.elsewhere.push((None, held.collect()));
             }
             _ => self.unknown = true,
         }
     }
 
     /// A network whose peers (`peers`) or routes cannot be read: what it may hold
-    /// there is what is compiled for it, what its rules last gave (`n<id>_peers`), and
-    /// what an earlier pass left held and so out of its rules.
+    /// there is what is compiled for it and what its rules last gave (`n<id>_peers`).
     fn unreadable(&mut self, r: &dyn Runner, c: &Compiled, n: &CompiledNetwork, peers: bool) {
         let mut may_hold: Vec<Ipv4Net> = c.peers_of(n.id).flat_map(|p| p.addrs.clone()).collect();
         match set_ranges(r, &format!("n{}_peers", n.id)) {
             Ok(last) => may_hold.extend(last),
             Err(_) => self.unknown = true,
         }
-        may_hold.extend(std::mem::take(&mut self.before));
         if peers {
             self.unread.extend_from_slice(&may_hold);
         }
-        self.elsewhere.extend(may_hold);
+        self.elsewhere.push((Some(n.id), may_hold));
+        self.before_used = true;
     }
 
     /// Whether anything may grow: only while every holding is known.
@@ -78,13 +80,49 @@ impl Ledger {
 
     /// What no right is given to in the rules of networks whose peers are unread.
     pub fn cut_unread(&self) -> Vec<Ipv4Net> {
-        [self.unreleased.as_slice(), &self.unread].concat()
+        dedup(
+            [
+                self.unreleased.as_slice(),
+                &self.unread,
+                self.carried_before(),
+            ]
+            .concat(),
+        )
     }
 
-    /// What no peer or route of any network takes this pass; carried to the next.
-    pub fn taken(&self) -> Vec<Ipv4Net> {
-        [self.unreleased.as_slice(), &self.elsewhere].concat()
+    /// What no peer or route of network `id` takes this pass.
+    pub fn taken_for(&self, id: Id) -> Vec<Ipv4Net> {
+        let elsewhere = self
+            .elsewhere
+            .iter()
+            .filter(|(by, _)| *by != Some(id))
+            .flat_map(|(_, addrs)| addrs.iter().copied());
+        dedup(
+            self.unreleased
+                .iter()
+                .copied()
+                .chain(elsewhere)
+                .chain(self.carried_before().iter().copied())
+                .collect(),
+        )
     }
+
+    /// What the next pass still counts: what failed to be released now, and what an
+    /// earlier pass left held while some network stays unread. Not what is merely
+    /// compiled or last given (read again each pass), so nothing piles up.
+    pub fn carried(&self) -> Vec<Ipv4Net> {
+        dedup([self.unreleased.as_slice(), self.carried_before()].concat())
+    }
+
+    fn carried_before(&self) -> &[Ipv4Net] {
+        if self.before_used { &self.before } else { &[] }
+    }
+}
+
+fn dedup(mut nets: Vec<Ipv4Net>) -> Vec<Ipv4Net> {
+    nets.sort_unstable();
+    nets.dedup();
+    nets
 }
 
 /// What anyone loses, in every network, before any network's rules change or grow:
@@ -150,11 +188,25 @@ mod tests {
             held: nets(&["10.50.9.2/32"]),
             ..Gone::default()
         };
-        let ledger = Ledger::new(&gone, &nets(&["10.50.8.0/24"]));
+        let mut ledger = Ledger::new(&gone, &nets(&["10.50.8.0/24"]));
         assert!(ledger.grows());
         assert_eq!(ledger.cut(), nets(&["10.50.9.2/32"]));
         // What the previous pass left held counts only while a network is unread.
-        assert_eq!(ledger.taken(), nets(&["10.50.9.2/32"]));
+        assert_eq!(ledger.taken_for(1), nets(&["10.50.9.2/32"]));
+        assert_eq!(ledger.carried(), nets(&["10.50.9.2/32"]));
+        ledger
+            .elsewhere
+            .push((Some(2), nets(&["10.50.2.0/24", "10.50.9.2/32"])));
+        ledger.before_used = true;
+        // A network's own possible holdings never block it; nothing is counted twice.
+        assert_eq!(ledger.taken_for(2), nets(&["10.50.8.0/24", "10.50.9.2/32"]));
+        assert_eq!(
+            ledger.taken_for(1),
+            nets(&["10.50.2.0/24", "10.50.8.0/24", "10.50.9.2/32"])
+        );
+        // The next pass carries what failed and the earlier carry-over, not what is
+        // read again anyway.
+        assert_eq!(ledger.carried(), nets(&["10.50.8.0/24", "10.50.9.2/32"]));
         let blind = Ledger::new(
             &Gone {
                 blind: true,
