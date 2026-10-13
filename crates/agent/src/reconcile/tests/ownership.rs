@@ -219,3 +219,20 @@ fn a_name_taken_again_after_removal_is_not_deleted() {
     // Its registration still goes.
     assert_eq!(nft_runs(&log), 4, "base, removal, both fragments");
 }
+
+#[test]
+fn a_network_that_cannot_be_made_loses_a_stale_registration() {
+    let dir = keys();
+    // wg-n1 was deleted by hand; its registration is still there.
+    let fake = Fake::default()
+        .answer("nft -j list map", &registry(&[("wg-n1", 1)]))
+        .fail("ip link add wgtmp-1");
+    let out = reconcile(&fake, &compiled(), dir.path());
+    assert!(
+        out.errors.iter().any(|e| e.starts_with("wg-n1: create")),
+        "{:?}",
+        out.errors
+    );
+    let removal = "delete element inet wgate from_net { \"wg-n1\" }";
+    assert!(fake.inputs.borrow().iter().any(|i| i.contains(removal)));
+}

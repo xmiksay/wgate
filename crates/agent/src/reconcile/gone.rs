@@ -17,6 +17,8 @@ pub(super) struct Gone {
     pub stuck: Vec<String>,
     /// What the stuck ones still hold.
     pub held: Vec<Ipv4Net>,
+    /// Whether what a stuck one holds could not even be read.
+    pub blind: bool,
 }
 
 /// Deletes the interfaces wgate made whose network is not compiled under that name,
@@ -50,8 +52,9 @@ pub(super) fn remove_gone_links(
             Err(e) => {
                 errors.push(format!("{} (gone): {e:#}", link.name));
                 // Still there: it must at least stop carrying the gone network.
-                let (result, held) = disarm(r, &link.name);
+                let (result, held, blind) = disarm(r, &link.name);
                 gone.held.extend(held);
+                gone.blind |= blind;
                 if let Err(e) = result {
                     errors.push(format!("{} (gone): disarm: {e:#}", link.name));
                 }

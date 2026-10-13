@@ -151,7 +151,7 @@ fn an_unreadable_route_list_leaves_only_its_network_alone() {
 }
 
 #[test]
-fn a_stuck_interface_whose_leftovers_are_unknown_does_not_stop_the_others() {
+fn a_stuck_interface_whose_leftovers_are_unknown_stops_growth() {
     let dir = keys();
     let fake = Fake::default()
         .answer(
@@ -168,7 +168,18 @@ fn a_stuck_interface_whose_leftovers_are_unknown_does_not_stop_the_others() {
         "{:?}",
         out.errors
     );
-    position(&fake.log(), "ip link add wgtmp-1");
+    // What it still holds is unknown, so nothing is known to be free.
+    assert!(!fake.log().iter().any(|c| c.starts_with("ip link add")));
+}
+
+#[test]
+fn an_unreadable_network_whose_last_rules_are_unknown_stops_growth() {
+    let dir = keys();
+    let fake = owned_n1()
+        .fail("wg show wg-n1 allowed-ips")
+        .fail("nft -j list set inet wgate n1_peers");
+    reconcile(&fake, &compiled(), dir.path());
+    assert!(!fake.log().iter().any(|c| c.starts_with("ip link add")));
 }
 
 #[test]

@@ -73,6 +73,9 @@ impl<'a> Keys<'a> {
 /// a whole one.
 fn generate(r: &dyn Runner, path: &Path) -> anyhow::Result<String> {
     let key = r.run(&["wg", "genkey"], None)?;
+    if !is_wg_key(key.trim()) {
+        bail!("wg genkey printed no key");
+    }
     let tmp = path.with_extension("key.tmp");
     let _ = fs::remove_file(&tmp);
     OpenOptions::new()
@@ -144,5 +147,18 @@ mod tests {
         let (_, seven) = keys.ensure(7).unwrap();
         assert_eq!(keys.load(4).unwrap().unwrap().1, four);
         assert_ne!(seven, four);
+    }
+
+    #[test]
+    fn a_genkey_that_prints_no_key_issues_nothing() {
+        struct Broken;
+        impl Runner for Broken {
+            fn run(&self, _: &[&str], _: Option<&str>) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Keys::new(&Broken, dir.path()).ensure(1).is_err());
+        assert!(!dir.path().join("n1.key").exists());
     }
 }

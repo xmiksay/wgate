@@ -16,19 +16,24 @@ struct Route {
 /// The destinations of `ip -j route show dev <if> proto 150`.
 pub fn parse(json: &str) -> anyhow::Result<Vec<Ipv4Net>> {
     let routes: Vec<Route> = serde_json::from_str(json).context("ip -j route")?;
-    routes
+    Ok(routes
         .iter()
-        .map(|r| {
+        .filter_map(|r| {
             // A host route prints without its prefix length.
             let dst = if r.dst.contains('/') {
                 r.dst.clone()
             } else {
                 format!("{}/32", r.dst)
             };
-            dst.parse::<Ipv4Net>()
-                .with_context(|| format!("route {}", r.dst))
+            let parsed = dst.parse::<Ipv4Net>().ok();
+            if parsed.is_none() {
+                // Not a LAN wgate routes (a `default` someone added): not ours to
+                // touch, and no reason to lose sight of the rest.
+                tracing::warn!(dst = %r.dst, "route skipped");
+            }
+            parsed
         })
-        .collect()
+        .collect())
 }
 
 /// (to add, to delete)
@@ -63,5 +68,7 @@ mod tests {
         assert_eq!(add, nets(&["192.168.2.0/24"]));
         assert_eq!(del, nets(&["10.9.9.9/32"]));
         assert!(parse("[]").unwrap().is_empty());
+        let odd = r#"[{"dst":"default","flags":[]},{"dst":"192.168.1.0/24","flags":[]}]"#;
+        assert_eq!(parse(odd).unwrap(), nets(&["192.168.1.0/24"]));
     }
 }
