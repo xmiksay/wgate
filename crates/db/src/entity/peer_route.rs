@@ -7,6 +7,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     pub peer_id: i64,
+    pub active: bool,
     #[sea_orm(column_type = "Cidr")]
     pub cidr: IpNetwork,
 }

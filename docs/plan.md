@@ -61,16 +61,16 @@ under sudo).
 
 ### 1.3 Database + migrations (`crates/db`)
 - SeaORM entities + one SQL migration for the tables in design.md → Data model. Unique:
-  `tenant.slug`, `network.slug`, `network.port`, `peer.public_key`, active `peer.ip`,
+  `tenant.slug`, `network.slug`, `network.port`, active `peer.public_key` and `peer.ip`,
   per-tenant email and OIDC subject. Exclusion constraints (GiST `inet_ops`, built in)
   keep blocks, networks and routes disjoint; CHECKs: slug syntax, port range, ≤ /30,
   "exactly one target" on `rule`, `valid_service` (icmp ⇔ NULL ports, never NULL).
 - Immutable ownership columns; networks reference their block (composite FK with the
   tenant), rules reference both networks with the tenant; triggers check a network
   inside its block and a peer inside its network and tenant (immutable data only); a
-  revoked peer never holds a LAN (revoking frees its routes, routes need an active
-  peer; row locks serialize the race; revocations must run at READ COMMITTED). One
-  active peer per (device, network); keys and IPs unique among active peers.
+  revoked peer never holds a LAN (routes reference `(peer_id, active)`: revoking
+  cascades, a revoked peer cannot get one, at any isolation level). One active peer
+  per (device, network); keys and IPs unique among active peers.
 - The migrator records a checksum per migration and refuses a database with an
   unknown or edited migration; it re-applies the agent grants (revoke, then grant) on
   every run.

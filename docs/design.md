@@ -95,36 +95,42 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
 
 ## Data model (Postgres, SeaORM)
 
+The schema is `crates/db/src/migration/m0001_*.sql`; in short:
+
 ```
 tenant        id, slug (unique), name, disabled_at
-tenant_block  id, tenant_id, cidr                 # global admin; inside the pool, disjoint
-                                                  # id = claim order: on a conflict the older wins
-network       id, tenant_id, block_id (FK to a block of the same tenant), slug (unique → wg-<slug>), name,
-              cidr (inside its block; disjoint from all other networks),
-              port (unique, 51800–51899 except 51820), mesh bool, disabled_at
+tenant_block  id, tenant_id, cidr                 # global admin; disjoint; id = claim order
+network       id, tenant_id, block_id (FK, same tenant), slug (unique → wg-<slug>), name,
+              cidr (inside its block; disjoint from all networks),
+              port (unique, 51800–51899 except 51820), mesh, disabled_at
                                                   # hub address = first host of cidr
-oidc_provider tenant_id NULL (= global admin), issuer, client_id   # secret: config file
-user          id, tenant_id NULL (= global admin), email,
-              oidc_sub NULL (bound on first login),
-              role (global_admin | tenant_admin | user), disabled_at
-device        id, user_id, name
-peer          id, device_id, network_id, public_key (unique among active peers),
-              ip (unique among active peers, inside the network, not the hub address),
-              created_at, revoked_at
-peer_route    id, peer_id, cidr                   # a router's LAN: inside routed_space,
-                                                  # clear of pool/reserved, globally disjoint;
-                                                  # id = claim order (older route wins)
-ceiling       id, tenant_id, proto, dst_cidr, port_from, port_to
+oidc_provider id, tenant_id NULL (= global admin; one per tenant), issuer, client_id
+                                                  # secret: config file
+app_user      id, tenant_id NULL (= global admin), email (unique per tenant),
+              oidc_sub NULL (bound on first login), role (global_admin | tenant_admin |
+              user), disabled_at
+device        id, user_id, name, created_at
+peer          id, device_id, network_id, public_key, ip, created_at, revoked_at,
+              active (generated: revoked_at IS NULL)
+                                                  # ip a peer address of its network; key and ip
+                                                  # unique among active peers; one active peer
+                                                  # per (device, network); owner's tenant =
+                                                  # network's unless a global admin
+peer_route    id, peer_id, active, cidr           # a router's LAN; FK (peer_id, active) cascades
+                                                  # a revocation; active routes disjoint
+ceiling       id, tenant_id, proto, dst, port_from, port_to
                                                   # global admin: external dsts the tenant may use
-rule          id, network_id (opener), proto, port_from, port_to,
-              dst_cidr NULL | target_network_id NULL (same tenant)  # exactly one
+rule          id, tenant_id, network_id (opener), proto, port_from, port_to,
+              dst NULL | target_network_id NULL (exactly one; same tenant), comment
                                                   # tenant admin
 federation    id, from_network_id, to_network_id, proto, port_from, port_to
-                                                  # global admin, cross-tenant
-inbound       id, network_id (target), source_cidr, proto, port_from, port_to
+                                                  # global admin; two different tenants
+inbound       id, network_id (target), source, proto, port_from, port_to, comment
                                                   # global admin: sources outside tenant space
 hub_key       network_id, public_key              # written by the agent only
 audit         id, at, actor_user_id, action, target, detail jsonb
+state_revision  revision                          # bumped + NOTIFY once per changing transaction
+agent_status    applied_revision, applied_at, error   # written by the agent
 ```
 
 Ports are `NULL` for icmp. OIDC client secrets stay out of the DB, in
@@ -271,7 +277,7 @@ table inet wgate {
 
 | Action | Agent does |
 |---|---|
-| Revoke a peer | `wg set wg-<slug> peer <pk> remove` + remove its tuples and routes (a DB trigger deletes its `peer_route` rows, freeing the LANs; a revoked peer cannot get new ones) |
+| Revoke a peer | `wg set wg-<slug> peer <pk> remove` + remove its tuples and routes (the `(peer_id, active)` foreign key deactivates its `peer_route` rows, freeing the LANs; a revoked peer cannot get new ones) |
 | Remove a device / disable a user | the same for all their peers |
 | Change rules, ceilings, federations or inbound grants | recompile the sets (atomic replace) |
 | Disable a network | delete the interface `wg-<slug>` + its tuples |

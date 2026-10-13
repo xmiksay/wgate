@@ -179,7 +179,12 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         .collect();
     let mapped_networks: HashSet<i64> = state_networks.iter().map(|n| n.id).collect();
     let mut routes: HashMap<i64, Vec<Claim>> = HashMap::new();
-    for r in peer_route::Entity::find().all(db).await? {
+    // A revoked peer's routes are inactive and hold nothing.
+    for r in peer_route::Entity::find()
+        .filter(peer_route::Column::Active.eq(true))
+        .all(db)
+        .await?
+    {
         match v4(r.cidr) {
             Some(cidr) => routes
                 .entry(r.peer_id)
@@ -217,6 +222,11 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
 
     let mut federations = Vec::new();
     for f in federation::Entity::find().all(db).await? {
+        if !mapped_networks.contains(&f.from_network_id)
+            || !mapped_networks.contains(&f.to_network_id)
+        {
+            continue;
+        }
         match to_service(&f.proto, f.port_from, f.port_to) {
             Ok(service) => federations.push(Federation {
                 from: f.from_network_id,
