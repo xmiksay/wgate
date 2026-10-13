@@ -56,12 +56,14 @@ fn state() -> impl Strategy<Value = DesiredState> {
         NETWORKS as usize,
     );
     let ceilings = prop::collection::vec(prop::collection::vec(external(), 0..4), 2);
-    let peers = prop::collection::vec((0..NETWORKS, 2u8..8), 0..8);
+    // Routed LAN: 192.168.0-3.0/24 (allowed, may collide) or 8.8.8.0/24 (not).
+    let peers = prop::collection::vec((0..NETWORKS, 2u8..8, prop::option::of(0u8..5)), 0..8);
     let federations = prop::collection::vec((0..NETWORKS, 0..NETWORKS, service()), 0..3);
     (networks, ceilings, peers, federations).prop_map(|(networks, ceilings, peers, federations)| {
         let mut seen = Vec::new();
         DesiredState {
             pool: vec!["10.50.0.0/16".parse().expect("cidr")],
+            routed_space: vec!["192.168.0.0/16".parse().expect("cidr")],
             tenants: ceilings
                 .iter()
                 .enumerate()
@@ -76,6 +78,7 @@ fn state() -> impl Strategy<Value = DesiredState> {
                 .map(|(id, (mesh, rules))| Network {
                     id: id as i64,
                     tenant: tenant_of(id as i64),
+                    slug: format!("n{id}").parse().expect("slug"),
                     cidr: cidr(id as i64),
                     mesh,
                     rules,
@@ -84,17 +87,24 @@ fn state() -> impl Strategy<Value = DesiredState> {
                 .collect(),
             peers: peers
                 .into_iter()
-                .filter(|p| {
-                    let fresh = !seen.contains(p);
-                    seen.push(*p);
+                .filter(|(network, host, _)| {
+                    let fresh = !seen.contains(&(*network, *host));
+                    seen.push((*network, *host));
                     fresh
                 })
                 .enumerate()
-                .map(|(id, (network, host))| Peer {
+                .map(|(id, (network, host, lan))| Peer {
                     id: id as i64,
                     network,
                     ip: Ipv4Addr::new(10, 50, network as u8, host),
-                    routed: vec![],
+                    routed: lan
+                        .map(|l| match l {
+                            4 => Ipv4Net::new(Ipv4Addr::new(8, 8, 8, 0), 24),
+                            l => Ipv4Net::new(Ipv4Addr::new(192, 168, l, 0), 24),
+                        })
+                        .into_iter()
+                        .map(|n| n.expect("prefix"))
+                        .collect(),
                 })
                 .collect(),
             federations: federations
@@ -103,6 +113,20 @@ fn state() -> impl Strategy<Value = DesiredState> {
                 .collect(),
         }
     })
+}
+
+/// The peer's own address and one host of each routed LAN.
+fn hosts(p: &CompiledPeer) -> Vec<Ipv4Addr> {
+    p.addrs
+        .iter()
+        .map(|a| {
+            if a.prefix_len() == 32 {
+                a.addr()
+            } else {
+                Ipv4Addr::from(u32::from(a.network()) + 1)
+            }
+        })
+        .collect()
 }
 
 fn network_of(p: &CompiledPeer) -> i64 {
@@ -125,12 +149,14 @@ proptest! {
                 if p.id == q.id {
                     continue;
                 }
-                for (proto, port) in points() {
-                    prop_assert_eq!(
-                        p.outbound.allows(proto, q.ip, port),
-                        q.inbound.allows(proto, p.ip, port),
-                        "{} → {} {:?} {}", p.ip, q.ip, proto, port
-                    );
+                for (src, dst) in hosts(p).into_iter().flat_map(|s| hosts(q).into_iter().map(move |d| (s, d))) {
+                    for (proto, port) in points() {
+                        prop_assert_eq!(
+                            p.outbound.allows(proto, dst, port),
+                            q.inbound.allows(proto, src, port),
+                            "{} → {} {:?} {}", src, dst, proto, port
+                        );
+                    }
                 }
             }
         }
@@ -146,8 +172,10 @@ proptest! {
                 if tenant_of(n) == tenant_of(m) || federated {
                     continue;
                 }
-                for (proto, port) in points() {
-                    prop_assert!(!p.outbound.allows(proto, q.ip, port));
+                for dst in hosts(q) {
+                    for (proto, port) in points() {
+                        prop_assert!(!p.outbound.allows(proto, dst, port));
+                    }
                 }
             }
         }
@@ -156,10 +184,18 @@ proptest! {
     #[test]
     fn external_access_stays_within_the_ceiling(s in state()) {
         let c = compile(&s);
-        let pool = RuleSet::everything(&s.pool);
+        let tenant_space = RuleSet::everything(&c.tenant_space);
         for p in &c.peers {
             let ceiling = &s.tenants[tenant_of(network_of(p)) as usize].ceiling;
-            prop_assert!(p.outbound.difference(&pool).difference(ceiling).is_empty());
+            prop_assert!(p.outbound.difference(&tenant_space).difference(ceiling).is_empty());
+        }
+    }
+
+    #[test]
+    fn tenant_space_stays_within_pool_and_routed_space(s in state()) {
+        let allowed: Vec<Ipv4Net> = s.pool.iter().chain(&s.routed_space).copied().collect();
+        for net in compile(&s).tenant_space {
+            prop_assert!(allowed.iter().any(|a| a.contains(&net)), "{}", net);
         }
     }
 

@@ -1,29 +1,12 @@
 use super::*;
-use crate::compile::{DesiredState, Federation, NetRule, Network, Peer, Tenant, compile};
+use crate::compile::{DesiredState, Federation, NetRule, Network, Tenant, compile};
 use crate::rights::RuleSet;
-use crate::rule::{PortRange, Rule};
-use crate::testing::{assert_golden, rule_set};
-
-fn net(s: &str) -> Ipv4Net {
-    s.parse().unwrap()
-}
+use crate::rule::Rule;
 
 fn rule(s: &str) -> Rule {
     s.parse().unwrap()
 }
-
-fn tcp(port: u16) -> Service {
-    Service::Tcp(PortRange::new(port, port).unwrap())
-}
-
-fn peer(id: i64, network: i64, ip: &str, routed: &[&str]) -> Peer {
-    Peer {
-        id,
-        network,
-        ip: ip.parse().unwrap(),
-        routed: routed.iter().map(|r| net(r)).collect(),
-    }
-}
+use crate::testing::{assert_golden, net, peer, rule_set, tcp};
 
 /// Tenant nexial: network `nexial` (a laptop and a router with a LAN; k8s API, node
 /// pings, SSH into `nexial-dev`) and `nexial-dev` (mesh, a pod network may reach it on
@@ -33,6 +16,7 @@ fn sample_state() -> NftState {
     let mut dev = Network {
         id: 2,
         tenant: 1,
+        slug: "nexial-dev".parse().unwrap(),
         cidr: net("10.50.1.0/24"),
         mesh: true,
         rules: vec![],
@@ -42,6 +26,7 @@ fn sample_state() -> NftState {
         .push(NetRule::External(rule("tcp 172.16.16.1/32 6443")));
     let state = DesiredState {
         pool: vec![net("10.50.0.0/16")],
+        routed_space: vec![net("192.168.0.0/16")],
         tenants: vec![
             Tenant {
                 id: 1,
@@ -60,6 +45,7 @@ fn sample_state() -> NftState {
             Network {
                 id: 1,
                 tenant: 1,
+                slug: "nexial".parse().unwrap(),
                 cidr: net("10.50.0.0/24"),
                 mesh: false,
                 rules: vec![
@@ -81,6 +67,7 @@ fn sample_state() -> NftState {
             Network {
                 id: 3,
                 tenant: 3,
+                slug: "krcmar".parse().unwrap(),
                 cidr: net("10.50.2.0/24"),
                 mesh: false,
                 rules: vec![NetRule::External(rule("tcp 172.16.16.1/32 6443"))],

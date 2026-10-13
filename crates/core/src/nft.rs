@@ -6,7 +6,7 @@ use std::net::Ipv4Addr;
 use ipnet::Ipv4Net;
 
 use crate::compile::{CompiledPeer, Id, conflicting};
-use crate::rights::{AddrRange, RuleSet, subtract_nets};
+use crate::rights::{AddrRange, RuleSet, merge_nets, subtract_nets};
 use crate::rule::Service;
 
 #[derive(Clone, Debug)]
@@ -37,6 +37,8 @@ pub struct NftRender {
 /// ranges are keyed like its own address.
 #[derive(Default)]
 struct Sets {
+    /// `iface . addr`: the only sources believed on each wg interface.
+    ingress: Vec<String>,
     peer_addrs: Vec<String>,
     allow: Vec<String>,
     allow_icmp: Vec<String>,
@@ -55,6 +57,7 @@ impl Sets {
         let (outbound, inbound) = (shown(&p.outbound), shown(&p.inbound));
         for own in &p.addrs {
             let own = range(*own);
+            self.ingress.push(format!("\"{}\" . {own}", p.iface));
             self.peer_addrs.push(own.clone());
             for (service, addrs) in &outbound {
                 push(
@@ -114,9 +117,10 @@ pub fn render_nft(state: &NftState) -> NftRender {
         .filter(|p| skipped.binary_search(&p.id).is_err())
     {
         sets.add(p);
+        // Already in compile's tenant space; repeated in case peers came from elsewhere.
         tenant_space.extend(p.addrs.iter().copied());
     }
-    let tenant_space = subtract_nets(&tenant_space, &[]);
+    let tenant_space = merge_nets(&tenant_space);
 
     // Tenant space never needs SNAT, and SNATing hub→peer traffic would break it.
     let node_cidrs = subtract_nets(&state.node_cidrs, &tenant_space);
@@ -135,6 +139,7 @@ pub fn render_nft(state: &NftState) -> NftRender {
     let tenant_space: Vec<String> = tenant_space.into_iter().map(range).collect();
     let sets = [
         set("tenant_space", "ipv4_addr", &tenant_space),
+        set("ingress", "ifname . ipv4_addr", &sets.ingress),
         set("peer_addrs", "ipv4_addr", &sets.peer_addrs),
         set("allow", quad, &sets.allow),
         set("allow_icmp", pair, &sets.allow_icmp),
@@ -149,11 +154,13 @@ pub fn render_nft(state: &NftState) -> NftRender {
     //   another peer needs both its outbound right and the target's inbound right.
     // - tenant_answers / to_tenant_reply: the same lookups with the tuple swapped.
     // Peer-to-peer is told apart by @peer_addrs, not by tenant space: a network's hub
-    // address is tenant space but no peer. Tenant source addresses are only believed
-    // on wg-* ingress (WireGuard checks them against the peer's AllowedIPs); anywhere
-    // else, or from a local socket posing as a peer, they are spoofed. The ingress
-    // check runs in prerouting, before forwarding can answer a spoofed packet with
-    // an ICMP error that conntrack would relate to the real peer's flow.
+    // address is tenant space but no peer. A peer's addresses are only believed on
+    // its own network's interface (@ingress; WireGuard additionally checks them
+    // against the peer's AllowedIPs), so a leftover or misconfigured wg-* interface
+    // cannot pose as a peer either. Tenant space arriving on any other interface is
+    // spoofed, and the hub itself never sends from a peer address. The ingress checks
+    // run in prerouting, before forwarding can answer a spoofed packet with an ICMP
+    // error that conntrack would relate to the real peer's flow.
     // There is no related-ICMP shortcut (ICMP errors can carry payload and match
     // flows that outlive a revocation); only ICMP errors the hub itself generates
     // for a tracked flow pass unchecked. Untracked or invalid packets hit the drops.
@@ -167,6 +174,7 @@ table inet wgate {{
 {sets}\tchain prerouting {{
 \t\ttype filter hook prerouting priority raw; policy accept;
 \t\tiifname != \"wg-*\" iifname != \"lo\" ip saddr @tenant_space counter drop
+\t\tiifname \"wg-*\" iifname . ip saddr != @ingress counter drop
 \t}}
 
 \tchain from_tenant {{
@@ -216,7 +224,7 @@ table inet wgate {{
 
 \tchain output {{
 \t\ttype filter hook output priority filter - 5; policy accept;
-\t\toifname \"wg-*\" ip saddr @peer_addrs counter drop
+\t\tip saddr @peer_addrs counter drop
 \t\toifname \"wg-*\" ct state related icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept
 \t\toifname \"wg-*\" ct direction original jump to_tenant
 \t\toifname \"wg-*\" ct direction reply jump to_tenant_reply

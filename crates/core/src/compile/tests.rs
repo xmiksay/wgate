@@ -1,36 +1,16 @@
 use super::*;
-use crate::rule::{PortRange, Proto};
-use crate::testing::rule_set;
-
-fn net(s: &str) -> Ipv4Net {
-    s.parse().unwrap()
-}
-
-fn ip(s: &str) -> Ipv4Addr {
-    s.parse().unwrap()
-}
-
-fn tcp(port: u16) -> Service {
-    Service::Tcp(PortRange::new(port, port).unwrap())
-}
+use crate::rule::Proto;
+use crate::testing::{ip, net, peer, rule_set, tcp};
 
 fn network(id: Id, tenant: Id, cidr: &str, mesh: bool, rules: Vec<NetRule>) -> Network {
     Network {
         id,
         tenant,
+        slug: format!("n{id}").parse().unwrap(),
         cidr: net(cidr),
         mesh,
         rules,
         inbound: RuleSet::new(),
-    }
-}
-
-fn peer(id: Id, network: Id, addr: &str, routed: &[&str]) -> Peer {
-    Peer {
-        id,
-        network,
-        ip: ip(addr),
-        routed: routed.iter().map(|r| net(r)).collect(),
     }
 }
 
@@ -63,6 +43,7 @@ fn state() -> DesiredState {
     a.inbound = rule_set(&["tcp 10.244.0.0/16 8080"]);
     DesiredState {
         pool: vec![net("10.50.0.0/16")],
+        routed_space: vec![net("10.0.0.0/8"), net("192.168.0.0/16")],
         tenants: vec![
             Tenant {
                 id: 10,
@@ -174,6 +155,45 @@ fn networks_outside_the_pool_or_overlapping_fail_closed() {
 }
 
 #[test]
+fn routed_lans_outside_routed_space_are_refused() {
+    let mut s = state();
+    s.peers.push(peer(13, A, "10.50.0.4", &["128.0.0.0/1"]));
+    s.peers.push(peer(14, A, "10.50.0.5", &["172.19.9.0/24"]));
+    let c = compile(&s);
+    let mut skipped = c.skipped.clone();
+    skipped.sort_by_key(|(id, _)| *id);
+    assert_eq!(
+        skipped,
+        [
+            (13, Problem::RoutedNotAllowed),
+            (14, Problem::RoutedNotAllowed)
+        ]
+    );
+    // Never tenant space, so the hub keeps accepting those sources on eth0.
+    assert_eq!(c.tenant_space, [net("10.50.0.0/16"), net("192.168.1.0/24")]);
+}
+
+#[test]
+fn bad_networks_do_not_knock_out_good_ones() {
+    let mut s = state();
+    // Lower ids than A, but outside the pool / with an unknown tenant.
+    s.networks.push(network(0, 10, "10.0.0.0/8", false, vec![]));
+    s.networks
+        .push(network(-1, 99, "10.50.0.0/24", true, vec![]));
+    s.peers.push(peer(91, -1, "10.50.0.9", &[]));
+    let c = compile(&s);
+    assert_eq!(c.skipped, [(91, Problem::InvalidNetwork)]);
+    get(&c, 11);
+    // The tenant-less network's mesh grants nothing.
+    assert!(!get(&c, 11).inbound.allows(Proto::Tcp, ip("10.50.0.9"), 1));
+}
+
+#[test]
+fn compiled_peers_know_their_interface() {
+    assert_eq!(get(&compile(&state()), 21).iface, "wg-n2");
+}
+
+#[test]
 fn lans_of_skipped_routers_stay_tenant_space() {
     let mut s = state();
     s.tenants[0].ceiling = rule_set(&["tcp 192.168.0.0/16 80"]);
@@ -243,7 +263,7 @@ fn invalid_peers_are_skipped_and_others_compile_without_them() {
         [
             (40, Problem::InvalidIp),
             (41, Problem::UnknownNetwork),
-            (42, Problem::RoutedInPool),
+            (42, Problem::RoutedNotAllowed),
             (43, Problem::Overlap),
             (44, Problem::Overlap),
             (46, Problem::Overlap),

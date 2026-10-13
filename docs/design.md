@@ -32,8 +32,12 @@ access inside their tenant; only the global admin connects tenants (federation).
 - **Routers**: a peer may carry routed subnets (a LAN behind it). Hosts on that LAN
   have the router peer's access ("visibility via the router"). Routed subnets must be
   **globally** unique (no overlap with the pool or any other routed subnet) because
-  the hub has one routing table; the API rejects overlaps. 1:1 NETMAP of a colliding
-  LAN into a pool block is the planned extension, not built now.
+  the hub has one routing table; the API rejects overlaps. They must also lie inside
+  `routed_space`, a global-admin allowlist (config; default the private ranges minus
+  the pool and infrastructure): a LAN becomes tenant space, which the hub refuses as
+  a source on non-wg interfaces, so `128.0.0.0/1` would cut off the internet. 1:1
+  NETMAP of a colliding LAN into a pool block is the planned extension, not built
+  now.
 - **Default deny everywhere**, even between members of one network. A per-network
   `mesh` flag (default off) lets members reach each other.
 - **Roles**: global admin (everything), tenant admin (networks inside own blocks,
@@ -171,6 +175,7 @@ The exact ruleset is the golden file `crates/core/tests/golden/ruleset.nft`; in 
 ```nft
 table inet wgate {
   set tenant_space { pool + routed LANs }
+  set ingress      { iface . peer addrs }               # wg-<slug> . addrs(peer)
   set peer_addrs   { peer addrs }                      # all addrs(peer), interval
   set allow        { peer . dst . proto . dport }      # outbound
   set allow_icmp   { peer . dst }
@@ -187,11 +192,13 @@ table inet wgate {
   chain to_tenant_reply       { rev @allow accept; drop }
   # (each chain has the same pair of rules for icmp against the *_icmp sets)
 
-  prerouting (raw): non-wg ingress claiming a tenant source → drop
+  prerouting (raw): non-wg ingress claiming a tenant source → drop;
+                    wg-* ingress whose source is not a peer of that interface → drop
   input:   iifname wg-*  original → from_tenant, reply → tenant_answers, else drop
   forward: same for iifname wg-*, then oifname wg-*: original → to_tenant,
            reply → to_tenant_reply, else drop
-  output:  oifname wg-*: a local socket posing as a peer → drop; hub ICMP errors for
+  output:  a local socket sending as a peer (any interface) → drop; oifname wg-*:
+           hub ICMP errors for
            a tracked flow accept; original → to_tenant, reply → to_tenant_reply, else drop
   postrouting: ip saddr @peer_addrs ip daddr { node_cidrs − tenant space } snat ip to 172.19.9.10
 }
@@ -214,10 +221,11 @@ table inet wgate {
   Only ICMP errors the hub itself generates for a tracked flow go out unchecked.
   Trade-off: PMTU/unreachable errors from hosts a peer has no icmp right to are
   dropped; keep tunnel MTUs at the WireGuard default.
-- **Source addresses are believed only on wg-* ingress**: WireGuard drops packets
-  whose source is outside the sending peer's `AllowedIPs` (its /32 + routed subnets),
-  so a peer cannot pose as another. A tenant source arriving on any other interface,
-  or from a local socket, is spoofed and dropped.
+- **A peer's addresses are believed only on its own network's interface**
+  (`@ingress`); WireGuard additionally drops packets whose source is outside the
+  sending peer's `AllowedIPs` (its /32 + routed subnets). So neither a peer nor a
+  leftover or misconfigured `wg-*` interface can pose as another peer. A tenant source
+  arriving on any other interface, or sent by a local socket, is spoofed and dropped.
 - Device-to-device is told apart by `@peer_addrs`, not by the pool: a network's hub
   address is in the pool but is no peer, so hub-opened connections (an inbound grant
   with the hub address as source) work.

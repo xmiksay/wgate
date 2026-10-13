@@ -190,6 +190,11 @@ impl RuleSet {
     }
 }
 
+/// `nets` merged into minimal CIDRs.
+pub fn merge_nets(nets: &[Ipv4Net]) -> Vec<Ipv4Net> {
+    subtract_nets(nets, &[])
+}
+
 /// `nets` minus `except`, as minimal CIDRs.
 pub fn subtract_nets(nets: &[Ipv4Net], except: &[Ipv4Net]) -> Vec<Ipv4Net> {
     let all = nets.iter().fold(Line::default(), |acc, &n| {
