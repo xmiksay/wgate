@@ -70,7 +70,12 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         .await?;
     let active_tenants: HashSet<i64> = tenants.iter().map(|t| t.id).collect();
     let mut blocks: HashMap<i64, Vec<Claim>> = HashMap::new();
+    // Rows of inactive tenants and networks are skipped before mapping: they have no
+    // access anyway, and a malformed one must not keep warning.
     for b in tenant_block::Entity::find().all(db).await? {
+        if !active_tenants.contains(&b.tenant_id) {
+            continue;
+        }
         match v4(b.cidr) {
             Some(cidr) => blocks
                 .entry(b.tenant_id)
@@ -81,7 +86,10 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
     }
     let mut ceilings: HashMap<i64, Vec<Rule>> = HashMap::new();
     for c in ceiling::Entity::find().all(db).await? {
-        match to_rule(&c.proto, Some(c.dst), c.port_from, c.port_to) {
+        if !active_tenants.contains(&c.tenant_id) {
+            continue;
+        }
+        match to_rule(&c.proto, c.dst, c.port_from, c.port_to) {
             Ok(r) => ceilings.entry(c.tenant_id).or_default().push(r),
             Err(e) => warn("ceiling", c.id, e),
         }
@@ -95,11 +103,15 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         .into_iter()
         .filter(|n| active_tenants.contains(&n.tenant_id))
         .collect();
+    let active_networks: HashSet<i64> = networks.iter().map(|n| n.id).collect();
     let mut rules: HashMap<i64, Vec<NetRule>> = HashMap::new();
     for r in rule::Entity::find().all(db).await? {
+        if !active_networks.contains(&r.network_id) {
+            continue;
+        }
         let mapped = match (r.dst, r.target_network_id) {
             (Some(dst), None) => {
-                to_rule(&r.proto, Some(dst), r.port_from, r.port_to).map(NetRule::External)
+                to_rule(&r.proto, dst, r.port_from, r.port_to).map(NetRule::External)
             }
             (None, Some(target)) => {
                 to_service(&r.proto, r.port_from, r.port_to).map(|service| NetRule::To {
@@ -116,7 +128,10 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
     }
     let mut grants: HashMap<i64, Vec<Rule>> = HashMap::new();
     for g in inbound::Entity::find().all(db).await? {
-        match to_rule(&g.proto, Some(g.source), g.port_from, g.port_to) {
+        if !active_networks.contains(&g.network_id) {
+            continue;
+        }
+        match to_rule(&g.proto, g.source, g.port_from, g.port_to) {
             Ok(r) => grants.entry(g.network_id).or_default().push(r),
             Err(e) => warn("inbound", g.id, e),
         }
@@ -162,7 +177,7 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         .into_iter()
         .filter_map(|(id, user)| Some((id, *users.get(&user)?)))
         .collect();
-    let active_networks: HashSet<i64> = state_networks.iter().map(|n| n.id).collect();
+    let mapped_networks: HashSet<i64> = state_networks.iter().map(|n| n.id).collect();
     let mut routes: HashMap<i64, Vec<Claim>> = HashMap::new();
     for r in peer_route::Entity::find().all(db).await? {
         match v4(r.cidr) {
@@ -182,7 +197,7 @@ async fn load<C: ConnectionTrait>(db: &C, infra: &Infra) -> Result<Loaded, DbErr
         // Inactive owner or network: no access, nothing to report.
         let (Some(owner), true) = (
             devices.get(&p.device_id),
-            active_networks.contains(&p.network_id),
+            mapped_networks.contains(&p.network_id),
         ) else {
             continue;
         };
@@ -263,11 +278,11 @@ fn to_service(proto: &str, from: Option<i32>, to: Option<i32>) -> Result<Service
 
 fn to_rule(
     proto: &str,
-    net: Option<IpNetwork>,
+    net: IpNetwork,
     from: Option<i32>,
     to: Option<i32>,
 ) -> Result<Rule, String> {
     let service = to_service(proto, from, to)?;
-    let net = net.and_then(v4).ok_or("not IPv4")?;
+    let net = v4(net).ok_or("not IPv4")?;
     Rule::new(service.proto(), net, service.ports()).map_err(|e| e.to_string())
 }

@@ -19,24 +19,34 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
     txn.execute_unprepared(
         "CREATE TABLE IF NOT EXISTS wgate_migration (
             name       text PRIMARY KEY,
+            checksum   text NOT NULL,
             applied_at timestamptz NOT NULL DEFAULT now()
         )",
     )
     .await?;
     // A schema newer than this binary (e.g. after a rollback) must stop the rollout,
     // not run with code that does not know it.
+    // An applied migration must be byte-for-byte the one this binary carries: one
+    // edited after it ran would leave the database on a different schema than the
+    // code expects, with every run reporting "up to date".
     let mut done = std::collections::HashSet::new();
     for row in txn
         .query_all_raw(sea_orm::Statement::from_string(
             sea_orm::DbBackend::Postgres,
-            "SELECT name FROM wgate_migration",
+            "SELECT name, checksum FROM wgate_migration",
         ))
         .await?
     {
         let name: String = row.try_get("", "name")?;
-        if !MIGRATIONS.iter().any(|(known, _)| *known == name) {
+        let checksum: String = row.try_get("", "checksum")?;
+        let Some((_, sql)) = MIGRATIONS.iter().find(|(known, _)| *known == name) else {
             return Err(DbErr::Migration(format!(
                 "database has migration {name}, which this wgate does not know (newer schema?)"
+            )));
+        };
+        if checksum != md5(&txn, sql).await? {
+            return Err(DbErr::Migration(format!(
+                "migration {name} differs from the one applied to this database"
             )));
         }
         done.insert(name);
@@ -47,8 +57,8 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
             txn.execute_unprepared(sql).await?;
             txn.execute_raw(sea_orm::Statement::from_sql_and_values(
                 sea_orm::DbBackend::Postgres,
-                "INSERT INTO wgate_migration (name) VALUES ($1)",
-                [(*name).into()],
+                "INSERT INTO wgate_migration (name, checksum) VALUES ($1, md5($2))",
+                [(*name).into(), (*sql).into()],
             ))
             .await?;
             applied.push(*name);
@@ -57,6 +67,17 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<Vec<&'static str>, DbErr
     txn.execute_unprepared(GRANTS).await?;
     txn.commit().await?;
     Ok(applied)
+}
+
+async fn md5<C: ConnectionTrait>(db: &C, text: &str) -> Result<String, DbErr> {
+    db.query_one_raw(sea_orm::Statement::from_sql_and_values(
+        sea_orm::DbBackend::Postgres,
+        "SELECT md5($1) AS sum",
+        [text.into()],
+    ))
+    .await?
+    .ok_or_else(|| DbErr::RecordNotFound("md5".into()))?
+    .try_get("", "sum")
 }
 
 /// Connects to `database_url` and applies the pending migrations.

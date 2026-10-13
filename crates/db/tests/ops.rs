@@ -115,7 +115,7 @@ async fn migrate_refuses_a_newer_schema_and_regrants() {
     let pg = pg("").await;
     ok(
         &pg.db,
-        "INSERT INTO wgate_migration (name) VALUES ('m9999_future')",
+        "INSERT INTO wgate_migration (name, checksum) VALUES ('m9999_future', 'x')",
     )
     .await;
     assert!(
@@ -163,4 +163,48 @@ async fn one_notification_per_changing_transaction() {
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
     ok(&pg.db, "UPDATE app_user SET disabled_at = now()").await;
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 2);
+}
+
+#[tokio::test]
+async fn migrate_refuses_an_edited_migration() {
+    let pg = pg("").await;
+    ok(&pg.db, "UPDATE wgate_migration SET checksum = 'edited'").await;
+    let err = migrate(&pg.db)
+        .await
+        .expect_err("a changed migration must stop the rollout");
+    assert!(err.to_string().contains("differs"), "{err}");
+}
+
+#[tokio::test]
+async fn regranting_narrows_an_over_granted_agent() {
+    let pg = pg("CREATE ROLE wgate_agent LOGIN PASSWORD 'agent'").await;
+    ok(&pg.db, "GRANT SELECT ON app_user, audit TO wgate_agent").await;
+    migrate(&pg.db).await.expect("migrate");
+    let agent = Database::connect(&as_agent(&pg.url))
+        .await
+        .expect("connect as agent");
+    refused(&agent, "SELECT email FROM app_user").await;
+    refused(&agent, "SELECT * FROM audit").await;
+    ok(&agent, "SELECT id, tenant_id FROM app_user").await;
+}
+
+#[tokio::test]
+async fn state_is_written_at_read_committed_and_truncate_counts() {
+    let pg = pg("").await;
+    ok(&pg.db, BASE).await;
+    let txn = pg
+        .db
+        .begin_with_config(Some(sea_orm::IsolationLevel::RepeatableRead), None)
+        .await
+        .expect("begin");
+    txn.execute_unprepared("UPDATE network SET mesh = true")
+        .await
+        .expect("update");
+    assert!(
+        txn.commit().await.is_err(),
+        "a snapshot-isolated state write is refused"
+    );
+    let base = revision::current(&pg.db).await.expect("revision");
+    ok(&pg.db, "TRUNCATE inbound").await;
+    assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
 }

@@ -156,11 +156,16 @@ CREATE TRIGGER peer_fits BEFORE INSERT ON peer FOR EACH ROW EXECUTE FUNCTION pee
 
 -- Revoking is final: un-revoking would bring back an old key without a new grant
 -- (its IP, key and LANs may already be someone else's). Disabling is the reversible
--- switch.
+-- switch. Revoking again is a no-op (a retried or double-clicked revoke succeeds) and
+-- keeps the original time.
 CREATE FUNCTION revocation_is_final() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    RAISE EXCEPTION 'peer % is revoked; add a new peer instead', OLD.id
-        USING ERRCODE = 'check_violation';
+    IF NEW.revoked_at IS NULL THEN
+        RAISE EXCEPTION 'peer % is revoked; add a new peer instead', OLD.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    NEW.revoked_at := OLD.revoked_at;
+    RETURN NEW;
 END
 $$;
 CREATE TRIGGER revocation_is_final BEFORE UPDATE OF revoked_at ON peer
@@ -340,12 +345,18 @@ INSERT INTO state_revision (revision) VALUES (0);
 
 -- Deferred to commit and run once per transaction: the hot state_revision row lock
 -- is then the last lock a writer takes and is held only while it commits, so it can
--- neither serialize writers for their whole duration nor close a deadlock cycle.
+-- neither serialize writers for their whole duration nor close a deadlock cycle
+-- (writers must not `SET CONSTRAINTS ... IMMEDIATE`, which would fire it early).
 -- Row-level, so a statement that changes nothing does not count.
 CREATE FUNCTION state_changed() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     rev bigint;
 BEGIN
+    -- At a snapshot isolation level this UPDATE fails whenever another change
+    -- committed meanwhile; say so instead of a random serialization error.
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'write the wgate state at READ COMMITTED';
+    END IF;
     IF current_setting('wgate.state_changed', true) = 'yes' THEN
         RETURN NULL;
     END IF;
@@ -373,6 +384,10 @@ BEGIN
                         DEFERRABLE INITIALLY DEFERRED
                         FOR EACH ROW EXECUTE FUNCTION state_changed()',
                        t || '_changed', ops, t);
+        -- TRUNCATE has no rows; it bumps right away (an operator's tool, not a hot path).
+        EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %I
+                        FOR EACH STATEMENT EXECUTE FUNCTION state_changed()',
+                       t || '_truncated', t);
     END LOOP;
 END
 $$;
