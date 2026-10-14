@@ -13,8 +13,10 @@ pub struct Model {
     pub expires_at: DateTimeWithTimeZone,
     /// `full`, `totp` or `enrol`: only `full` may use the API.
     pub stage: String,
-    /// `password` or `oidc`.
+    /// `password`, `password_totp` or `oidc`.
     pub method: String,
+    /// The provider of an `oidc` session (and only of one).
+    pub provider_id: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

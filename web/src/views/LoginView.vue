@@ -18,11 +18,12 @@ const { busy, error, run } = useSubmit()
 
 // Why the server sent the browser back here from a provider login.
 const refusals: Record<string, string> = {
-  forbidden: 'This account is not a global admin.',
+  forbidden:
+    'That identity signs in to no account here: it is not linked, that provider does not serve the account, or the account is disabled.',
   expired: 'The sign-in expired or was started in another browser; try again.',
-  failed: 'Signing in failed; try again, or check the server log.',
+  failed: 'Signing in failed; try again, or ask an admin to check the server log.',
   cancelled: 'Sign-in was cancelled or refused at the identity provider.',
-  unavailable: 'That sign-in provider is not configured.',
+  unavailable: 'That sign-in provider is unavailable: disabled, removed, or not reachable right now.',
 }
 
 const email = ref('')
@@ -86,7 +87,8 @@ async function startOver() {
 }
 
 function viaProvider(p: ProviderOption) {
-  // A full navigation: the server sends the browser to the provider and back to `/`.
+  // A full navigation: the server sends the browser to the provider and back to `/`
+  // (or here with `?error=`).
   window.location.assign(`/auth/oidc/${encodeURIComponent(p.id)}`)
 }
 </script>

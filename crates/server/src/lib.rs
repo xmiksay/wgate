@@ -1,5 +1,5 @@
 //! The portal: REST API (`/api/v1`), the login (`/auth`: password and TOTP,
-//! invite and reset links, the global admins' OIDC) and the embedded UI.
+//! invite and reset links, OIDC providers) and the embedded UI.
 //! Unprivileged: it only writes the database; the agent applies what changed.
 
 mod api;
@@ -37,10 +37,9 @@ pub fn router(state: AppState) -> Router {
             "/auth/account/{token}",
             get(auth::links::info).post(auth::links::redeem),
         )
-        .route("/auth/login", get(auth::oidc::login))
         .route("/auth/oidc/{id}", get(auth::oidc::start))
         .route("/auth/callback", get(auth::oidc::callback))
-        .route("/auth/logout", post(auth::oidc::logout))
+        .route("/auth/logout", post(auth::logout::logout))
         .nest("/api/v1", api::router())
         .fallback(ui::serve)
         .with_state(state)
@@ -67,8 +66,8 @@ pub async fn serve_on(listener: tokio::net::TcpListener, config: Config) -> anyh
 }
 
 /// `wgate admin grant <email>`: makes `email` a global admin (or enables one again),
-/// who can then log in with that verified email or a password
-/// ([`set_password`]). A tenant's account keeps its role: emails are unique.
+/// who can then log in with a password ([`set_password`]) and link a provider from
+/// their profile. A tenant's account keeps its role: emails are unique.
 pub async fn grant_admin(db: &DatabaseConnection, email: &str) -> anyhow::Result<i64> {
     let row = db
         .query_one_raw(Statement::from_sql_and_values(

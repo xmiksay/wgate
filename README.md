@@ -54,9 +54,12 @@ systemd unit is `deploy/wgate-agent.service`. The server runs unprivileged
 served at `/api/v1/openapi.json`).
 
 In `server.toml`, `secret_key` is required (`wgate keygen` prints one; it encrypts the
-TOTP secrets: keep it). `[admin_oidc]` (the global admins' provider) is optional:
-everyone can log in with a password, and admins who do set up TOTP at their first
-login. Set `trusted_proxies` to the ingress's own addresses (only those:
+TOTP secrets and the providers' client secrets: keep it). OIDC providers are not in
+`server.toml`: admins add them in the UI (Providers; global ones, or a tenant's own),
+and accounts link them from their profile. wgate reaches providers at public
+addresses only; list an internal one's in `oidc_allow_private`. Without any, everyone logs in with a
+password, and admins set up TOTP at their first login. A leftover `[admin_oidc]` stops
+the server with what to do instead ([`docs/install.md`](docs/install.md), step 4). Set `trusted_proxies` to the ingress's own addresses (only those:
 each may name any client) so the per-client limit on login attempts (20 a minute) and
 the per-client lockout see the client, not the proxy. Login
 and accounts: [`docs/accounts.md`](docs/accounts.md).

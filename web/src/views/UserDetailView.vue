@@ -31,8 +31,16 @@ watch(user, (u) => (role.value = u?.role ?? ''), { immediate: true })
 
 const path = { params: { path: { id: props.id } } }
 
+/** A promotion took its tenant-provider identities, and with them its last way in. */
+const stranded = ref(false)
+
 async function update(body: { role?: string; disabled?: boolean }) {
-  if (await run(() => call(api.PATCH('/users/{id}', { ...path, body })))) await users.reload()
+  stranded.value = false
+  let out: User | undefined
+  if (await run(async () => (out = await call(api.PATCH('/users/{id}', { ...path, body }))))) {
+    stranded.value = out?.stranded === true
+    await users.reload()
+  }
 }
 
 async function remove() {
@@ -119,6 +127,14 @@ async function remove() {
         />
       </div>
       <ErrorNote :error="error" />
+      <p
+        v-if="stranded"
+        role="status"
+        class="rounded bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+      >
+        The new role took {{ user.email }}'s identities at their tenant's providers, and
+        with them the last way to sign in: send an invite link (Sign-in, below).
+      </p>
     </UiSection>
     <UserSignIn
       :user="user"

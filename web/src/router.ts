@@ -9,6 +9,7 @@ import LoginView from './views/LoginView.vue'
 import MeView from './views/MeView.vue'
 import NetworkDetailView from './views/NetworkDetailView.vue'
 import NotFoundView from './views/NotFoundView.vue'
+import ProvidersView from './views/ProvidersView.vue'
 import TenantDetailView from './views/TenantDetailView.vue'
 import TenantsView from './views/TenantsView.vue'
 import UserDetailView from './views/UserDetailView.vue'
@@ -42,6 +43,7 @@ export const router = createRouter({
     { path: '/networks/:id(\\d+)', component: NetworkDetailView, props: id },
     { path: '/users', component: UsersView },
     { path: '/users/:id(\\d+)', component: UserDetailView, props: id },
+    { path: '/providers', component: ProvidersView },
     { path: '/federations', component: FederationsView, meta: { global: true } },
     { path: '/audit', component: AuditView, meta: { global: true } },
     { path: '/:rest(.*)*', component: NotFoundView },

@@ -1,4 +1,4 @@
-//! SeaORM entities for the tables in `migration/m0001_init.sql`.
+//! SeaORM entities for the tables of the migrations (`migration/`).
 
 pub mod app_user;
 pub mod audit;
@@ -6,6 +6,7 @@ pub mod ceiling;
 pub mod device;
 pub mod federation;
 pub mod hub_key;
+pub mod identity;
 pub mod inbound;
 pub mod network;
 pub mod oidc_provider;

@@ -206,7 +206,7 @@
         "tags": [
           "local"
         ],
-        "summary": "The same answer for every email for now (no tenant providers yet).",
+        "summary": "The enabled global providers and, for an existing account of a tenant, that\ntenant's. An unknown email gets what an account without tenant providers gets:\nthe page reveals only which tenant an account is in, and only when that tenant\nhas its own provider.",
         "operationId": "login_options",
         "requestBody": {
           "content": {
@@ -698,6 +698,147 @@
         }
       }
     },
+    "/me/identities": {
+      "get": {
+        "tags": [
+          "identities"
+        ],
+        "operationId": "my_identities",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Identity"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/identities/{id}": {
+      "delete": {
+        "tags": [
+          "identities"
+        ],
+        "summary": "Unlinks one of the account's identities, and ends its other sessions made through\nthat provider. 422 if it is the last way in (no password, no other identity at\nan enabled provider).",
+        "operationId": "unlink_my_identity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/identities/{id}/link": {
+      "post": {
+        "tags": [
+          "identities"
+        ],
+        "summary": "Starts linking an identity at provider `id` to the signed-in account: an\nenabled provider that serves it (a tenant's provider only its own tenant's\naccounts). 404 for no such (enabled) provider, 403 for one that does not serve the\naccount, 409 if the account has an identity there already, 503 `unavailable` when\nthe provider cannot be reached (the cause is in the server's log).",
+        "operationId": "link_my_identity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The provider",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The `wgate_login` cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkStart"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me/password": {
       "post": {
         "tags": [
@@ -745,6 +886,30 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/providers": {
+      "get": {
+        "tags": [
+          "identities"
+        ],
+        "summary": "The enabled providers the signed-in account may link, any role: the global ones\nand its tenant's.",
+        "operationId": "my_providers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LinkableProvider"
+                  }
                 }
               }
             }
@@ -1559,6 +1724,259 @@
         }
       }
     },
+    "/providers": {
+      "get": {
+        "tags": [
+          "providers"
+        ],
+        "operationId": "list_providers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Provider"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "providers"
+        ],
+        "summary": "409 for a name already on the same login page; 422 for a malformed issuer, an\nempty field, or `link_by_email` on a tenant's provider.",
+        "operationId": "create_provider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/providers/{id}": {
+      "get": {
+        "tags": [
+          "providers"
+        ],
+        "operationId": "get_provider",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "providers"
+        ],
+        "summary": "Takes its identities along (an account left without a way in needs an invite\nlink) and ends the sessions made through it; audited with how many. 409 when an\nadmin account would be left without a way in, unless a global admin asks.",
+        "operationId": "remove_provider",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRemoved"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "providers"
+        ],
+        "summary": "403/409/422 as for a create. A new issuer drops the provider's identities (its\nsubjects were the old issuer's); that and disabling end the sessions made through\nit, and answer with `stranded`: the accounts left without a way in. 409 when one\nof those is an admin account, unless a global admin asks.",
+        "operationId": "update_provider",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/routes/{id}": {
       "delete": {
         "tags": [
@@ -2124,6 +2542,185 @@
         }
       }
     },
+    "/users/{id}/identities": {
+      "get": {
+        "tags": [
+          "identities"
+        ],
+        "summary": "An account's identities, as far as invite and reset links reach (a tenant admin\ntheir tenant's plain users, a global admin anyone; one's own: `/me`).",
+        "operationId": "user_identities",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Identity"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "identities"
+        ],
+        "summary": "Pre-links an identity: its next login through that provider is this account. As\nfar as invite and reset links reach (a tenant admin their tenant's plain users, a\nglobal admin anyone, nobody their own account: 422). The provider must serve the\naccount (422 otherwise); 409 if the subject is another account's or the account\nhas an identity there already.",
+        "operationId": "add_user_identity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Identity"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}/identities/{identity_id}": {
+      "delete": {
+        "tags": [
+          "identities"
+        ],
+        "summary": "Unlinks an identity of an account in reach (as for a pre-link), and ends the\naccount's sessions made through that provider. 422 for the last way in.",
+        "operationId": "remove_user_identity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "identity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users/{id}/invite": {
       "post": {
         "tags": [
@@ -2529,7 +3126,7 @@
           },
           "error": {
             "type": "string",
-            "description": "`unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,\n`totp_required`, `not_found`, `bad_request`, `conflict`, `invalid` or `internal`."
+            "description": "`unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`,\n`unavailable`, `forbidden`,\n`totp_required`, `not_found`, `bad_request`, `conflict`, `invalid` or `internal`."
           },
           "message": {
             "type": "string"
@@ -2588,6 +3185,54 @@
             }
           }
         ]
+      },
+      "Identity": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider_id",
+          "provider_name",
+          "subject",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339, UTC."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider_name": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The provider's subject identifier for the account."
+          }
+        }
+      },
+      "IdentityCreate": {
+        "type": "object",
+        "required": [
+          "provider_id",
+          "subject"
+        ],
+        "properties": {
+          "provider_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The provider's subject identifier (`sub`) for the account's owner."
+          }
+        }
       },
       "Inbound": {
         "allOf": [
@@ -2674,6 +3319,44 @@
           },
           "purpose": {
             "$ref": "#/components/schemas/Purpose"
+          }
+        }
+      },
+      "LinkStart": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Send the browser here (the provider's login); it comes back to `/me`, with\n`?linked=<provider id>` or `?error=` (`taken`: the identity is another\naccount's; `exists`, `forbidden`, `expired`, `cancelled`, `unavailable`,\n`failed`). Only this browser, in this session, can finish it."
+          }
+        }
+      },
+      "LinkableProvider": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "global",
+          "linked"
+        ],
+        "properties": {
+          "global": {
+            "type": "boolean",
+            "description": "A global provider (else the account's tenant's own)."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "linked": {
+            "type": "boolean",
+            "description": "Whether the account has an identity there already (then unlink it first)."
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -3014,6 +3697,112 @@
           }
         }
       },
+      "Provider": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "disabled",
+          "link_by_email",
+          "managed"
+        ],
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "identities": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many accounts have linked an identity there."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "link_by_email": {
+            "type": "boolean"
+          },
+          "managed": {
+            "type": "boolean",
+            "description": "Whether the caller manages it; a tenant admin sees a global provider's name\nonly (the fields below are then `None`)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "stranded": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "In an update's answer only: how many accounts it left without a way to log\nin (they need an invite link)."
+          },
+          "tenant_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`None` for a global provider."
+          }
+        }
+      },
+      "ProviderCreate": {
+        "type": "object",
+        "required": [
+          "name",
+          "issuer",
+          "client_id",
+          "client_secret"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret": {
+            "type": "string",
+            "description": "Write-only."
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "issuer": {
+            "type": "string",
+            "description": "Exactly as the provider's discovery names itself (a trailing slash counts);\n`https`, or plain `http` to addresses in `oidc_allow_private` (checked when\nit is asked)."
+          },
+          "link_by_email": {
+            "type": "boolean",
+            "description": "A first login binds by verified email (global providers, global admins only)."
+          },
+          "name": {
+            "type": "string",
+            "description": "On the login button; unique among the providers of the same login page."
+          },
+          "tenant_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`None` makes a global provider (a global admin's call only)."
+          }
+        }
+      },
       "ProviderOption": {
         "type": "object",
         "required": [
@@ -3023,11 +3812,68 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Opaque: `admin` for the configured `[admin_oidc]` (later, database ids)."
+            "description": "The provider's id, as a string (opaque to the login page)."
           },
           "name": {
             "type": "string",
             "description": "For the button."
+          }
+        }
+      },
+      "ProviderRemoved": {
+        "type": "object",
+        "required": [
+          "stranded"
+        ],
+        "properties": {
+          "stranded": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many accounts the delete left without a way to log in (they need an\ninvite link)."
+          }
+        }
+      },
+      "ProviderUpdate": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Write-only; left out, the stored one stays."
+          },
+          "disabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Disabling ends the sessions made through it; nobody logs in or links there."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new issuer is another provider's subjects: its identities go."
+          },
+          "link_by_email": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3467,6 +4313,13 @@
           "role": {
             "type": "string",
             "description": "`global_admin`, `tenant_admin` or `user`."
+          },
+          "stranded": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "In an update's answer only, when a promotion took identities at tenant\nproviders away: whether that left the account without a way in (send an\ninvite link)."
           },
           "tenant_id": {
             "type": [

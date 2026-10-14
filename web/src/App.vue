@@ -33,12 +33,14 @@ const nav = computed(() => {
       { to: '/tenants', label: 'Tenants' },
       { to: '/users', label: 'Users' },
       { to: '/federations', label: 'Federations' },
+      { to: '/providers', label: 'Providers' },
       { to: '/audit', label: 'Audit' },
     ]
   }
   return [
     { to: `/tenants/${s.tenant_id}`, label: 'Tenant' },
     { to: '/users', label: 'Users' },
+    { to: '/providers', label: 'Providers' },
   ]
 })
 

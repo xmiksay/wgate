@@ -5,12 +5,15 @@
 mod clientconf;
 pub(crate) mod credentials;
 mod devices;
+mod identities;
 mod info;
 mod me;
 mod me_totp;
 mod networks;
 mod openapi;
 mod peers;
+mod provider_types;
+mod providers;
 mod rights;
 mod routes;
 mod tenants;
@@ -43,6 +46,10 @@ pub fn router() -> Router<AppState> {
         .route("/me/totp/setup", post(me_totp::setup))
         .route("/me/totp/confirm", post(me_totp::confirm))
         .route("/me/recovery-codes", post(me_totp::regenerate))
+        .route("/me/identities", get(identities::mine))
+        .route("/me/providers", get(identities::linkable))
+        .route("/me/identities/{id}", delete(identities::unlink_mine))
+        .route("/me/identities/{id}/link", post(identities::link))
         .route("/status", get(info::status))
         .route("/audit", get(info::audit))
         .route("/openapi.json", get(openapi::spec))
@@ -94,6 +101,21 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}/invite", post(credentials::invite))
         .route("/users/{id}/reset", post(credentials::reset))
         .route("/users/{id}/totp-reset", post(credentials::totp_reset))
+        .route(
+            "/users/{id}/identities",
+            get(identities::of_user).post(identities::add),
+        )
+        .route(
+            "/users/{id}/identities/{identity_id}",
+            delete(identities::remove),
+        )
+        .route("/providers", get(providers::list).post(providers::create))
+        .route(
+            "/providers/{id}",
+            get(providers::get)
+                .patch(providers::update)
+                .delete(providers::remove),
+        )
         .route("/devices", get(devices::devices).post(devices::add_device))
         .route(
             "/devices/{id}",

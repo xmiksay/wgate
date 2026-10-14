@@ -7,7 +7,6 @@ pub struct Model {
     pub id: i64,
     pub tenant_id: Option<i64>,
     pub email: String,
-    pub oidc_sub: Option<String>,
     pub role: String,
     pub disabled_at: Option<DateTimeWithTimeZone>,
     // Not here: `password_hash` and the `brake_*` columns. The server's login code

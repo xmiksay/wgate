@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use sea_orm::DatabaseConnection;
 
 use crate::auth::limit::Limiter;
-use crate::auth::oidc::Provider;
+use crate::auth::outbound::Outbound;
 use crate::auth::password::Hasher;
+use crate::auth::provider::Discovery;
 use crate::config::Config;
 use crate::seal::SecretKey;
 
@@ -15,9 +16,10 @@ use crate::seal::SecretKey;
 pub struct AppState {
     pub db: DatabaseConnection,
     pub config: Arc<Config>,
-    /// For the OIDC provider; never follows redirects (an SSRF guard).
-    pub http: openidconnect::reqwest::Client,
-    pub oidc: Arc<Provider>,
+    /// For the OIDC providers: public addresses only (but `oidc_allow_private`),
+    /// no redirects, capped answers.
+    pub http: Outbound,
+    pub discovery: Arc<Discovery>,
     pub limiter: Arc<Limiter>,
     pub hasher: Hasher,
     /// Seals secrets at rest ([`crate::seal`]); the only copy (taken out of the config).
@@ -52,25 +54,22 @@ impl Clock {
 }
 
 impl AppState {
-    /// Refuses a config without a usable `secret_key`.
+    /// Refuses a config [`Config::check`] refuses (no usable `secret_key`, a
+    /// leftover `[admin_oidc]`).
     pub fn new(db: DatabaseConnection, mut config: Config) -> anyhow::Result<Self> {
-        config.secret_key()?;
+        config.check()?;
         let key = Arc::new(
             config
                 .secret_key
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("no secret_key"))?,
         );
-        let http = openidconnect::reqwest::ClientBuilder::new()
-            .redirect(openidconnect::reqwest::redirect::Policy::none())
-            // A provider that hangs must not hold the discovery lock forever.
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?;
+        let http = Outbound::new(config.oidc_allow_private.clone())?;
         Ok(Self {
             db,
             config: Arc::new(config),
             http,
-            oidc: Arc::default(),
+            discovery: Arc::default(),
             limiter: Arc::default(),
             hasher: Hasher::per_core()?,
             key,

@@ -20,7 +20,7 @@ use utoipa::ToSchema;
 use super::account::{self, Verdict};
 use super::password::{Password, Permit};
 use super::session::Stage;
-use super::{Role, limit, oidc, session};
+use super::{Role, limit, session};
 use crate::audit;
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -88,7 +88,6 @@ pub async fn detached<T: Send + 'static>(
 
 #[derive(Deserialize, ToSchema)]
 pub struct OptionsRequest {
-    #[allow(dead_code, reason = "tenants' own providers depend on it (plan 1.10)")]
     pub email: String,
 }
 
@@ -102,34 +101,48 @@ pub struct LoginOptions {
 
 #[derive(Serialize, ToSchema)]
 pub struct ProviderOption {
-    /// Opaque: `admin` for the configured `[admin_oidc]` (later, database ids).
+    /// The provider's id, as a string (opaque to the login page).
     pub id: String,
     /// For the button.
     pub name: String,
 }
 
-/// The same answer for every email for now (no tenant providers yet).
+/// The enabled global providers and, for an existing account of a tenant, that
+/// tenant's. An unknown email gets what an account without tenant providers gets:
+/// the page reveals only which tenant an account is in, and only when that tenant
+/// has its own provider.
 #[utoipa::path(
     post, path = "/auth/options", operation_id = "login_options", servers((url = "/")),
     request_body = OptionsRequest, responses((status = 200, body = LoginOptions))
 )]
 pub async fn options(
     State(s): State<AppState>,
-    Json(_body): Json<OptionsRequest>,
-) -> Json<LoginOptions> {
-    let providers = s
-        .config
-        .admin_oidc
+    Json(body): Json<OptionsRequest>,
+) -> Result<Json<LoginOptions>, ApiError> {
+    let rows =
+        s.db.query_all_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT id, name FROM oidc_provider
+             WHERE disabled_at IS NULL
+               AND (tenant_id IS NULL OR tenant_id = (
+                   SELECT tenant_id FROM app_user WHERE lower(email) = lower($1)))
+             ORDER BY tenant_id NULLS FIRST, lower(name)",
+            [body.email.trim().into()],
+        ))
+        .await?;
+    let providers = rows
         .iter()
-        .map(|o| ProviderOption {
-            id: oidc::ADMIN_PROVIDER.into(),
-            name: o.display_name(),
+        .map(|r| {
+            Ok(ProviderOption {
+                id: r.try_get::<i64>("", "id")?.to_string(),
+                name: r.try_get("", "name")?,
+            })
         })
-        .collect();
-    Json(LoginOptions {
+        .collect::<Result<_, ApiError>>()?;
+    Ok(Json(LoginOptions {
         password: true,
         providers,
-    })
+    }))
 }
 
 #[derive(Deserialize, ToSchema)]

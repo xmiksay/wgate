@@ -104,7 +104,7 @@ One binary, `wgate`, with two subcommands that run as two systemd units:
 
 ## Data model (Postgres, SeaORM)
 
-The schema is `crates/db/src/migration/m0001_*.sql`; in short:
+The schema is `crates/db/src/migration/m000N_*.sql` (m0001, then appended); in short:
 
 ```
 tenant        id, slug (unique), name, disabled_at
@@ -114,10 +114,12 @@ network       id, tenant_id, block_id (FK, same tenant), slug (unique → wg-<sl
               port (unique, 51800–51899 except 51820), mesh, dns (hosts pushed to
               clients, optional), disabled_at; a block's delete cascades
                                                   # hub address = first host of cidr
-oidc_provider id, tenant_id NULL (= global), name, issuer, client_id, client_secret
-              (encrypted), link_by_email, disabled_at
-identity      id, user_id, provider_id, subject   # a linked login; unique per provider
-                                                  # secret: config file
+oidc_provider id, tenant_id NULL (= global; immutable), name (unique per login page),
+              issuer, client_id, client_secret (encrypted), link_by_email (global only),
+              disabled_at                         # several per tenant
+identity      id, user_id, provider_id, subject, created_at
+                                                  # a linked login; a subject once per
+                                                  # provider, one per account and provider
 app_user      id, tenant_id NULL (= global admin), email (unique across wgate),
               password_hash, totp_secret (encrypted), brake counters, role (global_admin |
               tenant_admin | user), disabled_at
@@ -146,8 +148,8 @@ hub_key       network_id, public_key              # written by the agent only
 audit         id, at, actor_user_id, action, target, detail jsonb
 state_revision  revision                          # bumped + NOTIFY once per changing transaction
 agent_status    applied_revision, applied_at, error   # written by the agent
-session       token_hash (sha256), user_id, csrf, stage, method, created_at, seen_at,
-              expires_at
+session       token_hash (sha256), user_id, csrf, stage, method, provider_id (oidc
+              only; cascades), created_at, seen_at, expires_at
 recovery_code, account_token                       # see accounts.md
 ```
 

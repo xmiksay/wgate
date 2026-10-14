@@ -113,14 +113,17 @@ async fn tenants_may_share_an_identity_provider() {
     ok(&pg.db, BASE).await;
     ok(
         &pg.db,
-        "INSERT INTO oidc_provider (tenant_id, issuer, client_id) VALUES
-            (1, 'https://accounts.google.com', 'a'), (2, 'https://accounts.google.com', 'b'),
-            (NULL, 'https://accounts.google.com', 'admin')",
+        "INSERT INTO oidc_provider (tenant_id, name, issuer, client_id, client_secret) VALUES
+            (1, 'Google', 'https://accounts.google.com', 'a', '\\x01'),
+            (2, 'Google', 'https://accounts.google.com', 'b', '\\x01'),
+            (NULL, 'Google', 'https://accounts.google.com', 'admin', '\\x01'),
+            (NULL, 'Keycloak', 'https://kc.example.org/realms/x', 'y', '\\x01')",
     )
     .await;
     refused(
         &pg.db,
-        "INSERT INTO oidc_provider (tenant_id, issuer, client_id) VALUES (NULL, 'https://x', 'y')",
+        "INSERT INTO oidc_provider (tenant_id, name, issuer, client_id, client_secret)
+         VALUES (NULL, 'GOOGLE', 'https://x', 'y', '\\x01')",
     )
     .await;
 }

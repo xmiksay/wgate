@@ -1,11 +1,11 @@
 //! The account side of local logins: changing a password, session stages, one account
-//! per email, the login options, and a portal without `[admin_oidc]`.
+//! per email, and a server.toml that still has `[admin_oidc]`.
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 mod common;
 
 use axum::http::{Method, StatusCode, header};
-use common::login::{self, PEER, account, login, send};
+use common::login::{self, account, login};
 use common::{sign_in, sql};
 use serde_json::json;
 
@@ -142,7 +142,7 @@ async fn only_a_full_session_is_signed_in() {
 async fn the_server_needs_a_secret_key() {
     let e = common::env().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut config = common::config(&e.url, "http://127.0.0.1:9/");
+    let mut config = common::config(&e.url);
     config.secret_key = None;
     let err = wgate_server::serve_on(listener, config).await.unwrap_err();
     assert!(err.to_string().contains("wgate keygen"), "{err:#}");
@@ -228,80 +228,48 @@ async fn an_email_is_one_account_across_wgate() {
     assert!(err.to_string().contains("12 to 256"), "{err}");
 }
 
+/// Providers live in the database now: a leftover `[admin_oidc]` stops the server
+/// with what to do instead (nothing is imported behind the admin's back).
 #[tokio::test]
-async fn the_login_page_offers_a_password_and_the_admin_provider() {
+async fn a_leftover_admin_oidc_stops_the_server() {
     let e = common::env().await;
-    for email in ["nobody@x.test", "g@example.org"] {
-        let r = send(
-            &e.app,
-            "POST",
-            "/auth/options",
-            Some(json!({ "email": email })),
-            PEER,
-            &[],
-        )
-        .await;
-        assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(
-            r.body,
-            json!({ "password": true, "providers": [{ "id": "admin", "name": "127.0.0.1" }] })
-        );
-    }
-    let r = send(&e.app, "GET", "/auth/oidc/other", None, PEER, &[]).await;
-    assert_eq!(r.status, StatusCode::SEE_OTHER);
-    assert_eq!(r.headers[header::LOCATION], "/login?error=unavailable");
-}
-
-#[tokio::test]
-async fn without_admin_oidc_the_password_is_the_way_in() {
-    let e = common::env_with("http://127.0.0.1:9/", |c| c.admin_oidc = None).await;
-    let r = send(
-        &e.app,
-        "POST",
-        "/auth/options",
-        Some(json!({ "email": "a@b.test" })),
-        PEER,
-        &[],
-    )
-    .await;
-    assert_eq!(r.body, json!({ "password": true, "providers": [] }));
-    for uri in [
-        "/auth/login",
-        "/auth/oidc/admin",
-        "/auth/callback?code=c&state=s",
-    ] {
-        let r = send(&e.app, "GET", uri, None, PEER, &[]).await;
-        assert_eq!(r.status, StatusCode::SEE_OTHER, "{uri}");
-        let to = r.headers[header::LOCATION].to_str().unwrap();
-        assert!(to.starts_with("/login?error="), "{uri}: {to}");
-    }
-    wgate_server::grant_admin(&e.db, "root@example.org")
+    let example = include_str!("../server.example.toml");
+    let text = format!(
+        "{example}\n[admin_oidc]\nissuer = \"https://accounts.google.com\"\n\
+         client_id = \"wgate\"\nclient_secret = \"leftover-secret\"\n"
+    );
+    let mut config: wgate_server::Config = toml::from_str(&text).unwrap();
+    config.database_url = e.url.clone();
+    config.secret_key = Some(wgate_server::SecretKey::generate().unwrap());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let err = wgate_server::serve_on(listener, config.clone())
         .await
-        .unwrap();
-    wgate_server::set_password(
-        &e.db,
-        "root@example.org",
-        wgate_server::Password::new(PW.into()),
-    )
-    .await
-    .unwrap();
-    let r = login(&e.app, "root@example.org", PW).await;
-    assert_eq!(r.status, StatusCode::NO_CONTENT);
-    // The first admin sets TOTP up at the first login.
-    let c = login::client(&e.app, &r.session().unwrap()).await;
-    assert_eq!(c.get("/tenants").await.0, StatusCode::FORBIDDEN);
-    let c = common::totp::enrol(&c, &e.clock).await.client;
-    assert_eq!(c.get("/tenants").await.0, StatusCode::OK);
+        .unwrap_err();
+    let err = format!("{err:#}");
+    assert!(
+        err.contains("providers now live in the database")
+            && err.contains("under Providers")
+            && err.contains("remove [admin_oidc]"),
+        "{err}"
+    );
+    assert!(!format!("{config:?}").contains("leftover-secret"));
+    // As `wgate server` reads it.
+    let dir = std::env::temp_dir().join(format!("wgate-leftover-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("server.toml");
+    std::fs::write(&path, &text).unwrap();
+    let err = format!("{:#}", wgate_server::Config::load(&path).unwrap_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(err.contains("remove [admin_oidc]"), "{err}");
 }
 
 /// The real listener: it hands the handlers the peer address, and needs no provider.
 #[tokio::test]
-async fn the_server_serves_without_admin_oidc() {
+async fn the_server_serves_without_a_provider() {
     let e = common::env().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut config = common::config(&e.url, "http://127.0.0.1:9/");
-    config.admin_oidc = None;
+    let config = common::config(&e.url);
     let server = tokio::spawn(wgate_server::serve_on(listener, config));
     let http = openidconnect::reqwest::Client::new();
     let url = format!("http://127.0.0.1:{port}/auth/password");

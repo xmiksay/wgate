@@ -1,5 +1,5 @@
 -- The agent role (root on the hub) reads only what `desired_state()` needs and
--- writes only what it owns: no emails, OIDC subjects, password hashes, sessions or
+-- writes only what it owns: no emails, identities, password hashes, sessions or
 -- audit trail. Applied on every `wgate migrate`, so a role created (or re-created)
 -- after the first migration still gets its rights; a database without the role (e.g.
 -- tests) gets none. A table a later migration adds for the loader must be added here.
