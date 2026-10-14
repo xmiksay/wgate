@@ -1,6 +1,8 @@
 //! Stages the built UI (`web/dist`) for embedding. Without one (no `make web` yet: a
 //! plain `cargo build` or `cargo test`), a stub page says how to build it, so the
-//! Rust side never needs Node.
+//! Rust side never needs Node; a release build without it fails instead of shipping
+//! a portal with no UI. The Makefile builds the UI before lint and tests, so they
+//! embed (and test) the real one.
 
 use std::fs;
 use std::io;
@@ -39,6 +41,11 @@ fn main() -> io::Result<()> {
     }
     if dist.join("index.html").is_file() {
         copy_dir(&dist, &out)
+    } else if std::env::var("PROFILE").is_ok_and(|p| p == "release") {
+        Err(io::Error::other(format!(
+            "no UI at {}: run `make web` before a release build",
+            dist.display()
+        )))
     } else {
         fs::create_dir_all(&out)?;
         fs::write(out.join("index.html"), STUB)

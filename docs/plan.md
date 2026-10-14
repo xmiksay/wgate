@@ -220,7 +220,8 @@ under sudo).
 - Embedded with rust-embed (`build.rs` stages `web/dist`, or a stub page without
   `make web`); `index.html` for client routes, a strict CSP (`img-src data:` for the
   QR), unknown `/api` paths stay JSON 404s. A refused login returns to
-  `/login?error=forbidden|expired|failed`.
+  `/login?error=forbidden|expired|failed|cancelled`. A release build without
+  `web/dist` fails; `make lint`/`make test` build the UI first.
 - API types generated from `docs/openapi.json` (openapi-typescript + openapi-fetch),
   kept current by `make golden`/`make lint`. Status polled every 5 s (1 s for 30 s
   after a write, paused while hidden). Address fields prefilled from the `free-*`

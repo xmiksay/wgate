@@ -19,6 +19,11 @@ export function downloadText(fileName: string, text: string) {
   const a = document.createElement('a')
   a.href = url
   a.download = fileName
+  // Firefox and Safari drop a download from a detached anchor or an already revoked URL.
+  document.body.append(a)
   a.click()
-  URL.revokeObjectURL(url)
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+export const SECRET_GUARD = 'The private key is shown only once; close anyway?'

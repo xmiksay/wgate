@@ -136,9 +136,12 @@ struct Pending {
 }
 
 #[derive(Deserialize)]
+/// The provider's answer: a code, or an `error` (the user cancelled, or it refused).
+/// All optional, so any answer reaches the handler and ends on the login page.
 pub struct Callback {
-    code: String,
-    state: String,
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
 }
 
 /// `GET /auth/callback`: back from the provider; a session for a global admin, or
@@ -148,13 +151,21 @@ pub async fn callback(
     jar: CookieJar,
     Query(q): Query<Callback>,
 ) -> (CookieJar, Redirect) {
-    match complete(&state, jar.clone(), q).await {
+    let result = match &q.error {
+        Some(error) => {
+            tracing::warn!(%error, "login refused by the provider");
+            Err(None)
+        }
+        None => complete(&state, jar.clone(), q).await.map_err(Some),
+    };
+    match result {
         Ok(done) => done,
         Err(e) => {
             let why = match e {
-                ApiError::Forbidden => "forbidden",
-                ApiError::BadRequest(_) => "expired",
-                e => {
+                None => "cancelled",
+                Some(ApiError::Forbidden) => "forbidden",
+                Some(ApiError::BadRequest(_)) => "expired",
+                Some(e) => {
                     tracing::error!(error = %e, "login failed");
                     "failed"
                 }
@@ -174,7 +185,11 @@ async fn complete(
         .get(LOGIN_COOKIE)
         .and_then(|c| URL_SAFE_NO_PAD.decode(c.value()).ok())
         .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
-        .filter(|p| bool::from(p.state.as_bytes().ct_eq(q.state.as_bytes())))
+        .filter(|p| {
+            q.state
+                .as_ref()
+                .is_some_and(|s| bool::from(p.state.as_bytes().ct_eq(s.as_bytes())))
+        })
         .filter(|p| (0..=LOGIN_TTL_SECS).contains(&(unix_now() - p.started)))
         .ok_or_else(|| {
             ApiError::BadRequest("this login was not started in this browser; start again".into())
@@ -188,7 +203,9 @@ async fn complete(
         ApiError::Forbidden
     };
     let exchange = client
-        .exchange_code(AuthorizationCode::new(q.code))
+        .exchange_code(AuthorizationCode::new(q.code.ok_or_else(|| {
+            ApiError::BadRequest("no code from the provider".into())
+        })?))
         .map_err(|e| refused("no token endpoint", &e))?
         .set_pkce_verifier(PkceCodeVerifier::new(pending.verifier))
         .request_async(&state.http)
