@@ -34,17 +34,28 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
 - `crates/core` — pure, no I/O: addressing/allocators, rights (`RuleSet`), `compile`
   (desired state → per-peer sets; `compile/valid.rs` decides what fails closed), nft
   + client-config rendering
-- `crates/db` — SeaORM entities, the SQL migration (`migration/m0001_init.sql`: tables,
+- `crates/db` — SeaORM entities, the SQL migrations (`migration/m0001_init.sql`: tables,
   exclusion constraints own address ranges, ownership checks; `m0001_state.sql`: the
-  revision + NOTIFY triggers), `grants.sql` (agent role), `desired_state()`
-  loader, `agent` (the agent's only writes: `hub_key`, `agent_status`); shared by
-  server and agent
-- `crates/server` — Axum + OIDC; unprivileged. `auth/` (OIDC login, sessions, `Actor`
-  + CSRF), `api/` (one module per resource; `clientconf` renders configs from the
-  compiled state, `openapi` lists every path), `error.rs` (`ApiError`, SQLSTATE
+  revision + NOTIFY triggers; `m0002_accounts.sql`: passwords, `login_failure`,
+  `login_known` + the brake, `login_claim()`/`login_succeeded()`, session stage;
+  append a new `m000N_*.sql` to `MIGRATIONS`, never edit a released one;
+  `tests/upgrade.rs` upgrades a 0.1.0 database), `grants.sql` (agent role), `desired_state()` loader, `agent` (the
+  agent's only writes: `hub_key`, `agent_status`); shared by server and agent
+- `crates/server` — Axum + OIDC; unprivileged. `auth/` (per [accounts](../docs/accounts.md):
+  `local` password login + `/auth/options`, `password` argon2id, the `Hasher`
+  semaphore (503 `busy`) + lockout schedule, `account` the claim-before-verify
+  lockout/brake (`login_claim`; `local::detached` runs an attempt to its end),
+  `limit` per-client and per-/48 attempts + `X-Forwarded-For` from
+  `trusted_proxies`, `oidc` the optional `[admin_oidc]` login, `session` (only
+  stage `full` is signed in), `Account` (any role) / `Actor` (admins) + CSRF),
+  `api/` (one module per resource; `clientconf` renders configs from the compiled
+  state, `openapi` lists every path), `error.rs` (`ApiError`, SQLSTATE
   mapping), `audit.rs`, `wgkey.rs` (x25519, zeroized); config
   `server.example.toml`, unit `deploy/wgate-server.service`. Tests: `tests/*.rs`
-  against Postgres containers and a mock IdP (`tests/common/idp.rs`);
+  against Postgres containers and a mock IdP (`tests/common/idp.rs`); handlers that
+  need the client address get `ConnectInfo` from `serve` (tests inject it:
+  `tests/common/login.rs`); a secret-never-logged test is its own binary
+  (`tests/common/capture.rs`);
   `docs/openapi.json` is a golden (`make golden`; operationIds must be unique).
   `ui.rs` serves the embedded `web/dist` (staged by `build.rs`; a stub page without
   `make web`) with a strict CSP, `index.html` for client routes

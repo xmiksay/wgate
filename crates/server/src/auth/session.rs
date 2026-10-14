@@ -1,7 +1,9 @@
 //! Portal sessions: a random token in an `HttpOnly` cookie, only its SHA-256 in the
 //! database. A session ends after 8 hours idle or 7 days, at logout, or as soon as
-//! its user is disabled or loses the portal.
+//! its user is disabled. Only a `full` session is signed in; the other stages
+//! (plan 1.9) only finish their login.
 
+use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
@@ -27,22 +29,70 @@ fn hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
-/// A new session for `user_id`: the cookie's token.
-pub async fn create(db: &DatabaseConnection, user_id: i64) -> Result<String, ApiError> {
+/// How a session was made, for the audit log.
+#[derive(Clone, Copy)]
+pub enum Method {
+    Password,
+    Oidc,
+}
+
+impl Method {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Oidc => "oidc",
+        }
+    }
+}
+
+/// A new (`full`) session for `user_id`: the cookie's token.
+pub async fn create(
+    db: &DatabaseConnection,
+    user_id: i64,
+    method: Method,
+) -> Result<String, ApiError> {
     let token = random_token();
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "INSERT INTO session (token_hash, user_id, csrf, expires_at)
-         VALUES ($1, $2, $3, now() + make_interval(secs => $4))",
+        "INSERT INTO session (token_hash, user_id, csrf, expires_at, method)
+         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5)",
         [
             hash(&token).into(),
             user_id.into(),
             random_token().into(),
             (MAX_AGE_SECS as f64).into(),
+            method.as_str().into(),
         ],
     ))
     .await?;
     Ok(token)
+}
+
+/// The session cookie carrying `token` (whichever way the login went).
+pub fn cookie(token: String, secure: bool) -> Cookie<'static> {
+    Cookie::build((COOKIE, token))
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .max_age(time::Duration::seconds(MAX_AGE_SECS))
+        .build()
+}
+
+/// Ends every session of `user_id` but `keep`; how many.
+pub async fn end_others<C: ConnectionTrait>(
+    db: &C,
+    user_id: i64,
+    keep: Option<i64>,
+) -> Result<u64, ApiError> {
+    Ok(db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "DELETE FROM session WHERE user_id = $1 AND id IS DISTINCT FROM $2",
+            [user_id.into(), keep.into()],
+        ))
+        .await?
+        .rows_affected())
 }
 
 /// Whose session it was, if it was still there.
@@ -65,7 +115,7 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             format!(
-                "SELECT s.id, s.csrf, u.id AS user_id, u.role, u.tenant_id, u.email,
+                "SELECT s.id, s.csrf, s.stage, u.id AS user_id, u.role, u.tenant_id, u.email,
                         s.expires_at > now() AND s.seen_at > now() - interval '{IDLE}'
                             AND u.disabled_at IS NULL AND t.disabled_at IS NULL AS live,
                         s.seen_at < now() - interval '1 minute' AS stale
@@ -83,8 +133,6 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
     let id: i64 = row.try_get("", "id")?;
     let live: bool = row.try_get("", "live")?;
     let role = Role::parse(&row.try_get::<String>("", "role")?);
-    // A user only holds a portal session as an admin (users get their configs from
-    // an admin until phase 2).
     let (true, Some(role)) = (live, role) else {
         db.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -94,6 +142,10 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
         .await?;
         return Ok(None);
     };
+    // Kept: the login it belongs to is still going.
+    if row.try_get::<String>("", "stage")? != "full" {
+        return Ok(None);
+    }
     if row.try_get::<bool>("", "stale")? {
         db.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -103,6 +155,7 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
         .await?;
     }
     Ok(Some(Actor {
+        session_id: id,
         user_id: row.try_get("", "user_id")?,
         role,
         tenant_id: row.try_get("", "tenant_id")?,

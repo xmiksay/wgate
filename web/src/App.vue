@@ -12,13 +12,14 @@ import { useStatusStore } from './stores/status'
 const router = useRouter()
 const sessionStore = useSessionStore()
 const statusStore = useStatusStore()
-const { session, isGlobal } = storeToRefs(sessionStore)
+const { session, isGlobal, isAdmin } = storeToRefs(sessionStore)
 const logoutError = ref<ApiError | null>(null)
 
+// Plain users have no /status to poll (it is a 403 for them).
 watch(
-  session,
-  (s) => {
-    if (s) statusStore.start()
+  isAdmin,
+  (admin) => {
+    if (admin) statusStore.start()
     else statusStore.stop()
   },
   { immediate: true },
@@ -26,7 +27,7 @@ watch(
 
 const nav = computed(() => {
   const s = session.value
-  if (!s) return []
+  if (!s || !isAdmin.value) return []
   if (isGlobal.value) {
     return [
       { to: '/tenants', label: 'Tenants' },
@@ -81,7 +82,14 @@ async function logout() {
         v-if="session"
         class="ml-auto flex items-center gap-3"
       >
-        <span class="muted">{{ session.email }}</span>
+        <RouterLink
+          to="/me"
+          class="muted hover:text-slate-900 dark:hover:text-white"
+          active-class="font-semibold text-slate-900 dark:text-white"
+          title="Your profile"
+        >
+          {{ session.email }}
+        </RouterLink>
         <UiButton @click="logout">
           Log out
         </UiButton>
@@ -91,7 +99,7 @@ async function logout() {
       v-if="session"
       class="mx-auto max-w-6xl space-y-1 pt-1"
     >
-      <StatusBar />
+      <StatusBar v-if="isAdmin" />
       <ErrorNote :error="logoutError" />
     </div>
   </header>

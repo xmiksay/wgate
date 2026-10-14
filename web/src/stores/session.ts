@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { ApiError, api, asApiError, call, setCsrf } from '../api/client'
-import type { Session } from '../api/types'
+import { ApiError, api, asApiError, auth, call, setCsrf } from '../api/client'
+import type { LoginOptions, Session } from '../api/types'
 
 export const useSessionStore = defineStore('session', () => {
   const session = ref<Session | null>(null)
@@ -10,6 +10,8 @@ export const useSessionStore = defineStore('session', () => {
   const problem = ref('')
 
   const isGlobal = computed(() => session.value?.role === 'global_admin')
+  /** Plain users may only use their own profile: every admin route is a 403 for them. */
+  const isAdmin = computed(() => session.value != null && session.value.role !== 'user')
 
   async function load() {
     try {
@@ -20,10 +22,21 @@ export const useSessionStore = defineStore('session', () => {
     } catch (e) {
       clear()
       const err = asApiError(e)
-      if (err.status === 403) problem.value = 'This account is not a global admin.'
-      else if (err.status !== 401) problem.value = err.message
+      if (err.status !== 401) problem.value = err.message
     }
     loaded.value = true
+  }
+
+  /** Which ways to sign in the login page offers for `email`. */
+  function options(email: string): Promise<LoginOptions> {
+    return call(auth.POST('/auth/options', { body: { email } }))
+  }
+
+  /** Signs in with a local password and loads the new session; throws when refused. */
+  async function signIn(email: string, password: string) {
+    await call(auth.POST('/auth/password', { body: { email, password } }))
+    await load()
+    if (!session.value) throw new ApiError(0, 'session', problem.value || 'Signing in failed.')
   }
 
   function clear() {
@@ -43,5 +56,5 @@ export const useSessionStore = defineStore('session', () => {
     clear()
   }
 
-  return { session, loaded, problem, isGlobal, load, clear, logout }
+  return { session, loaded, problem, isGlobal, isAdmin, load, options, signIn, clear, logout }
 })

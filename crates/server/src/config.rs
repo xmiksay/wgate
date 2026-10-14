@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use anyhow::Context;
-use ipnet::Ipv4Net;
+use ipnet::{IpNet, Ipv4Net};
 use serde::Deserialize;
 use url::Url;
 use wgate_db::Infra;
@@ -29,13 +29,20 @@ pub struct Config {
     pub reserved: Vec<Ipv4Net>,
     pub snat_source: Ipv4Addr,
     pub node_cidrs: Vec<Ipv4Net>,
-    pub admin_oidc: Oidc,
+    /// Peers whose `X-Forwarded-For` names the client (the ingress); anyone else's
+    /// is ignored. Empty: the TCP peer is the client.
+    #[serde(default)]
+    pub trusted_proxies: Vec<IpNet>,
+    /// The global admins' provider; without it they log in with a password.
+    pub admin_oidc: Option<Oidc>,
 }
 
 /// An OpenID Connect provider (discovery at `<issuer>/.well-known/openid-configuration`).
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Oidc {
+    /// On the login page's button (default: the issuer's host).
+    pub name: Option<String>,
     /// Exactly as the provider names itself (discovery compares it verbatim: a URL
     /// type would add a trailing slash).
     pub issuer: String,
@@ -46,9 +53,21 @@ pub struct Oidc {
 impl std::fmt::Debug for Oidc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Oidc")
+            .field("name", &self.name)
             .field("issuer", &self.issuer)
             .field("client_id", &self.client_id)
             .finish_non_exhaustive()
+    }
+}
+
+impl Oidc {
+    pub fn display_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| {
+            Url::parse(&self.issuer)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_owned))
+                .unwrap_or_else(|| self.issuer.clone())
+        })
     }
 }
 
@@ -106,8 +125,34 @@ mod tests {
         assert!(prefixed.check().is_err());
         prefixed.public_url = "https://user:pw@example.org/".parse().unwrap();
         assert!(prefixed.check().is_err());
-        assert!(!format!("{c:?}").contains(&c.admin_oidc.client_secret));
+        let oidc = c.admin_oidc.as_ref().unwrap();
+        assert!(!format!("{c:?}").contains(&oidc.client_secret));
+        assert_eq!(oidc.display_name(), "accounts.google.com");
+        assert!(c.trusted_proxies.is_empty());
         let example = include_str!("../server.example.toml");
         assert!(toml::from_str::<Config>(&format!("{example}\nbogus = 1")).is_err());
+    }
+
+    #[test]
+    fn the_admin_provider_and_proxies_are_optional() {
+        let example = include_str!("../server.example.toml");
+        let bare: String = example
+            .lines()
+            .take_while(|l| !l.starts_with("[admin_oidc]"))
+            .filter(|l| !l.starts_with("trusted_proxies"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let c: Config = toml::from_str(&bare).unwrap();
+        assert!(c.admin_oidc.is_none());
+        let with: Config =
+            toml::from_str(&format!("trusted_proxies = [\"172.19.9.11/32\"]\n{bare}")).unwrap();
+        assert_eq!(
+            with.trusted_proxies,
+            vec!["172.19.9.11/32".parse::<IpNet>().unwrap()]
+        );
+        let named: Config =
+            toml::from_str(&format!("{bare}[admin_oidc]\nname = \"Google\"\nissuer = \"x\"\nclient_id = \"a\"\nclient_secret = \"b\"\n"))
+                .unwrap();
+        assert_eq!(named.admin_oidc.unwrap().display_name(), "Google");
     }
 }

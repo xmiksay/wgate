@@ -2,7 +2,7 @@
 //! here, never the database's own words (constraint and table names stay in the log).
 
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use sea_orm::{DbErr, RuntimeErr};
 use serde::Serialize;
@@ -12,6 +12,15 @@ use utoipa::ToSchema;
 pub enum ApiError {
     #[error("not signed in")]
     Unauthorized,
+    /// Every failed login, whatever failed: the reply tells nothing about the account.
+    #[error("invalid credentials")]
+    InvalidCredentials,
+    /// The client's attempts are used up for now: try again after this long.
+    #[error("too many attempts")]
+    TooManyAttempts(std::time::Duration),
+    /// Every password hash slot taken: try again in a moment.
+    #[error("the server is busy; try again")]
+    Busy,
     #[error("not allowed")]
     Forbidden,
     #[error("not found")]
@@ -34,8 +43,8 @@ pub enum ApiError {
 /// The JSON body of every error.
 #[derive(Serialize, ToSchema)]
 pub struct ErrorBody {
-    /// `unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid` or
-    /// `internal`.
+    /// `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,
+    /// `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
     pub error: &'static str,
     pub message: String,
     /// What is in the way (e.g. the part of a rule no ceiling covers).
@@ -54,6 +63,9 @@ impl ApiError {
     fn parts(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
+            Self::TooManyAttempts(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts"),
+            Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "busy"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
@@ -79,8 +91,26 @@ impl IntoResponse for ApiError {
             message: self.to_string(),
             detail,
         };
-        (status, Json(body)).into_response()
+        let mut res = (status, Json(body)).into_response();
+        let wait = match &self {
+            Self::TooManyAttempts(wait) => Some(*wait),
+            Self::Busy => Some(std::time::Duration::from_secs(1)),
+            _ => None,
+        };
+        if let Some(wait) = wait {
+            // Whole seconds, never 0 (that would invite an instant retry).
+            let secs = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            res.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(secs.max(1)));
+        }
+        res
     }
+}
+
+/// The unique constraint `e` violates, if that is what it is.
+pub fn unique_violation(e: &DbErr) -> Option<String> {
+    let db = sqlx_error(e)?.as_database_error()?;
+    (db.code()?.as_ref() == "23505").then(|| db.constraint().unwrap_or_default().to_owned())
 }
 
 /// The SQLSTATE classes the schema raises on purpose: they say what is wrong in the
@@ -109,14 +139,16 @@ impl From<DbErr> for ApiError {
 
 /// (SQLSTATE, raised by a trigger rather than a constraint, message).
 fn database_error(e: &DbErr) -> Option<(String, bool, String)> {
-    let runtime = match e {
-        DbErr::Exec(r) | DbErr::Query(r) => r,
-        _ => return None,
-    };
-    let RuntimeErr::SqlxError(sqlx) = runtime else {
-        return None;
-    };
-    let db = sqlx.as_database_error()?;
+    let db = sqlx_error(e)?.as_database_error()?;
     let code = db.code()?.into_owned();
     Some((code, db.constraint().is_none(), db.message().to_owned()))
+}
+
+fn sqlx_error(e: &DbErr) -> Option<&sea_orm::SqlxError> {
+    match e {
+        DbErr::Exec(RuntimeErr::SqlxError(sqlx)) | DbErr::Query(RuntimeErr::SqlxError(sqlx)) => {
+            Some(sqlx)
+        }
+        _ => None,
+    }
 }

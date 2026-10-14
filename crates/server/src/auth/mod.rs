@@ -1,7 +1,13 @@
 //! Who is asking: the session's user, and what their role lets them touch. Global
-//! admins may do anything; a tenant admin only within their own tenant.
+//! admins may do anything; a tenant admin only within their own tenant. Any account
+//! may sign in ([`Account`]: its session and profile); the API's resources are the
+//! admins' ([`Actor`]).
 
+pub mod account;
+pub mod limit;
+pub mod local;
 pub mod oidc;
+pub mod password;
 pub mod session;
 
 use axum::extract::FromRequestParts;
@@ -23,21 +29,25 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 pub enum Role {
     GlobalAdmin,
     TenantAdmin,
+    User,
 }
 
 impl Role {
-    /// The portal roles; a plain `user` has none.
     pub fn parse(role: &str) -> Option<Self> {
         match role {
             "global_admin" => Some(Self::GlobalAdmin),
             "tenant_admin" => Some(Self::TenantAdmin),
+            "user" => Some(Self::User),
             _ => None,
         }
     }
 }
 
+/// An admin's session: the extractor refuses a plain user (403), so every check
+/// below speaks of admins only.
 #[derive(Clone, Debug)]
 pub struct Actor {
+    pub session_id: i64,
     pub user_id: i64,
     pub role: Role,
     pub tenant_id: Option<i64>,
@@ -77,7 +87,11 @@ impl Actor {
     }
 }
 
-impl FromRequestParts<AppState> for Actor {
+/// Anyone signed in, whatever their role: their own session and profile.
+#[derive(Clone, Debug)]
+pub struct Account(pub Actor);
+
+impl FromRequestParts<AppState> for Account {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
@@ -99,6 +113,18 @@ impl FromRequestParts<AppState> for Actor {
             if !bool::from(sent.ct_eq(actor.csrf.as_bytes())) {
                 return Err(ApiError::Forbidden);
             }
+        }
+        Ok(Self(actor))
+    }
+}
+
+impl FromRequestParts<AppState> for Actor {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let Account(actor) = Account::from_request_parts(parts, state).await?;
+        if actor.role == Role::User {
+            return Err(ApiError::Forbidden);
         }
         Ok(actor)
     }

@@ -75,8 +75,20 @@ async fn the_agent_role_reads_the_desired_state_and_writes_only_its_tables() {
         "SELECT id, tenant_id, role, disabled_at FROM app_user",
     )
     .await;
-    // No emails, OIDC subjects or audit trail for the root process.
+    // No emails, OIDC subjects, passwords, sessions or audit trail for the root process.
     refused(&agent, "SELECT email FROM app_user").await;
+    refused(&agent, "SELECT password_hash FROM app_user").await;
+    refused(&agent, "SELECT brake_failures FROM app_user").await;
+    refused(&agent, "SELECT * FROM login_failure").await;
+    refused(&agent, "SELECT * FROM login_known").await;
+    // Nor may it log anyone in.
+    refused(
+        &agent,
+        "SELECT * FROM login_claim('a@nexial.cz', '192.0.2.1', 5, '{60}', 100)",
+    )
+    .await;
+    refused(&agent, "SELECT login_succeeded(1, '192.0.2.1')").await;
+    refused(&agent, "SELECT * FROM session").await;
     refused(&agent, "SELECT * FROM oidc_provider").await;
     refused(&agent, "SELECT * FROM audit").await;
     ok(
@@ -97,21 +109,20 @@ async fn the_agent_role_reads_the_desired_state_and_writes_only_its_tables() {
 }
 
 #[tokio::test]
-async fn the_migration_is_recorded_under_its_own_name() {
+async fn each_migration_is_recorded_under_its_own_name() {
     let pg = pg("").await;
-    let row = pg
+    let names: Vec<String> = pg
         .db
-        .query_one_raw(sea_orm::Statement::from_string(
+        .query_all_raw(sea_orm::Statement::from_string(
             sea_orm::DbBackend::Postgres,
-            "SELECT name FROM wgate_migration",
+            "SELECT name FROM wgate_migration ORDER BY name",
         ))
         .await
         .expect("query")
-        .expect("one migration");
-    assert_eq!(
-        row.try_get::<String>("", "name").expect("name"),
-        "m0001_init"
-    );
+        .iter()
+        .map(|r| r.try_get("", "name").expect("name"))
+        .collect();
+    assert_eq!(names, ["m0001_init", "m0002_accounts"]);
 }
 
 #[tokio::test]

@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use sea_orm::DatabaseConnection;
 
+use crate::auth::limit::Limiter;
 use crate::auth::oidc::Provider;
+use crate::auth::password::Hasher;
 use crate::config::Config;
 
 #[derive(Clone)]
@@ -14,6 +16,8 @@ pub struct AppState {
     /// For the OIDC provider; never follows redirects (an SSRF guard).
     pub http: openidconnect::reqwest::Client,
     pub oidc: Arc<Provider>,
+    pub limiter: Arc<Limiter>,
+    pub hasher: Hasher,
 }
 
 impl AppState {
@@ -28,6 +32,8 @@ impl AppState {
             config: Arc::new(config),
             http,
             oidc: Arc::default(),
+            limiter: Arc::default(),
+            hasher: Hasher::per_core()?,
         })
     }
 }

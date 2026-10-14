@@ -5,33 +5,13 @@
 
 mod common;
 
-use std::io::Write;
-use std::sync::{Arc, Mutex};
-
+use common::capture::Captured;
 use common::sign_in;
 use serde_json::json;
 
-#[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[tokio::test]
 async fn a_private_key_never_reaches_the_log() {
-    let captured = Captured::default();
-    let sink = captured.clone();
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_writer(move || sink.clone())
-        .init();
+    let captured = Captured::install();
     let e = common::env().await;
     let g = sign_in(&e, "g@example.org", "global_admin", None).await;
     let id = |v: &serde_json::Value| v["id"].as_i64().unwrap();
@@ -79,7 +59,7 @@ async fn a_private_key_never_reaches_the_log() {
     let peer = id(&created["peer"]);
     let (_, rotated) = g.post(&format!("/peers/{peer}/config"), json!({})).await;
     keys.push(rotated["config"]["config"].as_str().unwrap().to_owned());
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    let log = captured.text();
     assert!(
         log.contains("INSERT INTO"),
         "the subscriber missed the queries"

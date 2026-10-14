@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "wgate",
-    "description": "Multi-tenant WireGuard gateway: portal API.",
+    "description": "Multi-tenant WireGuard gateway: portal API. The `/auth` paths are at the root, not under `/api/v1`.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -66,6 +66,101 @@
             }
           }
         }
+      }
+    },
+    "/auth/options": {
+      "post": {
+        "tags": [
+          "local"
+        ],
+        "summary": "The same answer for every email for now (no tenant providers yet).",
+        "operationId": "login_options",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginOptions"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "/"
+          }
+        ]
+      }
+    },
+    "/auth/password": {
+      "post": {
+        "tags": [
+          "local"
+        ],
+        "summary": "204 with the session cookie, or 401 `invalid_credentials` for any failure; 429\n(with `Retry-After`) after 20 attempts a minute from one client or 100 from one\nIPv6 /48; 503 `busy` when every hashing slot stays taken for 2 s.",
+        "operationId": "login_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordLogin"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Signed in: the session cookie is set"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "/"
+          }
+        ]
       }
     },
     "/blocks/{id}": {
@@ -397,6 +492,60 @@
         "responses": {
           "204": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/me/password": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Needs the current password. A wrong one counts like a failed login from this\nclient: 422 while attempts remain, then 429 (with `Retry-After`) during the\nlockout. 422 for an account without a password, 503 `busy` as for a login. Ends\nevery other session of the account.",
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Changed; the other sessions are over"
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -1038,6 +1187,7 @@
         "tags": [
           "info"
         ],
+        "summary": "Any role; only admins may use the rest of the API.",
         "operationId": "session",
         "responses": {
           "200": {
@@ -1748,7 +1898,7 @@
           },
           "error": {
             "type": "string",
-            "description": "`unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid` or\n`internal`."
+            "description": "`unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,\n`not_found`, `bad_request`, `conflict`, `invalid` or `internal`."
           },
           "message": {
             "type": "string"
@@ -1877,6 +2027,26 @@
               "type": "string"
             },
             "description": "E.g. a source so broad that every target peer becomes a full tunnel."
+          }
+        }
+      },
+      "LoginOptions": {
+        "type": "object",
+        "required": [
+          "password",
+          "providers"
+        ],
+        "properties": {
+          "password": {
+            "type": "boolean",
+            "description": "Always offered."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderOption"
+            },
+            "description": "Sign in through one of these at `GET /auth/oidc/{id}`."
           }
         }
       },
@@ -2021,6 +2191,48 @@
           }
         }
       },
+      "OptionsRequest": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        }
+      },
+      "PasswordChange": {
+        "type": "object",
+        "required": [
+          "current",
+          "new"
+        ],
+        "properties": {
+          "current": {
+            "type": "string"
+          },
+          "new": {
+            "type": "string",
+            "description": "12 to 256 characters."
+          }
+        }
+      },
+      "PasswordLogin": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
       "Peer": {
         "type": "object",
         "required": [
@@ -2131,6 +2343,23 @@
           }
         }
       },
+      "ProviderOption": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Opaque: `admin` for the configured `[admin_oidc]` (later, database ids)."
+          },
+          "name": {
+            "type": "string",
+            "description": "For the button."
+          }
+        }
+      },
       "Rendered": {
         "type": "object",
         "required": [
@@ -2154,7 +2383,8 @@
         "type": "string",
         "enum": [
           "global_admin",
-          "tenant_admin"
+          "tenant_admin",
+          "user"
         ]
       },
       "Route": {

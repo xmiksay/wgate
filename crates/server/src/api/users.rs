@@ -16,7 +16,7 @@ use wgate_db::entity::{app_user, device};
 use super::{begin, tenant_of_user};
 use crate::audit;
 use crate::auth::Actor;
-use crate::error::ApiError;
+use crate::error::{ApiError, unique_violation};
 use crate::state::AppState;
 
 #[derive(Serialize, ToSchema)]
@@ -113,7 +113,14 @@ pub async fn create(
         ..Default::default()
     }
     .insert(&txn)
-    .await?;
+    .await
+    .map_err(|e| match unique_violation(&e).as_deref() {
+        // One account per email across wgate, whichever tenant has it.
+        Some("app_user_email") => {
+            ApiError::Conflict("an account with this email already exists".into())
+        }
+        _ => e.into(),
+    })?;
     audit::record(
         &txn,
         Some(actor.user_id),

@@ -94,6 +94,17 @@ async fn columns_are_checked() {
         "INSERT INTO app_user (tenant_id, email, role) VALUES (1, 'A@NEXIAL.CZ', 'user')",
     )
     .await;
+    // One account per email across wgate: not in another tenant, nor as an admin.
+    refused(
+        &pg.db,
+        "INSERT INTO app_user (tenant_id, email, role) VALUES (2, 'a@nexial.cz', 'user')",
+    )
+    .await;
+    refused(
+        &pg.db,
+        "INSERT INTO app_user (email, role) VALUES ('A@nexial.cz', 'global_admin')",
+    )
+    .await;
 }
 
 #[tokio::test]

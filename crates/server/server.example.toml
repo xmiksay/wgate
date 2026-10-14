@@ -9,10 +9,17 @@ routed_space = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 reserved = ["172.19.9.0/24", "172.16.16.0/24"]
 snat_source = "172.19.9.10"
 node_cidrs = ["172.19.9.0/24"]
+# Proxies whose X-Forwarded-For names the client, for the per-client limits on login
+# attempts. List only the ingress/proxy addresses themselves (e.g. ["172.19.9.11/32"]),
+# never a whole pod or client network: every address listed may claim to be any client.
+# Default none: the TCP peer is the client.
+trusted_proxies = []
 
-# Global admins log in here; who is one is the database's app_user role
-# (`wgate admin grant <email>` makes the first).
+# Optional: an OpenID Connect provider for the global admins, next to their password.
+# Who is one is the database's app_user role (`wgate admin grant <email>` makes the
+# first, `wgate user password <email>` gives them a password).
 [admin_oidc]
+# name = "Google"             # on the login button; default the issuer's host
 issuer = "https://accounts.google.com"
 client_id = "wgate"
 client_secret = "change-me"

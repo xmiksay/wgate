@@ -59,13 +59,28 @@ const middleware: Middleware = {
 export const api = createClient<paths>({ baseUrl: '/api/v1', credentials: 'same-origin' })
 api.use(middleware)
 
+/**
+ * The login endpoints outside `/api/v1`. No middleware: there is no session to send a
+ * CSRF token for yet, and a 401 here is a refused login, not an expired session.
+ */
+export const auth = createClient<paths>({ baseUrl: '', credentials: 'same-origin' })
+
 interface Result<T> {
   data?: T
   error?: unknown
   response: Response
 }
 
-function errorFrom(status: number, body: unknown): ApiError {
+function errorFrom(response: Response, body: unknown): ApiError {
+  const status = response.status
+  if (status === 429) {
+    const secs = Number(response.headers.get('Retry-After'))
+    const when = Number.isInteger(secs) && secs > 0 ? `in ${secs} seconds` : 'later'
+    return new ApiError(status, 'too_many_attempts', `Too many attempts; try again ${when}.`)
+  }
+  if (status === 503) {
+    return new ApiError(status, 'busy', 'The server is busy; try again in a moment.')
+  }
   const b = body as { error?: unknown; message?: unknown; detail?: unknown } | undefined
   if (b && typeof b.error === 'string' && typeof b.message === 'string') {
     return new ApiError(status, b.error, b.message, b.detail)
@@ -81,6 +96,6 @@ export async function call<T>(request: Promise<Result<T>>): Promise<T> {
   } catch {
     throw new ApiError(0, 'network', 'The server cannot be reached.')
   }
-  if (!r.response.ok) throw errorFrom(r.response.status, r.error)
+  if (!r.response.ok) throw errorFrom(r.response, r.error)
   return r.data as T
 }
