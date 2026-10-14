@@ -30,7 +30,7 @@ make deps        # npm ci in web/
 make lint        # clippy -D warnings, rustfmt, eslint, vue-tsc
 make test        # unit + integration (Docker: the db tests start Postgres containers)
 make golden      # rewrite golden files (nft ruleset, client configs, docs/openapi.json)
-make test-netns  # root-only tests in network namespaces (sudo, nft, wireguard module, python3)
+make test-netns  # root-only tests in network namespaces (sudo, nft, wireguard module, python3, Docker)
 make release     # static x86_64 musl binary + sha256 in dist/
 make help        # all targets
 ```
