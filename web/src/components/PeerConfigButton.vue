@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { api, call } from '../api/client'
 import type { ConfigOut, Peer } from '../api/types'
+import { useSecretGuard } from '../composables/useSecretGuard'
 import { useSubmit } from '../composables/useSubmit'
 import { SECRET_GUARD, downloadText } from '../lib/conf'
 import ConfigReveal from './ConfigReveal.vue'
@@ -20,6 +21,9 @@ const open = ref(false)
 const guard = computed(() =>
   result.value?.config && props.peer.key_source === 'server' ? SECRET_GUARD : undefined,
 )
+useSecretGuard(guard)
+// Reported once the reveal closes: a list reload meanwhile could unmount it, key and all.
+let rotated = false
 
 async function fetchConfig() {
   let out: ConfigOut | null = null
@@ -36,7 +40,7 @@ async function rotate() {
   result.value = await fetchConfig()
   open.value = result.value !== null
   // The peer's public key changed with it.
-  if (result.value?.config) emit('changed')
+  rotated = !!result.value?.config
 }
 
 async function downloadPasted() {
@@ -51,6 +55,10 @@ async function downloadPasted() {
 function close() {
   open.value = false
   result.value = null
+  if (rotated) {
+    rotated = false
+    emit('changed')
+  }
 }
 </script>
 

@@ -25,9 +25,12 @@ const { busy, error, run } = useSubmit()
 const name = ref('')
 const slug = ref('')
 const prefix = ref(26)
-const { value: cidr, offer: offerCidr } = useSuggestion('')
-const { value: blockId, offer: offerBlock } = useSuggestion<number | null>(null)
-const { value: port, offer: offerPort } = useSuggestion<number | null>(null)
+const range = useSuggestion('')
+const block = useSuggestion<number | null>(null)
+const portField = useSuggestion<number | null>(null)
+const { value: cidr } = range
+const { value: blockId } = block
+const { value: port } = portField
 const mesh = ref(false)
 const dns = ref('')
 const hints = ref({ cidr: '', port: '' })
@@ -36,34 +39,44 @@ const blockHint = computed(() =>
   props.blocks.length ? 'The block the range lies in' : 'The tenant has no block yet',
 )
 
+/** Inside the block the user picked, else anywhere in the tenant's blocks. */
 async function suggestRange() {
+  const t = range.ticket()
+  const chosen = block.edited() ? props.blocks.find((b) => b.id === blockId.value) : undefined
   hints.value.cidr = ''
   try {
     const s = await call(
       api.GET('/tenants/{id}/free-range', {
-        params: { path: { id: props.tenantId }, query: { prefix: prefix.value } },
+        params: {
+          path: { id: props.tenantId },
+          query: { prefix: prefix.value, block_id: chosen?.id },
+        },
       }),
     )
-    offerCidr(s.free ?? '')
-    if (!s.free) hints.value.cidr = `No free /${prefix.value} in the tenant's blocks.`
+    if (range.offer(s.free ?? '', t) && !s.free) {
+      hints.value.cidr = `No free /${prefix.value} in ${chosen ? chosen.cidr : "the tenant's blocks"}.`
+    }
   } catch {
-    hints.value.cidr = 'No suggestion: type a range.'
+    if (range.current(t)) hints.value.cidr = 'No suggestion: type a range.'
   }
 }
 
 async function suggestPort() {
+  const t = portField.ticket()
   hints.value.port = ''
   try {
     const s = await call(api.GET('/free-port'))
-    offerPort(s.free ?? null)
-    if (s.free == null) hints.value.port = 'No free port left.'
+    if (portField.offer(s.free ?? null, t) && s.free == null) hints.value.port = 'No free port left.'
   } catch {
-    hints.value.port = 'No suggestion: type a port.'
+    if (portField.current(t)) hints.value.port = 'No suggestion: type a port.'
   }
 }
 
-// A new block may free a range.
+// A new block may free a range; a block the user picks narrows the suggestion.
 watch([prefix, () => props.blocks], suggestRange, { immediate: true })
+watch(blockId, () => {
+  if (block.edited()) void suggestRange()
+})
 void suggestPort()
 
 // Follows the range (the block holding it) until the user picks one.
@@ -71,7 +84,7 @@ watch(
   [cidr, () => props.blocks],
   () => {
     const holder = props.blocks.find((b) => cidrContains(b.cidr, cidr.value)) ?? props.blocks[0]
-    offerBlock(holder?.id ?? null)
+    block.offer(holder?.id ?? null, block.ticket())
   },
   { immediate: true },
 )

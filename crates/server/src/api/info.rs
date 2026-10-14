@@ -159,18 +159,28 @@ pub async fn free_ip(
     Ok(Json(Suggestion { free }))
 }
 
-/// A free range of `prefix` in the tenant's blocks.
-#[utoipa::path(get, path = "/tenants/{id}/free-range", params(Prefix), responses((status = 200, body = Suggestion<String>)))]
+#[derive(Deserialize, IntoParams)]
+pub struct RangeQuery {
+    pub prefix: u8,
+    /// Only inside this block of the tenant's.
+    pub block_id: Option<i64>,
+}
+
+/// A free range of `prefix` in the tenant's blocks (or in one of them).
+#[utoipa::path(get, path = "/tenants/{id}/free-range", params(RangeQuery), responses((status = 200, body = Suggestion<String>)))]
 pub async fn free_range(
     State(s): State<AppState>,
     actor: Actor,
     Path(id): Path<i64>,
-    Query(q): Query<Prefix>,
+    Query(q): Query<RangeQuery>,
 ) -> Result<Json<Suggestion<String>>, ApiError> {
     actor.tenant(id)?;
     super::tenants::tenant_exists(&s.db, id).await?;
-    let blocks: Vec<Ipv4Net> = tenant_block::Entity::find()
-        .filter(tenant_block::Column::TenantId.eq(id))
+    let mut blocks = tenant_block::Entity::find().filter(tenant_block::Column::TenantId.eq(id));
+    if let Some(block) = q.block_id {
+        blocks = blocks.filter(tenant_block::Column::Id.eq(block));
+    }
+    let blocks: Vec<Ipv4Net> = blocks
         .all(&s.db)
         .await?
         .into_iter()

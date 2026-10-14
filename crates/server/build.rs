@@ -1,6 +1,6 @@
 //! Stages the built UI (`web/dist`) for embedding. Without one (no `make web` yet: a
-//! plain `cargo build` or `cargo test`), a stub page says how to build it, so the
-//! Rust side never needs Node; a release build without it fails instead of shipping
+//! plain `cargo build` or `cargo test`), a stub page says how to build it, so cargo
+//! alone never needs Node; a release build without it fails instead of shipping
 //! a portal with no UI. The Makefile builds the UI before lint and tests, so they
 //! embed (and test) the real one.
 

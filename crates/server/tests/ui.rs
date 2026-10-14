@@ -60,9 +60,13 @@ async fn the_api_and_stale_assets_are_never_the_app() {
 async fn the_bundles_assets_are_served_as_they_are() {
     let e = common::env().await;
     let (_, _, index) = get(&e.app, "/").await;
-    let Some(start) = index.find("/assets/") else {
-        return;
-    };
+    if index.contains("make web") {
+        return; // the stub (plain `cargo test`): no bundle to check
+    }
+    let start = index
+        .find("\"/assets/")
+        .map(|i| i + 1)
+        .unwrap_or_else(|| panic!("a bundle without /assets/ paths: {index}"));
     let script = &index[start..];
     let script = &script[..script.find('"').expect("a quoted asset path")];
     let (status, headers, _) = get(&e.app, script).await;

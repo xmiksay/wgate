@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { api, call } from '../api/client'
 import type { DeviceChoice, Network, PeerCreated } from '../api/types'
+import { useSecretGuard } from '../composables/useSecretGuard'
 import { useSubmit } from '../composables/useSubmit'
 import { useSuggestion } from '../composables/useSuggestion'
 import { SECRET_GUARD, confFileName } from '../lib/conf'
@@ -18,7 +19,8 @@ const emit = defineEmits<{ created: [] }>()
 
 const { busy, error, run } = useSubmit()
 const deviceId = ref<number | null>(null)
-const { value: ip, offer: offerIp, reset: resetIp } = useSuggestion('')
+const address = useSuggestion('')
+const { value: ip } = address
 const ipHint = ref('')
 const keyMode = ref<'server' | 'pasted'>('server')
 const publicKey = ref('')
@@ -30,20 +32,22 @@ const guard = computed(() =>
   created.value?.config && created.value.peer.key_source === 'server' ? SECRET_GUARD : undefined,
 )
 
+useSecretGuard(guard)
+
 const deviceName = computed(
   () => props.devices.find((d) => d.id === created.value?.peer.device_id)?.name ?? 'peer',
 )
 
 async function suggestIp() {
+  const t = address.ticket()
   ipHint.value = ''
   try {
     const s = await call(
       api.GET('/networks/{id}/free-ip', { params: { path: { id: props.network.id } } }),
     )
-    offerIp(s.free ?? '')
-    if (!s.free) ipHint.value = 'The network has no free address.'
+    if (address.offer(s.free ?? '', t) && !s.free) ipHint.value = 'The network has no free address.'
   } catch {
-    ipHint.value = 'No suggestion: type an address.'
+    if (address.current(t)) ipHint.value = 'No suggestion: type an address.'
   }
 }
 
@@ -51,7 +55,7 @@ function reset() {
   created.value = null
   error.value = null
   deviceId.value = props.devices[0]?.id ?? null
-  resetIp()
+  address.reset()
   keyMode.value = 'server'
   publicKey.value = ''
   routes.value = ''

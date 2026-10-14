@@ -8,9 +8,12 @@ decisions ([enforcement](../docs/enforcement.md) for `table inet wgate`), [plan]
 All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
 
 - `make lint` — clippy `--all-targets -D warnings`, `cargo fmt --check`, eslint
-  (`--max-warnings=0`), vue-tsc
+  (`--max-warnings=0`), vue-tsc, `api:check` (generated TS types current)
 - `make test` — `test-unit` (lib/bin tests) + `test-int` (`tests/*.rs`; the `db` tests
   start Postgres 17 containers, so Docker must be running)
+- `make lint` and `make test` first build the UI (`make web`, only when `web/` sources
+  changed; needs `make deps`), so the server embeds and tests the real bundle; plain
+  `cargo` embeds a stub page, and a release build without `web/dist` fails
 - `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns*.rs`
   (kernel accepts the golden ruleset; real packets vs. the rendered ruleset over veth
   links named `wg-*`, python3 endpoints; the agent end to end against Postgres in
