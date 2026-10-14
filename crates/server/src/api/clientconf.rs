@@ -21,6 +21,11 @@ pub struct Rendered {
     /// The same as a QR code (SVG) for the WireGuard app; missing when the config is
     /// too long for one.
     pub qr_svg: Option<String>,
+    /// What it was rendered from: a key rotation commits only while both still hold.
+    #[serde(skip)]
+    pub revision: i64,
+    #[serde(skip)]
+    pub hub_key: String,
 }
 
 /// `None` (with a warning saying why) while the peer has no config yet: it is not
@@ -92,5 +97,10 @@ pub async fn render(
     if qr_svg.is_none() {
         warnings.push("the config is too long for a QR code: import the file".into());
     }
-    Ok(Some(Rendered { config, qr_svg }))
+    Ok(Some(Rendered {
+        config,
+        qr_svg,
+        revision: loaded.revision,
+        hub_key: key.public_key,
+    }))
 }

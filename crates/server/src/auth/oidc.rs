@@ -20,7 +20,7 @@ use openidconnect::{
     EndpointSet, IssuerUrl, Nonce, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
     TokenResponse,
 };
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use subtle::ConstantTimeEq;
@@ -106,6 +106,7 @@ pub async fn login(
         .set_pkce_challenge(challenge)
         .url();
     let pending = Pending {
+        started: unix_now(),
         state: csrf.secret().clone(),
         nonce: nonce.secret().clone(),
         verifier: verifier.secret().clone(),
@@ -115,7 +116,7 @@ pub async fn login(
         .http_only(true)
         .secure(state.config.secure_cookies())
         .same_site(SameSite::Lax)
-        .path(state.config.auth_path())
+        .path("/auth")
         .max_age(time_secs(LOGIN_TTL_SECS))
         .build();
     Ok((jar.add(cookie), Redirect::to(url.as_str())))
@@ -125,6 +126,8 @@ pub async fn login(
 /// it: nothing is stored for a login that never comes back.
 #[derive(Serialize, Deserialize)]
 struct Pending {
+    /// Unix seconds: the server, not only the cookie's max-age, ends a stale login.
+    started: i64,
     state: String,
     nonce: String,
     verifier: String,
@@ -147,10 +150,11 @@ pub async fn callback(
         .and_then(|c| URL_SAFE_NO_PAD.decode(c.value()).ok())
         .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
         .filter(|p| bool::from(p.state.as_bytes().ct_eq(q.state.as_bytes())))
+        .filter(|p| (0..=LOGIN_TTL_SECS).contains(&(unix_now() - p.started)))
         .ok_or_else(|| {
             ApiError::BadRequest("this login was not started in this browser; start again".into())
         })?;
-    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(state.config.auth_path()));
+    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path("/auth"));
     let nonce = Nonce::new(pending.nonce);
 
     let client = state.oidc.client(&state).await?;
@@ -164,14 +168,8 @@ pub async fn callback(
         .set_pkce_verifier(PkceCodeVerifier::new(pending.verifier))
         .request_async(&state.http)
         .await;
-    let response = match exchange {
-        Ok(r) => r,
-        Err(e) => {
-            // The provider may have moved its endpoints: the next login rediscovers.
-            state.oidc.forget().await;
-            return Err(refused("token exchange", &e));
-        }
-    };
+    // No forget() here: anyone can make an exchange fail with a made-up code.
+    let response = exchange.map_err(|e| refused("token exchange", &e))?;
     let id_token = response
         .id_token()
         .ok_or_else(|| refused("no ID token", &"missing"))?;
@@ -212,6 +210,10 @@ pub async fn callback(
         .max_age(time_secs(session::MAX_AGE_SECS))
         .build();
     Ok((jar.add(cookie), Redirect::to("/")))
+}
+
+fn unix_now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 fn time_secs(secs: i64) -> time::Duration {
@@ -261,17 +263,19 @@ pub async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), ApiError> {
-    if let Some(cookie) = jar.get(session::COOKIE)
-        && let Some(user_id) = session::end(&state.db, cookie.value()).await?
-    {
-        audit::record(
-            &state.db,
-            Some(user_id),
-            "logout",
-            format!("app_user/{user_id}"),
-            json!({}),
-        )
-        .await?;
+    if let Some(cookie) = jar.get(session::COOKIE) {
+        let txn = state.db.begin().await?;
+        if let Some(user_id) = session::end(&txn, cookie.value()).await? {
+            audit::record(
+                &txn,
+                Some(user_id),
+                "logout",
+                format!("app_user/{user_id}"),
+                json!({}),
+            )
+            .await?;
+        }
+        txn.commit().await?;
     }
     Ok((
         jar.remove(Cookie::build(session::COOKIE).path("/")),

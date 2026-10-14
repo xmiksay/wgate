@@ -142,10 +142,11 @@ pub async fn list(
         actor.tenant(tenant_of_network(&s.db, n).await?)?;
         q = q.filter(peer::Column::NetworkId.eq(n));
         if !actor.is_global() {
-            // A global admin's devices are a global admin's (see `owned`).
-            q = q.filter(Expr::cust(
+            // Only what `owned` lets the actor open: devices of their own tenant.
+            q = q.filter(Expr::cust_with_values(
                 "device_id IN (SELECT d.id FROM device d JOIN app_user u ON u.id = d.user_id
-                               WHERE u.tenant_id IS NOT NULL)",
+                               WHERE u.tenant_id = $1)",
+                [actor.tenant_id],
             ));
         }
     } else {
@@ -247,22 +248,32 @@ pub async fn config(
     let mut warnings = vec![];
     let private = pair.as_ref().map(|p| p.private.as_str());
     let config = clientconf::render(&s, id, private, &mut warnings).await?;
-    if let (Some(pair), Some(_)) = (&pair, &config) {
+    if let (Some(pair), Some(rendered)) = (&pair, &config) {
         let txn = begin(&s.db).await?;
-        // Only over the key this download started from: of two concurrent downloads,
-        // the later one learns that the earlier one's config is the live one.
+        // Only over the key and the state this download started from: of two
+        // concurrent downloads the later one learns that the earlier one's config is
+        // the live one, and a change meanwhile (rights, the hub's key) is rendered anew.
         let swapped = txn
             .execute_raw(Statement::from_sql_and_values(
                 DbBackend::Postgres,
                 "UPDATE peer SET public_key = $1
-                 WHERE id = $2 AND public_key = $3 AND revoked_at IS NULL",
-                [pair.public.clone().into(), id.into(), p.public_key.into()],
+                 WHERE id = $2 AND public_key = $3 AND revoked_at IS NULL
+                   AND (SELECT revision FROM state_revision) = $4
+                   AND EXISTS (SELECT FROM hub_key k
+                               WHERE k.network_id = peer.network_id AND k.public_key = $5)",
+                [
+                    pair.public.clone().into(),
+                    id.into(),
+                    p.public_key.into(),
+                    rendered.revision.into(),
+                    rendered.hub_key.clone().into(),
+                ],
             ))
             .await?
             .rows_affected();
         if swapped == 0 {
             return Err(ApiError::Conflict(
-                "the peer changed meanwhile (another download or a revocation); try again".into(),
+                "the peer or its rights changed meanwhile; download it again".into(),
             ));
         }
         audit::record(

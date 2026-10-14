@@ -169,7 +169,8 @@ under sudo).
 
 ### 1.5 `server` — API + global-admin login
 - Config `/etc/wgate/server.toml` (`crates/server/server.example.toml`):
-  - `listen = 172.19.9.10:8470`, `database_url`, `public_url = https://vpn.mmik.cz`,
+  - `listen = 172.19.9.10:8470`, `database_url`, `public_url = https://vpn.mmik.cz` (an
+    origin: the portal serves at the root),
     `endpoint_host` (clients' `Endpoint`)
   - `pool`, `routed_space`, `reserved`, `snat_source`, `node_cidrs` (as the agent's:
     the server compiles the state to render client configs)
@@ -194,7 +195,7 @@ under sudo).
   /peers/{id}/config` rotates a server key (new config, the old one dies); a pasted
   key gets a config without `PrivateKey`. Until the agent publishes the hub key, the
   config is missing and a warning says so (and the key does not rotate). A rotation
-  swaps only the key it started from (a concurrent download gets 409). A peer of a
+  commits only over the key, state revision and hub key it rendered from (else 409). A peer of a
   global admin's device is the global admin's to manage.
 - Routed LANs as compile wants them (routed space, clear of the pool and the
   infrastructure); no ceiling or inbound source reaches another tenant's LAN (checked

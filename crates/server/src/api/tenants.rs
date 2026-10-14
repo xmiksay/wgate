@@ -6,8 +6,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use ipnet::Ipv4Net;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter,
-    QueryOrder,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
+    QueryFilter, QueryOrder, QuerySelect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -194,12 +194,24 @@ pub async fn blocks(
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<Block>>, ApiError> {
     actor.tenant(id)?;
+    tenant_exists(&s.db, id).await?;
     let rows = tenant_block::Entity::find()
         .filter(tenant_block::Column::TenantId.eq(id))
         .order_by_asc(tenant_block::Column::Id)
         .all(&s.db)
         .await?;
     Ok(Json(rows.into_iter().map(block).collect::<Result<_, _>>()?))
+}
+
+/// A missing tenant is a 404 on everything under it. Share-locked: a concurrent
+/// delete waits for the write that found it.
+async fn tenant_exists<C: ConnectionTrait>(db: &C, id: i64) -> Result<(), ApiError> {
+    tenant::Entity::find_by_id(id)
+        .lock_shared()
+        .one(db)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(())
 }
 
 /// A block of the pool (never reserved space); the schema keeps blocks and routed
@@ -226,6 +238,7 @@ pub async fn add_block(
         return Err(ApiError::invalid(format!("{cidr} overlaps reserved space")));
     }
     let txn = begin(&s.db).await?;
+    tenant_exists(&txn, id).await?;
     let b = tenant_block::ActiveModel {
         tenant_id: Set(id),
         cidr: Set(to_db(cidr)),
@@ -308,6 +321,7 @@ pub async fn ceilings(
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<Ceiling>>, ApiError> {
     actor.tenant(id)?;
+    tenant_exists(&s.db, id).await?;
     let rows = ceiling::Entity::find()
         .filter(ceiling::Column::TenantId.eq(id))
         .order_by_asc(ceiling::Column::Id)
@@ -331,10 +345,7 @@ pub async fn add_ceiling(
     actor.global()?;
     let (proto, port_from, port_to) = body.service.columns()?;
     let txn = begin(&s.db).await?;
-    tenant::Entity::find_by_id(id)
-        .one(&txn)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    tenant_exists(&txn, id).await?;
     clear_of_others_lans(&txn, id, body.dst.trunc()).await?;
     let c = ceiling::ActiveModel {
         tenant_id: Set(id),
