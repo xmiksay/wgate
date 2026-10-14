@@ -111,6 +111,7 @@ async function remove(id: number) {
           v-model="cidr"
           class="input mono"
           required
+          @input="range.touch()"
         >
       </UiField>
       <div>

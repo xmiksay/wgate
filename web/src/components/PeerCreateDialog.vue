@@ -132,6 +132,7 @@ async function submit() {
           v-model="ip"
           class="input mono"
           required
+          @input="address.touch()"
         >
       </UiField>
       <fieldset class="space-y-1 sm:col-span-2">
