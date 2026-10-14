@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { api, call, type ApiError } from '../../api/client'
 import type { Block } from '../../api/types'
 import { useSubmit } from '../../composables/useSubmit'
+import { useSuggestion } from '../../composables/useSuggestion'
 import ConfirmButton from '../ConfirmButton.vue'
 import ErrorNote from '../ErrorNote.vue'
 import UiButton from '../UiButton.vue'
@@ -20,14 +21,14 @@ const emit = defineEmits<{ changed: [] }>()
 
 const { busy, error: writeError, run } = useSubmit()
 const prefix = ref(24)
-const cidr = ref('')
+const { value: cidr, offer: offerCidr } = useSuggestion('')
 const hint = ref('')
 
 async function suggest() {
   hint.value = ''
   try {
     const s = await call(api.GET('/free-block', { params: { query: { prefix: prefix.value } } }))
-    cidr.value = s.free ?? ''
+    offerCidr(s.free ?? '')
     if (!s.free) hint.value = `No free /${prefix.value} in the pool.`
   } catch {
     hint.value = 'No suggestion: type a range.'

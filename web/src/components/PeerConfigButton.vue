@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api, call } from '../api/client'
 import type { ConfigOut, Peer } from '../api/types'
 import { useSubmit } from '../composables/useSubmit'
-import { downloadText } from '../lib/conf'
+import { SECRET_GUARD, downloadText } from '../lib/conf'
 import ConfigReveal from './ConfigReveal.vue'
 import ConfirmButton from './ConfirmButton.vue'
 import ErrorNote from './ErrorNote.vue'
@@ -11,11 +11,15 @@ import UiButton from './UiButton.vue'
 import UiDialog from './UiDialog.vue'
 
 const props = defineProps<{ peer: Peer; fileName: string }>()
+const emit = defineEmits<{ changed: [] }>()
 
 const { busy, error, run } = useSubmit()
 // The config may hold a private key: it lives here only while the dialog is open.
 const result = ref<ConfigOut | null>(null)
 const open = ref(false)
+const guard = computed(() =>
+  result.value?.config && props.peer.key_source === 'server' ? SECRET_GUARD : undefined,
+)
 
 async function fetchConfig() {
   let out: ConfigOut | null = null
@@ -31,6 +35,8 @@ async function fetchConfig() {
 async function rotate() {
   result.value = await fetchConfig()
   open.value = result.value !== null
+  // The peer's public key changed with it.
+  if (result.value?.config) emit('changed')
 }
 
 async function downloadPasted() {
@@ -70,6 +76,7 @@ function close() {
     <UiDialog
       :open="open"
       title="Peer config"
+      :guard="guard"
       @update:open="(v) => !v && close()"
     >
       <ConfigReveal
@@ -79,8 +86,8 @@ function close() {
         :file-name="fileName"
         :secret="peer.key_source === 'server'"
       />
-      <template #actions>
-        <UiButton @click="close">
+      <template #actions="{ close: requestClose }">
+        <UiButton @click="requestClose">
           Close
         </UiButton>
       </template>

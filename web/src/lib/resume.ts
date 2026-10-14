@@ -10,13 +10,22 @@ export function rememberRoute(path: string) {
   }
 }
 
+/** The remembered in-app path (once), or null. */
 export function takeRoute(): string | null {
+  let path: string | null
   try {
-    const path = sessionStorage.getItem(KEY)
+    path = sessionStorage.getItem(KEY)
     sessionStorage.removeItem(KEY)
-    // Only an in-app path, never `//host`.
-    return path && path.startsWith('/') && !path.startsWith('//') ? path : null
   } catch {
     return null
   }
+  // Same origin only: `//host` and `/\host` resolve elsewhere.
+  if (!path || !path.startsWith('/') || path.includes('\\')) return null
+  let url: URL
+  try {
+    url = new URL(path, location.origin)
+  } catch {
+    return null
+  }
+  return url.origin === location.origin ? url.pathname + url.search + url.hash : null
 }

@@ -187,6 +187,23 @@ async fn unverified_emails_and_strangers_are_refused() {
         .await
         .unwrap();
     assert_eq!(refusal(&res).as_deref(), Some("expired"));
+    // Cancelled at the provider, or back without a code: the login page says so.
+    for (query, why) in [
+        ("error=access_denied&state=s", "cancelled"),
+        ("state=s", "expired"),
+    ] {
+        let res = e
+            .app
+            .clone()
+            .oneshot(
+                Request::get(format!("/auth/callback?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refusal(&res).as_deref(), Some(why), "{query}");
+    }
     // Without a session: not signed in.
     assert_eq!(
         session_role(&e.app, "wgate_session=forged").await,

@@ -5,6 +5,7 @@ import { api, call } from '../../api/client'
 import type { Block, Network } from '../../api/types'
 import { useLoad } from '../../composables/useLoad'
 import { useSubmit } from '../../composables/useSubmit'
+import { useSuggestion } from '../../composables/useSuggestion'
 import { cidrContains } from '../../lib/cidr'
 import { splitList } from '../../lib/format'
 import ErrorNote from '../ErrorNote.vue'
@@ -24,9 +25,9 @@ const { busy, error, run } = useSubmit()
 const name = ref('')
 const slug = ref('')
 const prefix = ref(26)
-const cidr = ref('')
-const blockId = ref<number | null>(null)
-const port = ref<number | null>(null)
+const { value: cidr, offer: offerCidr } = useSuggestion('')
+const { value: blockId, offer: offerBlock } = useSuggestion<number | null>(null)
+const { value: port, offer: offerPort } = useSuggestion<number | null>(null)
 const mesh = ref(false)
 const dns = ref('')
 const hints = ref({ cidr: '', port: '' })
@@ -43,7 +44,7 @@ async function suggestRange() {
         params: { path: { id: props.tenantId }, query: { prefix: prefix.value } },
       }),
     )
-    cidr.value = s.free ?? ''
+    offerCidr(s.free ?? '')
     if (!s.free) hints.value.cidr = `No free /${prefix.value} in the tenant's blocks.`
   } catch {
     hints.value.cidr = 'No suggestion: type a range.'
@@ -54,7 +55,7 @@ async function suggestPort() {
   hints.value.port = ''
   try {
     const s = await call(api.GET('/free-port'))
-    port.value = s.free ?? null
+    offerPort(s.free ?? null)
     if (s.free == null) hints.value.port = 'No free port left.'
   } catch {
     hints.value.port = 'No suggestion: type a port.'
@@ -65,13 +66,12 @@ async function suggestPort() {
 watch([prefix, () => props.blocks], suggestRange, { immediate: true })
 void suggestPort()
 
-// Follows the range, as long as one block holds it; the select stays editable.
+// Follows the range (the block holding it) until the user picks one.
 watch(
   [cidr, () => props.blocks],
   () => {
-    const holder = props.blocks.find((b) => cidrContains(b.cidr, cidr.value))
-    if (holder) blockId.value = holder.id
-    else if (blockId.value === null) blockId.value = props.blocks[0]?.id ?? null
+    const holder = props.blocks.find((b) => cidrContains(b.cidr, cidr.value)) ?? props.blocks[0]
+    offerBlock(holder?.id ?? null)
   },
   { immediate: true },
 )

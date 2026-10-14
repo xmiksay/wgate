@@ -84,6 +84,7 @@ const label = (p: Peer) => `${props.subject(p).text} (${p.ip})`
             <PeerConfigButton
               :peer="p"
               :file-name="fileName(p)"
+              @changed="emit('changed')"
             />
             <ConfirmButton
               label="Revoke"

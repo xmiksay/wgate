@@ -13,6 +13,7 @@ const refusals: Record<string, string> = {
   forbidden: 'This account is not a global admin.',
   expired: 'The sign-in expired or was started in another browser; try again.',
   failed: 'Signing in failed; try again, or check the server log.',
+  cancelled: 'Sign-in was cancelled or refused at the identity provider.',
 }
 const shown = computed(() => {
   const error = route.query.error

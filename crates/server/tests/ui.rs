@@ -53,3 +53,29 @@ async fn the_api_and_stale_assets_are_never_the_app() {
     let (status, _, _) = get(&e.app, "/assets/index-0ld.js").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// With a real bundle embedded (`make test` builds it first), its entry script is
+/// served as JavaScript and cached for good; the stub page has none.
+#[tokio::test]
+async fn the_bundles_assets_are_served_as_they_are() {
+    let e = common::env().await;
+    let (_, _, index) = get(&e.app, "/").await;
+    let Some(start) = index.find("/assets/") else {
+        return;
+    };
+    let script = &index[start..];
+    let script = &script[..script.find('"').expect("a quoted asset path")];
+    let (status, headers, _) = get(&e.app, script).await;
+    assert_eq!(status, StatusCode::OK, "{script}");
+    let kind = headers[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(
+        kind.contains("javascript") || kind.contains("css"),
+        "{script}: {kind}"
+    );
+    assert!(
+        headers[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+}

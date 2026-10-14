@@ -42,7 +42,8 @@ run-agent: ## Run the agent as root (needs CAP_NET_ADMIN)
 	$(DOTENV) sudo -E target/debug/wgate agent
 
 .PHONY: lint
-lint: ## clippy -D warnings, rustfmt check, eslint, vue-tsc, API types up to date
+# The UI is built first: the server embeds web/dist (build.rs), and the tests serve it.
+lint: web ## clippy -D warnings, rustfmt check, eslint, vue-tsc, API types up to date
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo fmt --all --check
 	cd web && $(NVM) npm run lint && npm run typecheck && npm run api:check
@@ -52,7 +53,7 @@ fmt: ## Format Rust sources
 	cargo fmt --all
 
 .PHONY: test
-test: test-unit test-int ## Unit + integration tests
+test: web test-unit test-int ## Unit + integration tests
 
 .PHONY: test-unit
 test-unit: ## Rust unit tests

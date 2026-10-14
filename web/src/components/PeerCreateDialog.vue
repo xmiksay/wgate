@@ -3,7 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { api, call } from '../api/client'
 import type { DeviceChoice, Network, PeerCreated } from '../api/types'
 import { useSubmit } from '../composables/useSubmit'
-import { confFileName } from '../lib/conf'
+import { useSuggestion } from '../composables/useSuggestion'
+import { SECRET_GUARD, confFileName } from '../lib/conf'
 import { splitList } from '../lib/format'
 import ConfigReveal from './ConfigReveal.vue'
 import ErrorNote from './ErrorNote.vue'
@@ -17,13 +18,17 @@ const emit = defineEmits<{ created: [] }>()
 
 const { busy, error, run } = useSubmit()
 const deviceId = ref<number | null>(null)
-const ip = ref('')
+const { value: ip, offer: offerIp, reset: resetIp } = useSuggestion('')
 const ipHint = ref('')
 const keyMode = ref<'server' | 'pasted'>('server')
 const publicKey = ref('')
 const routes = ref('')
 // Holds the private key of a server-made pair: dropped as soon as the dialog closes.
 const created = ref<PeerCreated | null>(null)
+
+const guard = computed(() =>
+  created.value?.config && created.value.peer.key_source === 'server' ? SECRET_GUARD : undefined,
+)
 
 const deviceName = computed(
   () => props.devices.find((d) => d.id === created.value?.peer.device_id)?.name ?? 'peer',
@@ -35,7 +40,7 @@ async function suggestIp() {
     const s = await call(
       api.GET('/networks/{id}/free-ip', { params: { path: { id: props.network.id } } }),
     )
-    ip.value = s.free ?? ''
+    offerIp(s.free ?? '')
     if (!s.free) ipHint.value = 'The network has no free address.'
   } catch {
     ipHint.value = 'No suggestion: type an address.'
@@ -46,7 +51,7 @@ function reset() {
   created.value = null
   error.value = null
   deviceId.value = props.devices[0]?.id ?? null
-  ip.value = ''
+  resetIp()
   keyMode.value = 'server'
   publicKey.value = ''
   routes.value = ''
@@ -85,6 +90,7 @@ async function submit() {
   <UiDialog
     v-model:open="open"
     :title="created ? 'Peer added' : `Add a peer to ${network.name}`"
+    :guard="guard"
   >
     <ConfigReveal
       v-if="created"
@@ -172,8 +178,8 @@ async function submit() {
       </p>
     </form>
     <ErrorNote :error="error" />
-    <template #actions>
-      <UiButton @click="open = false">
+    <template #actions="{ close }">
+      <UiButton @click="close">
         {{ created ? 'Close' : 'Cancel' }}
       </UiButton>
       <UiButton

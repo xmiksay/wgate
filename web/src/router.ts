@@ -38,6 +38,9 @@ export const router = createRouter({
   ],
 })
 
+// The remembered route is for the first navigation after the session loads, only.
+let resumeChecked = false
+
 router.beforeEach(async (to) => {
   const store = useSessionStore()
   if (!store.loaded) await store.load()
@@ -49,8 +52,11 @@ router.beforeEach(async (to) => {
     rememberRoute(to.fullPath)
     return { name: 'login' }
   }
-  const resume = takeRoute()
-  if (resume && resume !== to.fullPath) return resume
+  if (!resumeChecked) {
+    resumeChecked = true
+    const resume = takeRoute()
+    if (resume && resume !== to.fullPath) return resume
+  }
   if (to.meta.public || to.path === '/') return home
   if (to.meta.global && !store.isGlobal) return home
   return true

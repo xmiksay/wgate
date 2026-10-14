@@ -16,6 +16,8 @@ export const useStatusStore = defineStore('status', () => {
   let busy = false
   let fastUntil = 0
   let timer: ReturnType<typeof setTimeout> | undefined
+  // Bumped by stop(): a poll from before it must not land or reschedule.
+  let generation = 0
 
   function schedule(ms: number) {
     clearTimeout(timer)
@@ -25,17 +27,22 @@ export const useStatusStore = defineStore('status', () => {
   async function tick() {
     timer = undefined
     // Paused while hidden; `visibilitychange` restarts it.
-    if (!running || document.hidden) return
+    if (!running || busy || document.hidden) return
+    const mine = generation
     busy = true
     try {
-      status.value = await call(api.GET('/status'))
+      const s = await call(api.GET('/status'))
+      if (mine !== generation) return
+      status.value = s
       problem.value = ''
     } catch (e) {
-      problem.value = asApiError(e).message
+      if (mine === generation) problem.value = asApiError(e).message
     } finally {
-      busy = false
+      if (mine === generation) {
+        busy = false
+        schedule(Date.now() < fastUntil ? FAST_MS : SLOW_MS)
+      }
     }
-    schedule(Date.now() < fastUntil ? FAST_MS : SLOW_MS)
   }
 
   function onVisibility() {
@@ -50,10 +57,13 @@ export const useStatusStore = defineStore('status', () => {
   }
 
   function stop() {
+    generation++
     running = false
+    busy = false
     document.removeEventListener('visibilitychange', onVisibility)
     schedule(0)
     status.value = null
+    problem.value = ''
   }
 
   /** After a write of ours: poll at once, then every second for a while. */

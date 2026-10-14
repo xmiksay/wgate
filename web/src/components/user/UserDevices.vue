@@ -24,7 +24,7 @@ const peers = useLoad(async () => {
     ),
   )
   return lists.flat()
-}, [] as Peer[])
+}, [] as Peer[], { immediate: false })
 const networks = useLoad(() => call(api.GET('/networks')), [] as Network[])
 
 const { busy, error, run } = useSubmit()
@@ -35,7 +35,7 @@ const rename = ref('')
 const networksById = computed(() => new Map(networks.data.map((n) => [n.id, n])))
 const peersOf = (id: number) => peers.data.filter((p) => p.device_id === id)
 
-// The peers follow the devices they belong to.
+// The peers follow the devices they belong to (no user filter in the API: one call each).
 watch(() => devices.data, () => peers.reload())
 
 async function add() {
