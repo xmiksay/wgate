@@ -81,6 +81,11 @@ async fn the_agent_role_reads_the_desired_state_and_writes_only_its_tables() {
     refused(&agent, "SELECT brake_failures FROM app_user").await;
     refused(&agent, "SELECT * FROM login_failure").await;
     refused(&agent, "SELECT * FROM login_known").await;
+    // Nor TOTP secrets, recovery codes or invite / reset links.
+    refused(&agent, "SELECT totp_secret FROM app_user").await;
+    refused(&agent, "SELECT totp_last_step FROM app_user").await;
+    refused(&agent, "SELECT * FROM recovery_code").await;
+    refused(&agent, "SELECT * FROM account_token").await;
     // Nor may it log anyone in.
     refused(
         &agent,
@@ -122,7 +127,7 @@ async fn each_migration_is_recorded_under_its_own_name() {
         .iter()
         .map(|r| r.try_get("", "name").expect("name"))
         .collect();
-    assert_eq!(names, ["m0001_init", "m0002_accounts"]);
+    assert_eq!(names, ["m0001_init", "m0002_accounts", "m0003_totp"]);
 }
 
 #[tokio::test]

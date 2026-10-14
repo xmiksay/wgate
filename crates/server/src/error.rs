@@ -23,6 +23,9 @@ pub enum ApiError {
     Busy,
     #[error("not allowed")]
     Forbidden,
+    /// An admin who logs in with a password must set up TOTP before anything else.
+    #[error("set up TOTP first")]
+    TotpRequired,
     #[error("not found")]
     NotFound,
     #[error("{0}")]
@@ -44,7 +47,7 @@ pub enum ApiError {
 #[derive(Serialize, ToSchema)]
 pub struct ErrorBody {
     /// `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,
-    /// `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
+    /// `totp_required`, `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
     pub error: &'static str,
     pub message: String,
     /// What is in the way (e.g. the part of a rule no ceiling covers).
@@ -67,6 +70,7 @@ impl ApiError {
             Self::TooManyAttempts(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts"),
             Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "busy"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::TotpRequired => (StatusCode::FORBIDDEN, "totp_required"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),

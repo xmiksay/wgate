@@ -78,8 +78,9 @@ async function logout() {
           {{ item.label }}
         </RouterLink>
       </nav>
+      <!-- A login waiting for its code starts over from the login page instead. -->
       <div
-        v-if="session"
+        v-if="session && session.stage !== 'totp'"
         class="ml-auto flex items-center gap-3"
       >
         <RouterLink

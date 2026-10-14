@@ -48,11 +48,23 @@ key that encrypts their secrets.
 
 The session row carries a **stage**:
 
-- `totp` — password right, the account has TOTP: only `POST /auth/totp {code}` (or a
-  recovery code) is accepted; 5 minutes to finish.
-- `enrol` — an admin with a password and no TOTP: only the TOTP setup endpoints and
-  logout, until it is confirmed.
-- `full` — everything the role allows.
+- `totp` — password right, the account has TOTP: only `POST /auth/totp {code}` (or
+  `{recovery_code}`) is accepted; 5 minutes to finish.
+- `enrol` — an admin with a password and no TOTP: only the TOTP setup endpoints
+  (`/me/totp/setup`, `/me/totp/confirm`) and logout, everything else is `403
+  totp_required`; 30 minutes (time to install an authenticator), until it is
+  confirmed.
+- `full` — everything the role allows (the only stage the API takes; a `totp` one is
+  `401` there). An admin's `full` session made by a password alone (one from before
+  TOTP was mandatory) counts as `enrol` while TOTP is off — setting TOTP up there
+  takes the password again, and confirming it keeps the session's old expiry — and
+  ends as soon as TOTP is on. Confirming TOTP ends the account's other sessions made
+  by a password alone. Giving or taking an admin role ends the account's sessions.
+
+`GET /api/v1/session` answers in every stage, with `stage` (and the CSRF token the
+next step sends). When a `totp` or `enrol` login is done, the same row becomes `full`
+under a **new token** (a new cookie; the CSRF token stays): a token seen before the
+second factor never becomes a signed-in one.
 
 and the **method** (`password`, `password_totp`, `oidc:<provider id>`) for the audit
 log.
@@ -99,6 +111,35 @@ header counts only when the peer address is in it.
   round trips: the claim statement (which takes a transaction id and commits on every
   path, so every path pays a WAL flush), one argon2 verify (against a dummy hash, made
   at startup, when there is no usable one) and one audit insert.
+- **A second factor is guessed like a password.** A code or recovery code at
+  `/auth/totp` is claimed with `login_claim` like a password attempt (lockout, brake,
+  limits, the same `401`, audited as `login.totp.*`). The right password of an account
+  with TOTP does not take its own claim back: it only lifts a lockout that claim set
+  (so a right password on the 5th attempt does not lock its owner out). Logging in
+  with the password again therefore resets nothing, and guesses at the code run into
+  the client's lockout as password guesses do (from the 5th, one per lockout). The
+  right code takes both claims back. A wrong code leaves the `totp` session for
+  another try, unless it locked the client out: then the session ends. A code is
+  accepted once: its step (and every earlier one) is used up, atomically. An admin's
+  right password without TOTP (the `enrol` stage) is treated the same: it neither
+  resets the count nor makes the client known.
+- **Per account, the pace of codes** (any clients together; `totp_wrong`,
+  `totp_next_at` on `app_user`): every code attempt (TOTP or recovery, at
+  `/auth/totp` or for new recovery codes) reserves the account's next slot up front —
+  `slot = max(now, totp_next_at)`, then `totp_next_at = slot + gap(n)`, `n` the
+  attempts since the last right code: `gap` is 0 for the first, then 1 s, 2 s, 4 s, …
+  256 s, at most 300 s. The attempt waits for its slot (holding no connection,
+  transaction or hashing slot; on its own task, so a client that hangs up still
+  finishes it), then is claimed and checked. A slot more than 30 s away is a `429`
+  with `Retry-After` and reserves nothing, so at most a handful of requests per
+  account wait at any time. A right code (or a used recovery code) resets the pace.
+  Parallel guesses from many clients are thus checked one after another: about 11 in
+  the first 8½ minutes, then one every 5 minutes (288 a day). With 3 of the 10⁶ codes valid at any time
+  (±1 step), even someone who has the password needs on the order of two years for an
+  even chance — and the per-client lockout and the brake still apply on top.
+- Re-checks on a signed-in session — the current password (change it, set up or
+  remove TOTP in a `full` session), a TOTP code (new recovery codes) — are claimed the
+  same way: `422` when wrong, `429` while locked out.
 - Every attempt is audited (success, failure — a lockout it set is in the same entry
   as `locked_until`), with the client IP and never the password. The submitted email
   is kept only when it looks like one (an `@`, no whitespace, at most 320 characters):
@@ -122,6 +163,18 @@ header counts only when the peer address is in it.
   the flood lasts; the per-account brake still caps their guesses at any one account.
 - Every attempt writes an audit row, so a flood grows the audit table; retention is a
   later concern.
+- **First enrolment**: an admin who has a password but has not set up TOTP yet can be
+  enrolled by whoever has that password — they set up their own authenticator. The
+  enrolment is audited (`user.totp.enrol`, with the client IP and the login method),
+  and that password login neither makes the client known nor resets its count. The
+  way back: `wgate user totp-reset` on the hub or a global admin's TOTP reset, and a
+  new password (`wgate user password`, a reset link).
+- **The code pace is per account**, so someone with the password who keeps guessing
+  keeps the owner's own code attempts waiting too (`429` while the next slot is more
+  than 30 s off). A new password (a reset link, a change on `/me`, `wgate user
+  password`) stops them — a code attempt needs a password login first — and resets
+  the pace at once, as do the next right code, a used recovery code and a TOTP
+  reset.
 
 ## Setting and resetting credentials
 
@@ -129,16 +182,31 @@ header counts only when the peer address is in it.
   `wgate user password <email>` (prompted twice, never an argument; clears the
   lockouts, the brake and the known clients, and ends the account's sessions),
   `wgate user totp-reset <email>`, `wgate keygen` (prints a new `secret_key`).
-- **Invite / reset links**: an admin creates one for an account in their reach;
-  the response shows `<public_url>/account/<token>` once (wgate sends no mail). Single
-  use, 24 h, only the sha256 is stored; a new link voids the account's older ones.
-  Following it sets a password; a reset also ends the account's sessions and clears
-  its lockout.
+- **Invite / reset links**: an admin creates one for an account in their reach (see
+  below); the response shows `<public_url>/account/<token>` once (wgate sends no
+  mail). Single use, 24 h, only the sha256 is stored; a new link voids the account's
+  older ones, and so do any new password (a reset, a change on `/me`, the CLI) and a
+  role change. An
+  invite is for an account without a password, when it is made and when it is
+  followed. Following it sets a password; a reset also ends the account's sessions
+  and clears its lockout. The UI pages send no `Referer` (`Referrer-Policy:
+  no-referrer`): the link's token is in the path.
 - **Profile** (`/me`): change the password (the current one required — a wrong one is
   a `422` and counts like a failed login from that client; other sessions end), set up / remove TOTP (QR + the recovery codes shown once), regenerate recovery
-  codes, link / unlink identities.
-- Admins (global: anyone; tenant admin: their tenant's non-global accounts) can
-  pre-link an identity (provider + subject), unlink one, and reset an account's TOTP.
+  codes, link / unlink identities. TOTP needs a password (it guards password logins
+  only); setting it up in a `full` session and removing it need the password (the
+  `enrol` stage just had it), and admins cannot remove theirs; new recovery codes need
+  a current code.
+- Recovery codes: 16 base32 characters (80 bits, `ABCD-EFGH-IJKL-MNOP`, any case),
+  stored as a plain SHA-256 — 80 random bits are not guessable even offline, so a slow
+  hash would buy nothing.
+- **Roles**: a tenant admin creates, changes and deletes only their tenant's plain
+  users; making an account an admin, taking the role away, and anything done to an
+  admin account is a global admin's (or the CLI's). A role change also voids the
+  account's unused links and ends its sessions, so nothing made for a user carries
+  over to an admin. Invite and reset links, a TOTP reset and identities (pre-link,
+  unlink) reach the same: a tenant admin their tenant's plain users, a global admin
+  anyone; nobody their own account (`422`: that is `/me`).
 
 ## Secrets at rest
 
@@ -153,18 +221,19 @@ Client secrets are write-only through the API.
 
 ```
 app_user       + password_hash NULL, brake_since NULL, brake_failures, brake_last_at NULL,
-                 totp_secret NULL (encrypted), totp_enabled_at NULL, totp_last_step NULL
+                 totp_secret NULL (encrypted), totp_enabled_at NULL, totp_last_step NULL,
+                 totp_wrong, totp_next_at NULL
                  email unique across wgate (lower(email)); oidc_sub goes (m0004)
 recovery_code  id, user_id, code_hash, used_at NULL
 account_token  id, user_id, token_hash (sha256), purpose (invite | reset), created_by,
-               expires_at, used_at NULL
+               created_at, expires_at, used_at NULL
 oidc_provider  id, tenant_id NULL (= global), name, issuer, client_id,
                client_secret (encrypted), link_by_email (global only), disabled_at
 identity       id, user_id, provider_id, subject, created_at; unique (provider_id, subject)
 login_failure  user_id, client (inet), failed, locked_until NULL, last_at; pk (user_id, client)
 login_known    user_id, client (inet), last_ok_at; pk (user_id, client)
                + login_claim() / login_succeeded() (the owner role only)
-session        + stage (full | totp | enrol), method (password | oidc)
+session        + stage (full | totp | enrol), method (password | password_totp | oidc)
 ```
 
 Upgrading from 0.1.0: m0004 drops the `oidc_sub` bindings (they name no provider);

@@ -98,29 +98,57 @@ async fn changing_the_password_ends_the_other_sessions() {
     // An account without a password (an OIDC one) has none to change.
     let (s, v) = g.post("/me/password", change(PW, NEW)).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(v["message"], "this account has no password to change");
+    assert_eq!(v["message"], "this account has no password");
 }
 
 #[tokio::test]
 async fn only_a_full_session_is_signed_in() {
     let e = common::env().await;
     let g = sign_in(&e, "g@example.org", "global_admin", None).await;
-    for stage in ["totp", "enrol"] {
+    let routes = [
+        (Method::GET, "/tenants"),
+        (Method::GET, "/users"),
+        (Method::GET, "/audit"),
+        (Method::GET, "/openapi.json"),
+        (Method::POST, "/me/password"),
+        (Method::POST, "/me/recovery-codes"),
+        (Method::DELETE, "/me/totp"),
+        (Method::POST, "/peers"),
+        (Method::POST, "/users/1/invite"),
+    ];
+    for (stage, status, error) in [
+        ("totp", StatusCode::UNAUTHORIZED, "unauthorized"),
+        ("enrol", StatusCode::FORBIDDEN, "totp_required"),
+    ] {
         sql(&e.db, &format!("UPDATE session SET stage = '{stage}'")).await;
-        assert_eq!(
-            g.get("/session").await.0,
-            StatusCode::UNAUTHORIZED,
-            "{stage}"
-        );
-        assert_eq!(
-            g.get("/tenants").await.0,
-            StatusCode::UNAUTHORIZED,
-            "{stage}"
-        );
+        // The session itself says how far the login got, in any stage.
+        let (s, v) = g.get("/session").await;
+        assert_eq!((s, v["stage"].as_str()), (StatusCode::OK, Some(stage)));
+        for (method, uri) in &routes {
+            let (s, v) = g.call(method.clone(), uri, Some(json!({}))).await;
+            assert_eq!(
+                (s, v["error"].as_str()),
+                (status, Some(error)),
+                "{stage} {uri}"
+            );
+        }
     }
     // The half-done login is kept for its next step.
     sql(&e.db, "UPDATE session SET stage = 'full'").await;
-    assert_eq!(g.get("/session").await.0, StatusCode::OK);
+    assert_eq!(g.get("/tenants").await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_server_needs_a_secret_key() {
+    let e = common::env().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = common::config(&e.url, "http://127.0.0.1:9/");
+    config.secret_key = None;
+    let err = wgate_server::serve_on(listener, config).await.unwrap_err();
+    assert!(err.to_string().contains("wgate keygen"), "{err:#}");
+    let key = wgate_server::keygen().unwrap();
+    assert_ne!(key, wgate_server::keygen().unwrap());
+    assert!(wgate_server::SecretKey::parse(&key).is_ok());
 }
 
 #[tokio::test]
@@ -259,7 +287,10 @@ async fn without_admin_oidc_the_password_is_the_way_in() {
     .unwrap();
     let r = login(&e.app, "root@example.org", PW).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
+    // The first admin sets TOTP up at the first login.
     let c = login::client(&e.app, &r.session().unwrap()).await;
+    assert_eq!(c.get("/tenants").await.0, StatusCode::FORBIDDEN);
+    let c = common::totp::enrol(&c, &e.clock).await.client;
     assert_eq!(c.get("/tenants").await.0, StatusCode::OK);
 }
 

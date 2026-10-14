@@ -2,7 +2,7 @@
 const KEY = 'wgate.resume'
 
 export function rememberRoute(path: string) {
-  if (path === '/' || path.startsWith('/login')) return
+  if (path === '/' || ['/login', '/enrol', '/account/'].some((p) => path.startsWith(p))) return
   try {
     sessionStorage.setItem(KEY, path)
   } catch {

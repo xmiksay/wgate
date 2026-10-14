@@ -9,6 +9,8 @@ use serde::Deserialize;
 use url::Url;
 use wgate_db::Infra;
 
+use crate::seal::SecretKey;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -33,6 +35,9 @@ pub struct Config {
     /// is ignored. Empty: the TCP peer is the client.
     #[serde(default)]
     pub trusted_proxies: Vec<IpNet>,
+    /// Encrypts secrets at rest (TOTP secrets); required, see [`Config::secret_key`].
+    #[serde(default)]
+    pub secret_key: Option<SecretKey>,
     /// The global admins' provider; without it they log in with a password.
     pub admin_oidc: Option<Oidc>,
 }
@@ -91,7 +96,22 @@ impl Config {
             "public_url must be an origin, without a path or credentials (the portal \
              serves at the root)"
         );
+        self.secret_key()?;
         Ok(())
+    }
+
+    /// The key for secrets at rest. Optional in the file only so that a missing one
+    /// gets this message rather than serde's.
+    pub fn secret_key(&self) -> anyhow::Result<&SecretKey> {
+        let key = self
+            .secret_key
+            .as_ref()
+            .context("server.toml has no secret_key: make one with `wgate keygen`")?;
+        anyhow::ensure!(
+            !key.is_placeholder(),
+            "secret_key is the example's placeholder: make one with `wgate keygen`"
+        );
+        Ok(key)
     }
 
     pub fn infra(&self) -> Infra {
@@ -119,7 +139,23 @@ mod tests {
         let c: Config = toml::from_str(include_str!("../server.example.toml")).unwrap();
         assert_eq!(c.endpoint_host, "vpn.mmik.cz");
         assert!(c.secure_cookies());
+        // The example's key is a placeholder: the server refuses it, and no key at all.
+        let err = c.check().unwrap_err().to_string();
+        assert!(
+            err.contains("placeholder") && err.contains("wgate keygen"),
+            "{err}"
+        );
+        let mut c = c;
+        c.secret_key = None;
+        let err = c.check().unwrap_err().to_string();
+        assert!(
+            err.contains("no secret_key") && err.contains("wgate keygen"),
+            "{err}"
+        );
+        c.secret_key = Some(SecretKey::generate().unwrap());
         c.check().unwrap();
+        let key = c.secret_key.as_ref().unwrap().to_base64();
+        assert!(!format!("{c:?}").contains(&key));
         let mut prefixed = c.clone();
         prefixed.public_url = "https://example.org/wgate/".parse().unwrap();
         assert!(prefixed.check().is_err());

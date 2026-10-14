@@ -14,6 +14,10 @@ node_cidrs = ["172.19.9.0/24"]
 # never a whole pod or client network: every address listed may claim to be any client.
 # Default none: the TCP peer is the client.
 trusted_proxies = []
+# Encrypts the TOTP secrets in the database: 32 random bytes, base64. Replace this
+# placeholder (the server refuses it) with the output of `wgate keygen`, and keep it:
+# without it every account has to set up TOTP again.
+secret_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 # Optional: an OpenID Connect provider for the global admins, next to their password.
 # Who is one is the database's app_user role (`wgate admin grant <email>` makes the

@@ -2,7 +2,8 @@
 //! client, and a brake per account against guessing from many clients, which the
 //! clients the account logged in from skip. An attempt is
 //! claimed (counted) before its password is verified, atomically, so parallel guesses
-//! cannot all slip past one check (`login_claim` in m0002).
+//! cannot all slip past one check (`login_claim` in m0002). A second factor (TOTP or
+//! a recovery code) is claimed the same way, so its guesses count like passwords.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -11,7 +12,7 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, Transac
 use serde_json::json;
 
 use super::password::{self, BRAKE_AFTER, LOCK_AFTER, Password};
-use super::{limit, session};
+use super::{Actor, limit, session};
 use crate::audit;
 use crate::error::ApiError;
 
@@ -66,6 +67,21 @@ pub struct Claim {
     pub wait: Option<Duration>,
 }
 
+impl Claim {
+    /// The audit's view of an attempt: the client, the failures in a row so far and,
+    /// when this one locked the client out, until when.
+    pub fn detail(&self, ip: IpAddr) -> serde_json::Value {
+        let mut d = json!({ "ip": ip.to_string() });
+        if let Some(n) = self.failures {
+            d["failed_logins"] = json!(n);
+        }
+        if let Some(until) = &self.locked_until {
+            d["locked_until"] = json!(until);
+        }
+        d
+    }
+}
+
 /// One statement, the same for every email (known or not): the attempt from `ip`.
 pub async fn claim(db: &DatabaseConnection, email: &str, ip: IpAddr) -> Result<Claim, ApiError> {
     let row = db
@@ -106,6 +122,99 @@ pub async fn succeeded(db: &DatabaseConnection, id: i64, ip: IpAddr) -> Result<(
     Ok(())
 }
 
+/// The password was right, but a second factor is still to come (a TOTP code, or the
+/// TOTP setup an admin must do): the claim stays counted (a right password must not
+/// reset the count the codes' guesses run up, nor make the client known), only a
+/// lockout it set is lifted, as a success would have. A right TOTP code takes it back
+/// with its own ([`second_succeeded`]); confirming an admin's first setup does not:
+/// that claim stays counted until the client's next success or it ages out.
+pub async fn password_only(
+    db: &DatabaseConnection,
+    claim: &Claim,
+    ip: IpAddr,
+) -> Result<(), ApiError> {
+    let (Some(id), Some(failures), Some(_)) = (claim.account, claim.failures, &claim.locked_until)
+    else {
+        return Ok(());
+    };
+    // Only the lock this claim set: a later one (a concurrent wrong guess) stays.
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE login_failure SET locked_until = NULL
+         WHERE user_id = $1 AND client = $2::inet AND failed = $3",
+        [
+            id.into(),
+            limit::bucket(ip).to_string().into(),
+            failures.into(),
+        ],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// The claimed code was right: [`succeeded`], and the password's claim
+/// ([`password_only`]) is taken back from the brake too.
+pub async fn second_succeeded(
+    db: &DatabaseConnection,
+    id: i64,
+    ip: IpAddr,
+) -> Result<(), ApiError> {
+    let txn = db.begin().await?;
+    txn.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT login_succeeded($1, $2::inet)",
+        [id.into(), limit::bucket(ip).to_string().into()],
+    ))
+    .await?;
+    txn.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE app_user SET brake_failures = greatest(brake_failures - 1, 0) WHERE id = $1",
+        [id.into()],
+    ))
+    .await?;
+    txn.commit().await?;
+    Ok(())
+}
+
+/// A signed-in account proves itself again (its password, a TOTP code) before a
+/// change, counted like a login attempt from `ip`. `check` says whether the claimed
+/// attempt is right (`Err` with the audit's reason if not): wrong is a 422 with
+/// `wrong` as its message, audited as `failed`; locked out or braked a 429.
+pub async fn recheck(
+    db: &DatabaseConnection,
+    ip: IpAddr,
+    actor: &Actor,
+    failed: &str,
+    wrong: &'static str,
+    check: impl AsyncFnOnce(&Claim) -> Result<Result<(), &'static str>, ApiError>,
+) -> Result<(), ApiError> {
+    let id = actor.user_id;
+    let target = format!("app_user/{id}");
+    let claim = claim(db, &actor.email, ip).await?;
+    match claim.verdict {
+        _ if claim.account != Some(id) => return Err(ApiError::Unauthorized),
+        Verdict::Claimed => {}
+        Verdict::NoPassword => return Err(ApiError::invalid("this account has no password")),
+        Verdict::Locked | Verdict::Braked => {
+            // Refused, but counted against this client (a braked one): audited too.
+            let mut detail = claim.detail(ip);
+            detail["reason"] = json!(claim.verdict.as_str());
+            audit::record(db, Some(id), failed, target, detail).await?;
+            return Err(ApiError::TooManyAttempts(
+                claim.wait.unwrap_or(Duration::from_secs(60)),
+            ));
+        }
+        Verdict::UnknownEmail | Verdict::Disabled => return Err(ApiError::Unauthorized),
+    }
+    if let Err(reason) = check(&claim).await? {
+        let mut detail = claim.detail(ip);
+        detail["reason"] = json!(reason);
+        audit::record(db, Some(id), failed, target, detail).await?;
+        return Err(ApiError::invalid(wrong));
+    }
+    succeeded(db, id, ip).await
+}
+
 /// Whether the account of `email` logged in from `ip`'s client lately (then the
 /// account-wide brake and the wide limit do not hold it up).
 pub async fn known(db: &DatabaseConnection, email: &str, ip: IpAddr) -> Result<bool, ApiError> {
@@ -122,17 +231,21 @@ pub async fn known(db: &DatabaseConnection, email: &str, ip: IpAddr) -> Result<b
     Ok(row.try_get("", "known")?)
 }
 
-/// Stores a new hash; `false` if there is no such account.
+/// Stores a new hash; `false` if there is no such account. Whoever kept the code
+/// pace behind with the old password is out now, and its unused links go.
 pub async fn store<C: ConnectionTrait>(db: &C, id: i64, hash: String) -> Result<bool, ApiError> {
-    Ok(db
+    let stored = db
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "UPDATE app_user SET password_hash = $2 WHERE id = $1",
+            "UPDATE app_user SET password_hash = $2, totp_wrong = 0, totp_next_at = NULL
+             WHERE id = $1",
             [id.into(), hash.into()],
         ))
         .await?
         .rows_affected()
-        == 1)
+        == 1;
+    void_links(db, id).await?;
+    Ok(stored)
 }
 
 /// `wgate user password <email>`: sets the password, clears every lockout, the brake
@@ -150,22 +263,13 @@ pub async fn set_password(
     let row = txn
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "UPDATE app_user SET password_hash = $2,
-                 brake_since = NULL, brake_failures = 0, brake_last_at = NULL
-             WHERE lower(email) = lower($1) RETURNING id",
+            "UPDATE app_user SET password_hash = $2 WHERE lower(email) = lower($1) RETURNING id",
             [email.into(), hash.into()],
         ))
         .await?
         .ok_or_else(|| ApiError::invalid(format!("no account with email {email}")))?;
     let id: i64 = row.try_get("", "id")?;
-    txn.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "WITH known AS (DELETE FROM login_known WHERE user_id = $1)
-         DELETE FROM login_failure WHERE user_id = $1",
-        [id.into()],
-    ))
-    .await?;
-    let ended = session::end_others(&txn, id, None).await?;
+    let ended = start_over(&txn, id).await?;
     audit::record(
         &txn,
         None,
@@ -176,4 +280,35 @@ pub async fn set_password(
     .await?;
     txn.commit().await?;
     Ok(id)
+}
+
+/// After a password reset: every lockout, the brake and the known clients go, and so
+/// do the account's sessions (whoever had it before is out, and so are the clients
+/// they used), its unused links and the code pace. How many sessions ended.
+pub async fn start_over<C: ConnectionTrait>(db: &C, id: i64) -> Result<u64, ApiError> {
+    void_links(db, id).await?;
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "WITH known AS (DELETE FROM login_known WHERE user_id = $1),
+              failed AS (DELETE FROM login_failure WHERE user_id = $1)
+         UPDATE app_user SET brake_since = NULL, brake_failures = 0, brake_last_at = NULL,
+             totp_wrong = 0, totp_next_at = NULL
+         WHERE id = $1",
+        [id.into()],
+    ))
+    .await?;
+    session::end_others(db, id, None).await
+}
+
+/// The account's unused invite and reset links go (its password just changed: a
+/// link made for the old one must not undo that).
+pub async fn void_links<C: ConnectionTrait>(db: &C, id: i64) -> Result<u64, ApiError> {
+    Ok(db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "DELETE FROM account_token WHERE user_id = $1 AND used_at IS NULL",
+            [id.into()],
+        ))
+        .await?
+        .rows_affected())
 }

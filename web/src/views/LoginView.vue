@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import type { ProviderOption } from '../api/types'
 import UiButton from '../components/UiButton.vue'
 import UiField from '../components/UiField.vue'
+import TotpStep from '../components/login/TotpStep.vue'
 import { useSubmit } from '../composables/useSubmit'
 import { takeRoute } from '../lib/resume'
 import { useSessionStore } from '../stores/session'
 
 const sessionStore = useSessionStore()
-const { problem } = storeToRefs(sessionStore)
+const { problem, session, signedIn } = storeToRefs(sessionStore)
 const route = useRoute()
 const router = useRouter()
 const { busy, error, run } = useSubmit()
@@ -59,16 +60,29 @@ async function change() {
   emailInput.value?.focus()
 }
 
+/** The password was right, and the account has TOTP on: its code is next. */
+const waitingForCode = computed(() => session.value?.stage === 'totp')
+
+// Whichever step finished the login (the code step is gone by then): move on.
+watch(signedIn, async (yes) => {
+  // The guard sends `/` home; a route remembered before the login goes first.
+  if (yes) await router.push(takeRoute() ?? '/')
+})
+
 async function signIn() {
   if (!password.value || busy.value) return
   if (await run(() => sessionStore.signIn(email.value, password.value))) {
     password.value = ''
-    // The guard sends `/` home; a route remembered before the login goes first.
-    await router.push(takeRoute() ?? '/')
+    // `totp`: this page shows the code step. `enrol` keeps the remembered route for later.
+    if (session.value?.stage === 'enrol') await router.push({ name: 'enrol' })
   } else if (error.value?.status === 401) {
     password.value = ''
     passwordInput.value?.focus()
   }
+}
+
+async function startOver() {
+  if (await run(() => sessionStore.logout())) await change()
 }
 
 function viaProvider(p: ProviderOption) {
@@ -97,8 +111,13 @@ function viaProvider(p: ProviderOption) {
       {{ shown }}
     </p>
 
+    <TotpStep
+      v-if="waitingForCode && session"
+      :email="session.email"
+      @back="startOver"
+    />
     <form
-      v-if="!providers"
+      v-else-if="!providers"
       class="space-y-3"
       @submit.prevent="next"
     >

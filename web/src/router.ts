@@ -1,7 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { rememberRoute, takeRoute } from './lib/resume'
 import { useSessionStore } from './stores/session'
+import AccountLinkView from './views/AccountLinkView.vue'
 import AuditView from './views/AuditView.vue'
+import EnrolView from './views/EnrolView.vue'
 import FederationsView from './views/FederationsView.vue'
 import LoginView from './views/LoginView.vue'
 import MeView from './views/MeView.vue'
@@ -14,8 +16,10 @@ import UsersView from './views/UsersView.vue'
 
 declare module 'vue-router' {
   interface RouteMeta {
-    /** Reachable without a session. */
+    /** Reachable without a session (a signed-in one is sent home). */
     public?: boolean
+    /** Reachable with or without a session, in any stage. */
+    open?: boolean
     /** For global admins only (the server refuses the rest anyway). */
     global?: boolean
     /** Open to plain users too; every other route is for admins. */
@@ -30,6 +34,8 @@ export const router = createRouter({
   routes: [
     { path: '/', component: NotFoundView },
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
+    { path: '/account/:token', component: AccountLinkView, props: true, meta: { open: true } },
+    { path: '/enrol', name: 'enrol', component: EnrolView, meta: { everyone: true } },
     { path: '/me', component: MeView, meta: { everyone: true } },
     { path: '/tenants', component: TenantsView, meta: { global: true } },
     { path: '/tenants/:id(\\d+)', component: TenantDetailView, props: id },
@@ -55,17 +61,25 @@ router.beforeEach(async (to) => {
       ? '/tenants'
       : `/tenants/${s?.tenant_id}`
 
+  if (to.meta.open) return true
   if (!s) {
     if (to.meta.public) return true
     rememberRoute(to.fullPath)
     return { name: 'login' }
+  }
+  // A login still going: only its own next step, the rest waits until it is done.
+  const step = s.stage === 'totp' ? 'login' : s.stage === 'enrol' ? 'enrol' : null
+  if (step) {
+    if (to.name === step) return true
+    rememberRoute(to.fullPath)
+    return { name: step }
   }
   if (!resumeChecked) {
     resumeChecked = true
     const resume = takeRoute()
     if (resume && resume !== to.fullPath) return resume
   }
-  if (to.meta.public || to.path === '/') return home
+  if (to.meta.public || to.path === '/' || to.name === 'enrol') return home
   if (!to.meta.everyone && !store.isAdmin) return home
   if (to.meta.global && !store.isGlobal) return home
   return true

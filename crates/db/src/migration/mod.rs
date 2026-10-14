@@ -13,6 +13,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ),
     ),
     ("m0002_accounts", include_str!("m0002_accounts.sql")),
+    ("m0003_totp", include_str!("m0003_totp.sql")),
 ];
 /// Idempotent; applied on every run, after the migrations.
 const GRANTS: &str = include_str!("grants.sql");

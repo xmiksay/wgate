@@ -16,6 +16,14 @@ hooks.unauthorized = () => {
   useSessionStore().clear()
   void router.push({ name: 'login' })
 }
+// E.g. a password session from before TOTP was mandatory: set it up, then resume.
+hooks.totpRequired = async () => {
+  const store = useSessionStore()
+  await store.load()
+  if (store.session?.stage !== 'enrol') return
+  rememberRoute(router.currentRoute.value.fullPath)
+  await router.push({ name: 'enrol' })
+}
 hooks.wrote = () => useStatusStore().wrote()
 
 app.mount('#app')

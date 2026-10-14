@@ -151,7 +151,9 @@ async fn parallel_guesses_get_one_verify_per_attempt_left() {
 #[tokio::test]
 async fn the_brake_holds_up_strangers_but_not_the_owners_clients() {
     let e = common::env().await;
-    let id = account(&e.db, "root@x.test", "global_admin", None, PW).await;
+    // A plain user: an admin's right password alone (no TOTP yet) resets nothing.
+    let t = tenant(&e.db, "acme").await;
+    let id = account(&e.db, "root@x.test", "user", Some(t), PW).await;
     let at =
         |client: &'static str, pw: &'static str| login_from(&e.app, "root@x.test", pw, client, &[]);
     let reason = async || {
@@ -220,7 +222,8 @@ async fn the_brake_holds_up_strangers_but_not_the_owners_clients() {
 #[tokio::test]
 async fn an_unknown_email_leaves_nothing_behind() {
     let e = common::env().await;
-    account(&e.db, "root@x.test", "global_admin", None, PW).await;
+    let t = tenant(&e.db, "acme").await;
+    account(&e.db, "root@x.test", "user", Some(t), PW).await;
     for _ in 0..3 {
         login_from(&e.app, "nobody@x.test", PW, PEER, &[]).await;
     }
@@ -236,7 +239,9 @@ async fn an_unknown_email_leaves_nothing_behind() {
 #[tokio::test]
 async fn an_attempt_whose_client_hangs_up_still_finishes() {
     let e = common::env().await;
-    let id = account(&e.db, "root@x.test", "global_admin", None, PW).await;
+    // A plain user: an admin's right password alone (no TOTP yet) resets nothing.
+    let t = tenant(&e.db, "acme").await;
+    let id = account(&e.db, "root@x.test", "user", Some(t), PW).await;
     // Dropped after 0 to 57 ms: some before the claim, some during the verify, some
     // after the reply.
     for i in 0..20u64 {

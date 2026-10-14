@@ -43,7 +43,7 @@ async fn m0002_applies_on_a_0_1_0_database() {
     release_0_1_0(&pg.db).await;
     ok(&pg.db, ACCOUNTS).await;
     let applied = wgate_db::migrate(&pg.db).await.expect("migrate");
-    assert_eq!(applied, ["m0002_accounts"]);
+    assert_eq!(applied, ["m0002_accounts", "m0003_totp"]);
     // Existing rows: no password, nothing failed, their sessions full OIDC ones.
     ok(
         &pg.db,
@@ -73,6 +73,40 @@ async fn m0002_applies_on_a_0_1_0_database() {
     .await;
     refused(&pg.db, "UPDATE session SET method = 'magic'").await;
     ok(&pg.db, "UPDATE session SET stage = 'totp'").await;
+    // m0003: TOTP is off for everyone; on needs a secret; links have a purpose.
+    ok(&pg.db, "UPDATE session SET method = 'password_totp'").await;
+    refused(&pg.db, "UPDATE app_user SET totp_enabled_at = now()").await;
+    ok(
+        &pg.db,
+        "UPDATE app_user SET totp_secret = '\\x01', totp_enabled_at = now() WHERE id = 1",
+    )
+    .await;
+    refused(
+        &pg.db,
+        "INSERT INTO account_token (user_id, token_hash, purpose, expires_at)
+         VALUES (1, '\\x01', 'login', now())",
+    )
+    .await;
+    // An account's codes and links go with it; a link outlives the admin who made it.
+    ok(
+        &pg.db,
+        "INSERT INTO recovery_code (user_id, code_hash) VALUES (2, '\\x01');
+         INSERT INTO account_token (user_id, token_hash, purpose, created_by, expires_at)
+         VALUES (2, '\\x02', 'reset', 1, now());
+         DELETE FROM app_user WHERE id = 1;
+         DO $$ BEGIN
+            IF (SELECT count(*) FROM account_token WHERE created_by IS NULL) <> 1 THEN
+                RAISE EXCEPTION 'the link went with its maker';
+            END IF;
+         END $$;
+         DELETE FROM app_user WHERE id = 2;
+         DO $$ BEGIN
+            IF EXISTS (SELECT FROM account_token) OR EXISTS (SELECT FROM recovery_code) THEN
+                RAISE EXCEPTION 'left behind';
+            END IF;
+         END $$",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -93,6 +127,6 @@ async fn m0002_names_emails_shared_by_tenants() {
     ok(&pg.db, "DELETE FROM app_user WHERE tenant_id = 2").await;
     assert_eq!(
         wgate_db::migrate(&pg.db).await.expect("migrate"),
-        ["m0002_accounts"]
+        ["m0002_accounts", "m0003_totp"]
     );
 }

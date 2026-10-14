@@ -6,20 +6,29 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# `aes` and `polyval` named only to unify their `zeroize` feature: the AES round keys
+# and the GHASH key are wiped too (aarch64's pmull backend keeps no key to wipe).
+aes = { version = "0.8", features = ["zeroize"] }
+aes-gcm = { version = "0.10", features = ["zeroize"] }
 anyhow.workspace = true
 argon2 = "0.5"
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+data-encoding = "2"
+hmac = "0.13"
 ipnet = { workspace = true, features = ["serde"] }
 openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
+percent-encoding = "2"
+polyval = { version = "0.6", features = ["zeroize"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.8"
 rust-embed = { version = "8", features = ["interpolate-folder-path", "mime-guess", "debug-embed"] }
 sea-orm = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-json", "with-ipnetwork", "postgres-array"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.11"
 sha2 = "0.10"
 subtle = "2"
 thiserror = "2"

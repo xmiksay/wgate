@@ -21,6 +21,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/account/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A live link's account and purpose; 404 for any other token (unknown, used,
+         *     expired, voided, or an invite for an account that has a password by now). Limited per client as login attempts are.
+         */
+        get: operations["account_link"];
+        put?: never;
+        /**
+         * Sets the account's password and uses the link up; a reset link also ends the
+         *     account's sessions and clears its lockouts. No session: log in next. 404 as for
+         *     the `GET`, 422 for a password out of bounds, 429/503 as for a login.
+         */
+        post: operations["use_account_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/options": {
         parameters: {
             query?: never;
@@ -48,11 +73,41 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 204 with the session cookie, or 401 `invalid_credentials` for any failure; 429
+         * 204 with the session cookie, or 401 `invalid_credentials` for any failure. The
+         *     session's `stage` (`GET /api/v1/session`) says what is next: `totp` for an
+         *     account with TOTP on (`POST /auth/totp`), `enrol` for an admin without it, else
+         *     `full`. 429
          *     (with `Retry-After`) after 20 attempts a minute from one client or 100 from one
          *     IPv6 /48; 503 `busy` when every hashing slot stays taken for 2 s.
          */
         post: operations["login_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Only for a session in the `totp` stage (5 minutes from the password), with its
+         *     `X-CSRF-Token` (from `GET /api/v1/session`). 204 with a new session cookie for the
+         *     now `full` session; 401 `invalid_credentials` for any failure (the session stays
+         *     for another try until it expires, or until the client is locked out: then it
+         *     ends), 401 `unauthorized` without such a session; 400 unless exactly one of
+         *     `code` and `recovery_code`; 403 without the CSRF token; 429 (with `Retry-After`)
+         *     as for `/auth/password`, or when the account's next code attempt is more than
+         *     30 s away (attempts since the last right code are spaced out: the first two at
+         *     once, then 1 s, 2 s, 4 s, … at most 5 minutes apart; a reply may take up to 30 s).
+         */
+        post: operations["login_totp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -225,6 +280,91 @@ export interface paths {
          *     every other session of the account.
          */
         post: operations["change_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/recovery-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Needs a current TOTP code, counted like a login attempt (422 when wrong, then
+         *     429): ten new recovery codes, the old ones void. 422 with TOTP off.
+         */
+        post: operations["regenerate_recovery_codes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Needs the current password, counted like a login attempt as for a password
+         *     change (422 when wrong, then 429). Admins may not: they need TOTP (422). Removes
+         *     the recovery codes too.
+         */
+        delete: operations["remove_totp"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turns the pending secret on with one of its codes: the recovery codes. In the
+         *     `enrol` stage the session becomes `full` under a new cookie (audited as the
+         *     enrolment). 422 for a wrong code (or none pending); not counted as a login
+         *     attempt: it checks the secret the setup just handed out.
+         */
+        post: operations["confirm_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/totp/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A new secret, pending until `/me/totp/confirm` (a pending one is replaced). In a
+         *     `full` session it takes the current password, counted like a login attempt as
+         *     for a password change (422 when wrong, then 429); the `enrol` stage sends no
+         *     body. 409 with TOTP on; 422 for an account without a password.
+         */
+        post: operations["setup_totp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -444,7 +584,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Any role; only admins may use the rest of the API. */
+        /** Any role, any stage; only admins may use the rest of the API. */
         get: operations["session"];
         put?: never;
         post?: never;
@@ -593,10 +733,79 @@ export interface paths {
         patch: operations["update_user"];
         trace?: never;
     };
+    "/users/{id}/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A link to set the first password of an account that has none (409 if it has
+         *     one: send a reset link). Voids the account's older links. 403 out of reach (a
+         *     tenant admin: their tenant's plain users only), 422 for your own account.
+         */
+        post: operations["invite_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A link to set a new password; following it also ends the account's sessions and
+         *     clears its lockouts. Voids the account's older links. 403/404/422 as for an
+         *     invite.
+         */
+        post: operations["reset_user_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}/totp-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turns the account's TOTP off (with its recovery codes) and ends its sessions: its
+         *     next password login sets TOTP up again (an admin's must). 403/404/422 as for an
+         *     invite.
+         */
+        post: operations["reset_user_totp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AccountLink: {
+            /** @description 24 hours from now (RFC 3339, UTC). */
+            expires_at: string;
+            /** @description `<public_url>/account/<token>`, for the account's owner. Shown this once. */
+            url: string;
+        };
         AuditEntry: {
             action: string;
             /** Format: int64 */
@@ -652,7 +861,7 @@ export interface components {
             detail?: unknown;
             /**
              * @description `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,
-             *     `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
+             *     `totp_required`, `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
              */
             error: string;
             message: string;
@@ -687,6 +896,11 @@ export interface components {
             inbound: components["schemas"]["Inbound"];
             /** @description E.g. a source so broad that every target peer becomes a full tunnel. */
             warnings: string[];
+        };
+        LinkInfo: {
+            /** @description The account the link is for. */
+            email: string;
+            purpose: components["schemas"]["Purpose"];
         };
         LoginOptions: {
             /** @description Always offered. */
@@ -734,6 +948,10 @@ export interface components {
             mesh?: boolean | null;
             name?: string | null;
         };
+        NewPassword: {
+            /** @description 12 to 256 characters. */
+            password: string;
+        };
         OptionsRequest: {
             email: string;
         };
@@ -744,6 +962,10 @@ export interface components {
         };
         PasswordLogin: {
             email: string;
+            password: string;
+        };
+        PasswordProof: {
+            /** @description The account's current password. */
             password: string;
         };
         Peer: {
@@ -781,6 +1003,12 @@ export interface components {
             id: string;
             /** @description For the button. */
             name: string;
+        };
+        /** @enum {string} */
+        Purpose: "invite" | "reset";
+        RecoveryCodes: {
+            /** @description Ten single-use codes for when the authenticator is gone. Shown this once. */
+            recovery_codes: string[];
         };
         Rendered: {
             /** @description The `wg-quick` config. */
@@ -835,12 +1063,33 @@ export interface components {
             /** @description Send it back as `X-CSRF-Token` on every write. */
             csrf: string;
             email: string;
+            /** @description Whether the account has a password (to change; TOTP needs one). */
+            has_password: boolean;
             role: components["schemas"]["Role"];
+            /**
+             * @description How far the login got: `totp` waits for `POST /auth/totp`, `enrol` for the
+             *     TOTP setup (`/me/totp/setup`, `/me/totp/confirm`); only `full` uses the API.
+             */
+            stage: components["schemas"]["Stage"];
             /** Format: int64 */
             tenant_id?: number | null;
+            /** @description Whether TOTP is on (not merely set up). */
+            totp_enabled: boolean;
             /** Format: int64 */
             user_id: number;
         };
+        SetupRequest: {
+            /**
+             * @description The current password; not needed right after a password login (the `enrol`
+             *     stage of one).
+             */
+            password?: string | null;
+        };
+        /**
+         * @description How far a login got.
+         * @enum {string}
+         */
+        Stage: "full" | "totp" | "enrol";
         Status: {
             applied_at?: string | null;
             /**
@@ -884,9 +1133,28 @@ export interface components {
             disabled?: boolean | null;
             name?: string | null;
         };
+        TotpCode: {
+            /** @description The authenticator's 6 digits. */
+            code: string;
+        };
+        /** @description One of the two. */
+        TotpLogin: {
+            /** @description The authenticator's 6 digits. */
+            code?: string | null;
+            /** @description One of the account's recovery codes, instead (each works once). */
+            recovery_code?: string | null;
+        };
+        TotpSetup: {
+            /** @description For an authenticator app; holds the secret. Shown this once. */
+            otpauth_uri: string;
+            /** @description The same as a QR code. */
+            qr_svg: string;
+        };
         User: {
             disabled: boolean;
             email: string;
+            /** @description Whether it has a password (then an invite is refused: send a reset link). */
+            has_password: boolean;
             /** Format: int64 */
             id: number;
             /** @description `global_admin`, `tenant_admin` or `user`. */
@@ -896,6 +1164,8 @@ export interface components {
              * @description `None` for a global admin.
              */
             tenant_id?: number | null;
+            /** @description Whether TOTP is on. */
+            totp_enabled: boolean;
         };
         UserCreate: {
             email: string;
@@ -941,6 +1211,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditEntry"][];
+                };
+            };
+        };
+    };
+    account_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkInfo"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    use_account_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewPassword"];
+            };
+        };
+        responses: {
+            /** @description The password is set */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };
@@ -1005,6 +1368,60 @@ export interface operations {
                 };
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    login_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpLogin"];
+            };
+        };
+        responses: {
+            /** @description Signed in: a new session cookie is set */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1279,6 +1696,177 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    regenerate_recovery_codes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpCode"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryCodes"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    remove_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordProof"];
+            };
+        };
+        responses: {
+            /** @description TOTP is off */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    confirm_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpCode"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryCodes"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    setup_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["SetupRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TotpSetup"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
             422: {
                 headers: {
@@ -2072,6 +2660,148 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["User"];
+                };
+            };
+        };
+    };
+    invite_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountLink"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reset_user_password: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountLink"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reset_user_totp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description TOTP is off; the account's sessions are over */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

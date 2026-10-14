@@ -79,6 +79,14 @@ wgate admin grant you@example.org      # the first global admin
 wgate user password you@example.org    # their password, prompted twice
 ```
 
+At the first login with that password the admin is asked to set up TOTP (an
+authenticator app: scan the QR code, confirm with a code, keep the ten recovery codes
+shown once): admins who log in with a password must have it. If the phone is lost and
+the recovery codes too, `wgate user totp-reset you@example.org` (or another global
+admin) turns it off; the next login sets it up again. Until the first enrolment, the
+password alone lets anyone who has it enrol their own authenticator: log in and set
+it up right after creating the account.
+
 `wgate user password` never takes the password as an argument; when stdin is not a
 terminal it reads the first line of stdin instead (for scripts:
 `printf '%s\n' "$PW" | wgate user password you@example.org`). It also clears the
@@ -98,10 +106,11 @@ it as verified. Only the subject first seen for that email gets in afterwards.
 
 ```sh
 install -d -m 0750 -o root -g wgate /etc/wgate
+wgate keygen    # prints the server's secret_key, for server.toml below
 ```
 
-`/etc/wgate/server.toml` (`root:wgate 0640` — it holds the client secret and the DB
-password) from [`server.example.toml`](../crates/server/server.example.toml), and
+`/etc/wgate/server.toml` (`root:wgate 0640` — it holds `secret_key`, the client secret
+and the DB password) from [`server.example.toml`](../crates/server/server.example.toml), and
 `/etc/wgate/agent.toml` (`root:root 0600`) from
 [`agent.example.toml`](../crates/agent/agent.example.toml). The address settings — `pool`,
 `routed_space`, `reserved`, `snat_source`, `node_cidrs` — must be identical in both. Both
@@ -118,6 +127,7 @@ files reject unknown keys.
 | `node_cidrs` | infrastructure tenants may be granted; reached SNATed |
 | `snat_source` | the host's address on `node_cidrs`, used as SNAT source |
 | `database_url` | `wgate` for the server, `wgate_agent` for the agent |
+| `secret_key` (server) | `wgate keygen`'s output (32 random bytes, base64); required — the server refuses to start without it, or with the example's placeholder. It encrypts the TOTP secrets in the database: losing it means everyone sets up TOTP again |
 | `trusted_proxies` (server) | the proxies whose `X-Forwarded-For` names the client, e.g. `["127.0.0.1/32"]` behind a local Caddy; default none (the TCP peer is the client). List only the proxies themselves, never a client or pod network: every listed address may claim to be any client. Login attempts are limited and locked out per client, so behind a proxy this must be set |
 | `[admin_oidc]` (server, optional) | `issuer` exactly as the provider's discovery names it (a trailing slash counts), `client_id`, `client_secret`; `name` for the login button (default the issuer's host). Without it there is no provider button |
 
@@ -142,6 +152,7 @@ reserved = ["192.168.100.0/24"]
 snat_source = "192.168.100.10"
 node_cidrs = ["192.168.100.0/24"]
 trusted_proxies = ["127.0.0.1/32"]   # Caddy on the host (step 7)
+secret_key = "OUTPUT_OF_WGATE_KEYGEN"
 
 # Optional (step 4):
 [admin_oidc]
@@ -200,7 +211,8 @@ vpn.example.org {
 
 ## 8. Smoke test
 
-1. Log in at `public_url` with the email and password from step 3; the status bar at the top shows `applied (rev N)`.
+1. Log in at `public_url` with the email and password from step 3 and set up TOTP when
+   asked; the status bar at the top shows `applied (rev N)`.
 2. Create a tenant `test` with a block (e.g. `10.50.0.0/24`) and a ceiling (say icmp to
    one host on `node_cidrs`, e.g. `192.168.100.10/32`), a network `test` (`10.50.0.0/25`
    inside the block, port 51899) with the same rule — a rule
