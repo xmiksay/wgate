@@ -77,6 +77,24 @@ async fn blocks_stay_in_the_pool_and_clear_of_each_other() {
     // Our words, never the database's.
     assert_eq!(v["error"], "conflict");
     assert!(!v.to_string().contains("constraint"), "{v}");
+    // Under a missing tenant there is nothing, writes included.
+    for (method, uri, body) in [
+        (
+            Method::POST,
+            "/tenants/999/blocks",
+            Some(json!({ "cidr": "10.50.9.0/24" })),
+        ),
+        (Method::GET, "/tenants/999/blocks", None),
+        (
+            Method::POST,
+            "/tenants/999/ceilings",
+            Some(json!({ "dst": "0.0.0.0/0", "proto": "icmp" })),
+        ),
+        (Method::GET, "/tenants/999/ceilings", None),
+    ] {
+        let (s, _) = g.call(method.clone(), uri, body).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {uri}");
+    }
 }
 
 #[tokio::test]

@@ -46,7 +46,7 @@ pub async fn create(db: &DatabaseConnection, user_id: i64) -> Result<String, Api
 }
 
 /// Whose session it was, if it was still there.
-pub async fn end(db: &DatabaseConnection, token: &str) -> Result<Option<i64>, ApiError> {
+pub async fn end<C: ConnectionTrait>(db: &C, token: &str) -> Result<Option<i64>, ApiError> {
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,

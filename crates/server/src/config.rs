@@ -16,7 +16,8 @@ pub struct Config {
     /// Direct to Postgres, as the agent (pgbouncer's transaction pooling would do
     /// here, but one URL setup is simpler to get right).
     pub database_url: String,
-    /// Where the portal is reached; the OIDC callback is `<public_url>/auth/callback`.
+    /// Where the portal is reached, an origin without a path (the portal serves at the
+    /// root); the OIDC callback is `<public_url>/auth/callback`.
     pub public_url: Url,
     /// The WireGuard endpoint's host in client configs (the portal and the hub may be
     /// reached under different names).
@@ -55,7 +56,18 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parse {}", path.display()))
+        let config: Self =
+            toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+        config.check()?;
+        Ok(config)
+    }
+
+    pub fn check(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.public_url.path() == "/" && self.public_url.query().is_none(),
+            "public_url must be an origin without a path (the portal serves at the root)"
+        );
+        Ok(())
     }
 
     pub fn infra(&self) -> Infra {
@@ -66,13 +78,6 @@ impl Config {
             snat_source: self.snat_source,
             node_cidrs: self.node_cidrs.clone(),
         }
-    }
-
-    /// Where `/auth/*` lives under `public_url` (the login cookie's path).
-    pub fn auth_path(&self) -> String {
-        self.public_url
-            .join("auth")
-            .map_or_else(|_| "/auth".to_owned(), |u| u.path().to_owned())
     }
 
     /// The session cookie is `Secure` unless the portal runs on plain http (tests).
@@ -90,10 +95,10 @@ mod tests {
         let c: Config = toml::from_str(include_str!("../server.example.toml")).unwrap();
         assert_eq!(c.endpoint_host, "vpn.mmik.cz");
         assert!(c.secure_cookies());
-        assert_eq!(c.auth_path(), "/auth");
+        c.check().unwrap();
         let mut prefixed = c.clone();
         prefixed.public_url = "https://example.org/wgate/".parse().unwrap();
-        assert_eq!(prefixed.auth_path(), "/wgate/auth");
+        assert!(prefixed.check().is_err());
         assert!(!format!("{c:?}").contains(&c.admin_oidc.client_secret));
         let example = include_str!("../server.example.toml");
         assert!(toml::from_str::<Config>(&format!("{example}\nbogus = 1")).is_err());
