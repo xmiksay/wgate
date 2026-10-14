@@ -7,11 +7,16 @@
 pub mod account;
 pub mod challenge;
 pub mod factor;
+pub mod identity;
 pub mod limit;
 pub mod links;
 pub mod local;
+pub mod logout;
 pub mod oidc;
+mod oidc_done;
+pub mod outbound;
 pub mod password;
+pub mod provider;
 pub mod session;
 pub mod totp;
 

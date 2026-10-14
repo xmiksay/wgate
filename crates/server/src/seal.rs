@@ -1,4 +1,4 @@
-//! Secrets at rest (TOTP secrets; provider client secrets in plan 1.10): AES-256-GCM
+//! Secrets at rest (TOTP secrets, provider client secrets): AES-256-GCM
 //! under `secret_key` from `server.toml`. A blob is `key id (1) ‖ nonce (12) ‖
 //! ciphertext and tag`; the table, column and row id are its associated data, so a
 //! blob copied to another row or column does not open. The key id leaves room for a

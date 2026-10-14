@@ -1,6 +1,6 @@
 # Installing wgate by hand
 
-For a test hub, or any host outside the `ansible` repo's `wgate` role (plan 1.8), which does
+For a test hub, or any host outside the `ansible` repo's `wgate` role (plan 1.11), which does
 the same steps. One host runs both the server (portal, unprivileged) and the agent (root,
 `CAP_NET_ADMIN`); Postgres may live elsewhere.
 
@@ -95,12 +95,32 @@ characters.
 
 ## 4. Login provider (optional)
 
-The password is enough to log in. To offer a provider button next to it for the global
-admins, set `[admin_oidc]` in the server config and register an OIDC client (confidential, authorization code + PKCE, scopes `openid email`)
-at your provider with the redirect URI `<public_url>/auth/callback`, e.g.
-`https://vpn.example.org/auth/callback`. Most providers accept a plain-`http` redirect only
-for `localhost`. The admin logs in with the email granted above; the provider must report
-it as verified. Only the subject first seen for that email gets in afterwards.
+The password is enough to log in. To offer a provider button next to it (Google, a
+Keycloak realm, …), add a provider in the UI under **Providers** once the portal runs
+(step 8): a global one (any account may link it), or a tenant's own (only that tenant's
+accounts). First register an OIDC client (confidential, authorization code + PKCE,
+scopes `openid email`) at your provider with the redirect URI
+`<public_url>/auth/callback`, e.g. `https://vpn.example.org/auth/callback` (one URI for
+every provider). Most providers accept a plain-`http` redirect only for `localhost`.
+In the UI, enter the issuer exactly as the provider's discovery names it (a trailing
+slash counts, e.g. `https://accounts.google.com`), the client id and the client secret
+(write-only: stored encrypted with `secret_key`, never shown again). wgate reaches a
+provider only at public addresses over https; one on the host's own networks (an
+internal Keycloak) needs its addresses in `oidc_allow_private` (step 5), which also
+allows plain http to them. `HTTPS_PROXY`/`HTTP_PROXY` are ignored for provider traffic:
+the server needs direct egress to its providers.
+
+A global admin links their provider from their profile (`/me`) after a password login;
+a global provider never binds a global admin by email. Accounts of tenants can be bound by
+the verified email at their first login: through their tenant's provider (plain
+users), or a global provider with **link by email** on. Anyone else links from `/me`,
+or an admin pre-links the provider's subject on the users page.
+
+Upgrading from a release with `[admin_oidc]` in `server.toml`: the server refuses to
+start until it is gone. Add the provider in the UI as above (log in with a password
+first: `wgate user password <email>`), then delete the `[admin_oidc]` section. The old
+provider logins (`oidc_sub`) are not carried over: each admin links it again from
+`/me`.
 
 ## 5. Configs
 
@@ -109,8 +129,8 @@ install -d -m 0750 -o root -g wgate /etc/wgate
 wgate keygen    # prints the server's secret_key, for server.toml below
 ```
 
-`/etc/wgate/server.toml` (`root:wgate 0640` — it holds `secret_key`, the client secret
-and the DB password) from [`server.example.toml`](../crates/server/server.example.toml), and
+`/etc/wgate/server.toml` (`root:wgate 0640` — it holds `secret_key` and the DB
+password) from [`server.example.toml`](../crates/server/server.example.toml), and
 `/etc/wgate/agent.toml` (`root:root 0600`) from
 [`agent.example.toml`](../crates/agent/agent.example.toml). The address settings — `pool`,
 `routed_space`, `reserved`, `snat_source`, `node_cidrs` — must be identical in both. Both
@@ -127,9 +147,9 @@ files reject unknown keys.
 | `node_cidrs` | infrastructure tenants may be granted; reached SNATed |
 | `snat_source` | the host's address on `node_cidrs`, used as SNAT source |
 | `database_url` | `wgate` for the server, `wgate_agent` for the agent |
-| `secret_key` (server) | `wgate keygen`'s output (32 random bytes, base64); required — the server refuses to start without it, or with the example's placeholder. It encrypts the TOTP secrets in the database: losing it means everyone sets up TOTP again |
+| `secret_key` (server) | `wgate keygen`'s output (32 random bytes, base64); required — the server refuses to start without it, or with the example's placeholder. It encrypts the TOTP secrets and the providers' client secrets in the database: losing it means everyone sets up TOTP again and every provider's secret is entered again |
+| `oidc_allow_private` (server) | private addresses (CIDRs) OIDC providers may be reached at, e.g. `["192.168.100.20/32"]` for a Keycloak on the LAN; default none (providers on the internet, https only). Plain http only into these |
 | `trusted_proxies` (server) | the proxies whose `X-Forwarded-For` names the client, e.g. `["127.0.0.1/32"]` behind a local Caddy; default none (the TCP peer is the client). List only the proxies themselves, never a client or pod network: every listed address may claim to be any client. Login attempts are limited and locked out per client, so behind a proxy this must be set |
-| `[admin_oidc]` (server, optional) | `issuer` exactly as the provider's discovery names it (a trailing slash counts), `client_id`, `client_secret`; `name` for the login button (default the issuer's host). Without it there is no provider button |
 
 `public_url` on `https` makes the session cookie `Secure`; on plain `http` it is not.
 
@@ -153,12 +173,7 @@ snat_source = "192.168.100.10"
 node_cidrs = ["192.168.100.0/24"]
 trusted_proxies = ["127.0.0.1/32"]   # Caddy on the host (step 7)
 secret_key = "OUTPUT_OF_WGATE_KEYGEN"
-
-# Optional (step 4):
-[admin_oidc]
-issuer = "https://accounts.google.com"
-client_id = "CLIENT_ID.apps.googleusercontent.com"
-client_secret = "CLIENT_SECRET"
+# Login providers (step 4) are added in the UI, not here.
 ```
 
 `/etc/wgate/agent.toml`:

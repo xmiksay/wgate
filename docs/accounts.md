@@ -14,8 +14,9 @@ CLI. Built in plan steps 1.8–1.10.
   single-use recovery codes (stored hashed). Optional for users; **mandatory for global
   and tenant admins** who log in with a password. A provider login skips it (the
   provider does its own MFA).
-- **Identities**: `(provider, subject)` bound to an account. An account keeps at least
-  one method: the last one cannot be removed.
+- **Identities**: `(provider, subject)` bound to an account, at most one per provider.
+  An account keeps at least one method: the last one (no password, no other identity
+  at an enabled provider) cannot be removed.
 
 ## Providers
 
@@ -24,27 +25,69 @@ key that encrypts their secrets.
 
 - **Global** (`tenant_id` NULL; global admins manage them): any account may link one.
   `link_by_email` (global admins only) lets a first login bind by verified email.
-- **Tenant** (a tenant admin manages their tenant's; global admins all): only that
-  tenant's accounts may link or log in through it.
+  Tenant admins see the enabled global providers by name only (what their users can
+  link).
+- **Tenant** (a tenant admin manages their tenant's, several if they like; global
+  admins all): only that tenant's accounts may link or log in through it — checked at
+  every login, not only when an identity is bound. A provider never moves to another
+  tenant.
+- `/api/v1/providers`: name (1–64 characters, unique per login page, any case),
+  issuer (`https` or `http`, verbatim as discovery names it; whether it may be asked
+  is decided per request, see outbound requests below),
+  client id, client secret (write-only: sealed on the way in, never returned, logged
+  or audited; left out of an update, it stays), `link_by_email`, disabled.
+  A new issuer drops the provider's identities (a subject is only unique per issuer)
+  and ends its sessions; disabling ends the sessions made through it and refuses its
+  logins and links, also those already on their way; a delete takes its identities
+  and sessions along. Each of the three answers (and audits) `stranded`: how many
+  accounts it left without a way in (no password, no identity at another enabled
+  provider; they need an invite link). When one of them is an admin account, only a
+  global admin may do it (`409` otherwise): a tenant admin cannot lock a fellow admin
+  out, as they cannot reach them with a reset link either; the accounts are locked
+  while this is counted. A tenant admin gets `404` for another tenant's provider (and
+  a disabled global one), whatever the method; a pre-link names any provider it may
+  not use (none, disabled, another tenant's) with the same `422`.
 - One redirect URI for all: `<public_url>/auth/callback`; the `wgate_login` cookie
-  carries the provider id with state, nonce and PKCE verifier. Discovery is cached per
-  provider for an hour and dropped when the provider changes.
+  carries the provider id with state, nonce, PKCE verifier and start time (10 minutes,
+  checked by the server), sealed with `secret_key` (AES-256-GCM): a made-up or edited
+  one is refused (`expired`). Discovery is cached per provider for an hour, a failed
+  one for 30 s, and dropped when the provider's row changes (issuer, client id or
+  secret) or it is disabled or deleted. An ID token with another nonce, audience or
+  issuer is refused as it is; only a signature the cached keys do not verify makes it
+  look again.
+- **Outbound requests** (discovery, keys, the token exchange): only to public
+  addresses (no loopback, private, link-local, CGNAT, ULA, multicast, documentation
+  ranges, nor IPv4-mapped forms of them; a NAT64 `64:ff9b::/96` address counts as the
+  IPv4 address it carries), checked on the addresses actually connected
+  to, unless listed in `oidc_allow_private` (server.toml); plain `http` only into that
+  list (the provider's discovered endpoints too). No redirects, no proxy (whatever
+  `HTTPS_PROXY` says: a proxy would resolve names past the filter), answers capped at
+  1 MiB. A provider that cannot be reached so (its discovery, keys or token
+  endpoint) is `unavailable`: `/login?error=` or
+  `/me?error=unavailable`, `503 unavailable` from the link start; the cause (with its
+  chain, and the provider id) is in the server's log.
 
 ## Login flow (email first)
 
-1. `POST /auth/options {email}` → `{ password: true, providers: [{id, name}] }` (`id` a
-   string: `admin` for `[admin_oidc]` until 1.10): the global providers
-   plus, for an existing account in a tenant, that tenant's. An unknown email gets the
+1. `POST /auth/options {email}` → `{ password: true, providers: [{id, name}] }` (`id`
+   the provider's id as a string): the enabled global providers plus, for an existing
+   account in a tenant, that tenant's enabled ones. An unknown email gets the
    global ones, as an account without tenant providers does — the page reveals only
    which tenant an account is in, and only when that tenant has its own provider. The
    password field is always offered.
 2. Either `POST /auth/password {email, password}`, or `GET /auth/oidc/{id}` → provider →
    `/auth/callback`.
-3. A provider login is matched by `(provider, subject)`. An unknown subject with a
-   verified email binds to the account of that email only when it is a tenant
-   provider and the account is in its tenant, or a global provider with
-   `link_by_email` and the account is not a global admin. Anything else: 403, no
-   auto-provisioning. Disabled accounts and accounts of disabled tenants are refused.
+3. A provider login is matched by `(provider, subject)`, and refused if the provider
+   does not serve that account (a tenant's provider: another tenant's account or a
+   global admin, even with an identity row). An unknown subject with a verified email
+   binds to the account of that email only when it is a tenant provider and the
+   account is a plain user of its tenant (an admin account is a global admin's to
+   reach, never its tenant's provider's: tenant admins link from `/me`), or a global
+   provider with `link_by_email` and the account is not a global admin. Anything else:
+   `/login?error=forbidden`, no auto-provisioning. Disabled accounts and accounts of
+   disabled tenants are refused. A provider login makes a `full` session; every one
+   is audited (`login.oidc.ok`, `login.oidc.failed` with the provider, the subject
+   and a reason).
 
 The session row carries a **stage**:
 
@@ -66,8 +109,38 @@ next step sends). When a `totp` or `enrol` login is done, the same row becomes `
 under a **new token** (a new cookie; the CSRF token stays): a token seen before the
 second factor never becomes a signed-in one.
 
-and the **method** (`password`, `password_totp`, `oidc:<provider id>`) for the audit
-log.
+The session also records its **method** (`password`, `password_totp`, `oidc`) for the
+audit log; an `oidc` one names its provider (`session.provider_id`, required for
+`oidc` and only there) and ends with it.
+
+## Linking identities
+
+- **From `/me`**: `POST /api/v1/me/identities/{provider_id}/link` (a `full` session, a
+  provider that serves the account) returns the provider's URL and sets the
+  `wgate_login` cookie for a round trip in link mode, bound to this account and this
+  session (the cookie holds the account and the SHA-256 of the session's token). The
+  callback binds `(provider, subject)` to that account only if the same browser comes
+  back with that session, still `full`; no email matching. It lands
+  on `/me?linked=<provider id>`, or `/me?error=taken` (the subject is another
+  account's), `exists` (the account has one there already), `expired`, `forbidden`,
+  `cancelled`, `unavailable`, `failed`. `GET /me/providers` lists what the account
+  may link, any role (`[{id, name, global, linked}]`: the enabled global providers and
+  its tenant's); `GET /me/identities` lists its identities; `DELETE
+  /me/identities/{id}` unlinks one (`422` for the last way in) and ends the account's
+  other sessions made through that provider.
+- **Admins**: `GET /users/{id}/identities`; `POST /users/{id}/identities {provider_id, subject}` pre-links (`409` taken
+  or a duplicate, `422` for a provider that does not serve the account) and `DELETE
+  /users/{id}/identities/{identity_id}` unlinks (the last-method `422`; ends the
+  account's sessions made through it), as far as invite and reset links reach (see
+  Roles below), the `GET` too.
+- **A promotion** to an admin role drops the account's identities at tenant providers
+  (its tenant's admins could bind those; a global provider's stay), in the same
+  transaction, audited with the count; the answer's `stranded` says whether that left
+  it without a way in (send an invite link). Its owner links them again. A binding by
+  email is decided under the account's lock, so it cannot slip past a promotion.
+- Two unlinks at once cannot both pass the last-method check: the account's row is
+  locked in its own statement before the check reads.
+- Every link and unlink is audited (`user.identity.link`, `.link.failed`, `.unlink`).
 
 ## Guessing
 
@@ -163,6 +236,15 @@ header counts only when the peer address is in it.
   the flood lasts; the per-account brake still caps their guesses at any one account.
 - Every attempt writes an audit row, so a flood grows the audit table; retention is a
   later concern.
+- **Plain http to a name** is checked on what the name resolves to before the
+  request, then resolved again to connect (filtered to public or listed addresses): a
+  name rebound in between can take a plain-http request to a public address, never to
+  a private one outside `oidc_allow_private`.
+- **A tenant's provider is trusted for its tenant**: whoever controls that IdP (a
+  tenant admin running their own Keycloak, say) can sign in as any account linked to
+  it, admins of the tenant who linked it included, and binds the tenant's plain users
+  by email anyway. Its admins can reach those users through links and resets as it is;
+  an admin account is bound to it only by its owner (or a global admin).
 - **First enrolment**: an admin who has a password but has not set up TOTP yet can be
   enrolled by whoever has that password — they set up their own authenticator. The
   enrolment is audited (`user.totp.enrol`, with the client IP and the login method),
@@ -229,12 +311,17 @@ account_token  id, user_id, token_hash (sha256), purpose (invite | reset), creat
                created_at, expires_at, used_at NULL
 oidc_provider  id, tenant_id NULL (= global), name, issuer, client_id,
                client_secret (encrypted), link_by_email (global only), disabled_at
-identity       id, user_id, provider_id, subject, created_at; unique (provider_id, subject)
+identity       id, user_id, provider_id, subject, created_at; unique (provider_id, subject),
+               unique (user_id, provider_id)
 login_failure  user_id, client (inet), failed, locked_until NULL, last_at; pk (user_id, client)
 login_known    user_id, client (inet), last_ok_at; pk (user_id, client)
                + login_claim() / login_succeeded() (the owner role only)
-session        + stage (full | totp | enrol), method (password | password_totp | oidc)
+session        + stage (full | totp | enrol), method (password | password_totp | oidc),
+                 provider_id (oidc only; cascades)
 ```
 
-Upgrading from 0.1.0: m0004 drops the `oidc_sub` bindings (they name no provider);
-global admins log in with a password or re-link.
+Upgrading: m0004 drops the `oidc_sub` bindings (they name no provider), the sessions
+made through `[admin_oidc]`, and the unused 0.1.0 `oidc_provider` rows (they had no
+secret); global admins log in with a password and link again from `/me`. A
+`server.toml` that still has `[admin_oidc]` stops the server: add the provider in the
+UI, then remove the section (nothing is imported).

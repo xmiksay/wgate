@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 /// A signed-in client: a user with `role` (tenant `tenant`) and a session made the
-/// way a login makes one.
+/// way a login makes one (a password and TOTP: an admin's is not held in `enrol`).
 #[derive(Clone)]
 pub struct Client {
     pub app: Router,
@@ -44,8 +44,8 @@ pub async fn sign_in_to(
     let csrf = format!("csrf-{user_id}");
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "INSERT INTO session (token_hash, user_id, csrf, expires_at)
-         VALUES ($1, $2, $3, now() + interval '1 day')",
+        "INSERT INTO session (token_hash, user_id, csrf, expires_at, method)
+         VALUES ($1, $2, $3, now() + interval '1 day', 'password_totp')",
         [
             Sha256::digest(token.as_bytes()).to_vec().into(),
             user_id.into(),

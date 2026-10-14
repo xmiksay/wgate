@@ -182,7 +182,7 @@ async fn twenty_attempts_a_minute_per_client() {
 
 #[tokio::test]
 async fn forwarded_for_counts_only_from_a_trusted_proxy() {
-    let e = common::env_with("http://127.0.0.1:9/", |c| {
+    let e = common::env_with(|c| {
         c.trusted_proxies = vec!["10.0.0.0/8".parse().unwrap()];
     })
     .await;

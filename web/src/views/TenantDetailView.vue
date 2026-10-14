@@ -11,6 +11,7 @@ import UiSection from '../components/UiSection.vue'
 import TenantBlocks from '../components/tenant/TenantBlocks.vue'
 import TenantCeilings from '../components/tenant/TenantCeilings.vue'
 import TenantNetworks from '../components/tenant/TenantNetworks.vue'
+import TenantProviders from '../components/tenant/TenantProviders.vue'
 import UserList from '../components/UserList.vue'
 import { useLoad } from '../composables/useLoad'
 import { useSubmit } from '../composables/useSubmit'
@@ -115,5 +116,6 @@ async function remove() {
       :editable="isGlobal"
     />
     <UserList :tenant-id="id" />
+    <TenantProviders :tenant-id="id" />
   </template>
 </template>

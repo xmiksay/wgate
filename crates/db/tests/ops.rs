@@ -75,7 +75,7 @@ async fn the_agent_role_reads_the_desired_state_and_writes_only_its_tables() {
         "SELECT id, tenant_id, role, disabled_at FROM app_user",
     )
     .await;
-    // No emails, OIDC subjects, passwords, sessions or audit trail for the root process.
+    // No emails, identities, passwords, sessions or audit trail for the root process.
     refused(&agent, "SELECT email FROM app_user").await;
     refused(&agent, "SELECT password_hash FROM app_user").await;
     refused(&agent, "SELECT brake_failures FROM app_user").await;
@@ -95,6 +95,7 @@ async fn the_agent_role_reads_the_desired_state_and_writes_only_its_tables() {
     refused(&agent, "SELECT login_succeeded(1, '192.0.2.1')").await;
     refused(&agent, "SELECT * FROM session").await;
     refused(&agent, "SELECT * FROM oidc_provider").await;
+    refused(&agent, "SELECT * FROM identity").await;
     refused(&agent, "SELECT * FROM audit").await;
     ok(
         &agent,
@@ -127,7 +128,15 @@ async fn each_migration_is_recorded_under_its_own_name() {
         .iter()
         .map(|r| r.try_get("", "name").expect("name"))
         .collect();
-    assert_eq!(names, ["m0001_init", "m0002_accounts", "m0003_totp"]);
+    assert_eq!(
+        names,
+        [
+            "m0001_init",
+            "m0002_accounts",
+            "m0003_totp",
+            "m0004_providers"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -174,11 +183,7 @@ async fn one_notification_per_changing_transaction() {
     assert_eq!(revision::current(&pg.db).await.expect("revision"), base + 1);
     // Nothing changed, or only data the state does not depend on: no bump.
     ok(&pg.db, "UPDATE peer SET revoked_at = now() WHERE id = 999").await;
-    ok(
-        &pg.db,
-        "UPDATE app_user SET email = 'new@nexial.cz', oidc_sub = 's'",
-    )
-    .await;
+    ok(&pg.db, "UPDATE app_user SET email = 'new@nexial.cz'").await;
     ok(&pg.db, "UPDATE device SET name = 'renamed'").await;
     ok(&pg.db, "UPDATE network SET name = 'renamed', mesh = mesh").await;
     ok(&pg.db, "UPDATE tenant SET name = 'renamed'").await;

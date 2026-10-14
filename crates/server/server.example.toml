@@ -14,16 +14,16 @@ node_cidrs = ["172.19.9.0/24"]
 # never a whole pod or client network: every address listed may claim to be any client.
 # Default none: the TCP peer is the client.
 trusted_proxies = []
-# Encrypts the TOTP secrets in the database: 32 random bytes, base64. Replace this
-# placeholder (the server refuses it) with the output of `wgate keygen`, and keep it:
-# without it every account has to set up TOTP again.
+# wgate asks OIDC providers (discovery, keys, tokens) only at public addresses, over
+# https. List the private ones a provider may be at (an internal Keycloak, e.g.
+# ["172.19.9.20/32"]); plain http is allowed only into these. Default none.
+oidc_allow_private = []
+# HTTPS_PROXY/HTTP_PROXY are ignored for provider traffic: it needs direct egress.
+# Encrypts the TOTP secrets and the OIDC providers' client secrets in the database:
+# 32 random bytes, base64. Replace this placeholder (the server refuses it) with the
+# output of `wgate keygen`, and keep it: without it every account has to set up TOTP
+# again and every provider's secret has to be entered again.
+# OIDC providers are not configured here: admins add them in the UI
+# (Providers), with the redirect URI <public_url>/auth/callback.
 secret_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-# Optional: an OpenID Connect provider for the global admins, next to their password.
-# Who is one is the database's app_user role (`wgate admin grant <email>` makes the
-# first, `wgate user password <email>` gives them a password).
-[admin_oidc]
-# name = "Google"             # on the login button; default the issuer's host
-issuer = "https://accounts.google.com"
-client_id = "wgate"
-client_secret = "change-me"

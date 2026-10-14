@@ -4,6 +4,7 @@
 pub mod capture;
 pub mod idp;
 pub mod login;
+pub mod oidc;
 mod session;
 pub mod totp;
 
@@ -23,26 +24,21 @@ pub struct Env {
     pub clock: Clock,
 }
 
-/// The test config: the example's addresses, plain http, `issuer` for the admins.
-pub fn config(url: &str, issuer: &str) -> Config {
+/// The test config: the example's addresses, plain http.
+pub fn config(url: &str) -> Config {
     let mut c: Config = toml::from_str(include_str!("../../server.example.toml")).unwrap();
     c.database_url = url.to_owned();
     c.public_url = "http://portal.test".parse().unwrap();
     c.endpoint_host = "127.0.0.1".into();
     // The example's is a placeholder the server refuses.
     c.secret_key = Some(wgate_server::SecretKey::generate().unwrap());
-    if let Some(oidc) = c.admin_oidc.as_mut() {
-        oidc.issuer = issuer.to_owned();
-    }
+    // The mock providers listen on the loopback.
+    c.oidc_allow_private = vec!["127.0.0.0/8".parse().unwrap()];
     c
 }
 
-pub async fn env_with_issuer(issuer: &str) -> Env {
-    env_with(issuer, |_| {}).await
-}
-
-/// As [`env_with_issuer`], the config changed by `edit` first.
-pub async fn env_with(issuer: &str, edit: impl FnOnce(&mut Config)) -> Env {
+/// As [`env`], the config changed by `edit` first.
+pub async fn env_with(edit: impl FnOnce(&mut Config)) -> Env {
     let container = Postgres::default()
         .with_tag("17-alpine")
         .start()
@@ -52,7 +48,7 @@ pub async fn env_with(issuer: &str, edit: impl FnOnce(&mut Config)) -> Env {
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let db = Database::connect(&url).await.expect("connect");
     wgate_db::migrate(&db).await.expect("migrate");
-    let mut config = config(&url, issuer);
+    let mut config = config(&url);
     edit(&mut config);
     let mut state = AppState::new(db.clone(), config).unwrap();
     let clock = Clock::manual(1_800_000_015);
@@ -68,7 +64,7 @@ pub async fn env_with(issuer: &str, edit: impl FnOnce(&mut Config)) -> Env {
 }
 
 pub async fn env() -> Env {
-    env_with_issuer("http://127.0.0.1:9/").await
+    env_with(|_| {}).await
 }
 
 pub async fn sql(db: &DatabaseConnection, s: &str) {

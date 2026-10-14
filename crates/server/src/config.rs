@@ -35,46 +35,24 @@ pub struct Config {
     /// is ignored. Empty: the TCP peer is the client.
     #[serde(default)]
     pub trusted_proxies: Vec<IpNet>,
+    /// Non-public addresses OIDC providers may be reached at (an internal Keycloak);
+    /// plain `http` only into these. Empty: providers are on the internet.
+    #[serde(default)]
+    pub oidc_allow_private: Vec<IpNet>,
     /// Encrypts secrets at rest (TOTP secrets); required, see [`Config::secret_key`].
     #[serde(default)]
     pub secret_key: Option<SecretKey>,
-    /// The global admins' provider; without it they log in with a password.
-    pub admin_oidc: Option<Oidc>,
+    /// Gone (plan 1.10): kept only so that a leftover gets [`LEFTOVER_ADMIN_OIDC`]
+    /// rather than serde's "unknown field". Never read, never printed.
+    #[serde(default)]
+    admin_oidc: Option<serde::de::IgnoredAny>,
 }
 
-/// An OpenID Connect provider (discovery at `<issuer>/.well-known/openid-configuration`).
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Oidc {
-    /// On the login page's button (default: the issuer's host).
-    pub name: Option<String>,
-    /// Exactly as the provider names itself (discovery compares it verbatim: a URL
-    /// type would add a trailing slash).
-    pub issuer: String,
-    pub client_id: String,
-    pub client_secret: String,
-}
-
-impl std::fmt::Debug for Oidc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Oidc")
-            .field("name", &self.name)
-            .field("issuer", &self.issuer)
-            .field("client_id", &self.client_id)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Oidc {
-    pub fn display_name(&self) -> String {
-        self.name.clone().unwrap_or_else(|| {
-            Url::parse(&self.issuer)
-                .ok()
-                .and_then(|u| u.host_str().map(str::to_owned))
-                .unwrap_or_else(|| self.issuer.clone())
-        })
-    }
-}
+/// Why a `server.toml` with `[admin_oidc]` does not start. Not imported on purpose:
+/// a provider in the database is a global admin's decision (its name, who may link).
+pub const LEFTOVER_ADMIN_OIDC: &str = "server.toml has [admin_oidc], but providers now live \
+    in the database: add it in the UI under Providers (a global provider; the redirect \
+    URI stays <public_url>/auth/callback), then remove [admin_oidc] from server.toml";
 
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
@@ -96,6 +74,7 @@ impl Config {
             "public_url must be an origin, without a path or credentials (the portal \
              serves at the root)"
         );
+        anyhow::ensure!(self.admin_oidc.is_none(), LEFTOVER_ADMIN_OIDC);
         self.secret_key()?;
         Ok(())
     }
@@ -161,34 +140,38 @@ mod tests {
         assert!(prefixed.check().is_err());
         prefixed.public_url = "https://user:pw@example.org/".parse().unwrap();
         assert!(prefixed.check().is_err());
-        let oidc = c.admin_oidc.as_ref().unwrap();
-        assert!(!format!("{c:?}").contains(&oidc.client_secret));
-        assert_eq!(oidc.display_name(), "accounts.google.com");
         assert!(c.trusted_proxies.is_empty());
         let example = include_str!("../server.example.toml");
         assert!(toml::from_str::<Config>(&format!("{example}\nbogus = 1")).is_err());
     }
 
     #[test]
-    fn the_admin_provider_and_proxies_are_optional() {
+    fn proxies_are_optional_and_a_leftover_admin_oidc_refused() {
         let example = include_str!("../server.example.toml");
         let bare: String = example
             .lines()
-            .take_while(|l| !l.starts_with("[admin_oidc]"))
             .filter(|l| !l.starts_with("trusted_proxies"))
             .map(|l| format!("{l}\n"))
             .collect();
-        let c: Config = toml::from_str(&bare).unwrap();
-        assert!(c.admin_oidc.is_none());
+        let mut c: Config = toml::from_str(&bare).unwrap();
+        c.secret_key = Some(SecretKey::generate().unwrap());
+        c.check().unwrap();
         let with: Config =
             toml::from_str(&format!("trusted_proxies = [\"172.19.9.11/32\"]\n{bare}")).unwrap();
         assert_eq!(
             with.trusted_proxies,
             vec!["172.19.9.11/32".parse::<IpNet>().unwrap()]
         );
-        let named: Config =
-            toml::from_str(&format!("{bare}[admin_oidc]\nname = \"Google\"\nissuer = \"x\"\nclient_id = \"a\"\nclient_secret = \"b\"\n"))
-                .unwrap();
-        assert_eq!(named.admin_oidc.unwrap().display_name(), "Google");
+        let leftover = format!(
+            "{bare}[admin_oidc]\nissuer = \"https://x\"\nclient_id = \"a\"\nclient_secret = \"hunter2\"\n"
+        );
+        let mut old: Config = toml::from_str(&leftover).unwrap();
+        old.secret_key = Some(SecretKey::generate().unwrap());
+        let err = old.check().unwrap_err().to_string();
+        assert!(
+            err.contains("Providers") && err.contains("remove [admin_oidc]"),
+            "{err}"
+        );
+        assert!(!format!("{old:?}").contains("hunter2"));
     }
 }

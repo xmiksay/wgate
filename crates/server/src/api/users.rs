@@ -17,7 +17,7 @@ use wgate_db::entity::app_user;
 
 use super::begin;
 use crate::audit;
-use crate::auth::{Actor, account, session};
+use crate::auth::{Actor, account, identity, session};
 use crate::error::{ApiError, unique_violation};
 use crate::state::AppState;
 
@@ -34,6 +34,11 @@ pub struct User {
     pub has_password: bool,
     /// Whether TOTP is on.
     pub totp_enabled: bool,
+    /// In an update's answer only, when a promotion took identities at tenant
+    /// providers away: whether that left the account without a way in (send an
+    /// invite link).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stranded: Option<bool>,
 }
 
 impl User {
@@ -46,6 +51,7 @@ impl User {
             disabled: u.disabled_at.is_some(),
             has_password,
             totp_enabled,
+            stranded: None,
         }
     }
 }
@@ -227,18 +233,29 @@ pub async fn update(
     } else {
         0
     };
+    // A tenant admin binds the tenant's plain users to its providers (pre-link, email):
+    // none of that may carry over to an admin account, which its owner links again.
+    let unlinked = if changed && u.role != "user" {
+        identity::unlink_tenant_providers(&txn, id).await?
+    } else {
+        0
+    };
+    // Said, not refused: the global admin promoting it sends an invite link next.
+    let stranded = unlinked > 0 && identity::no_way_in(&txn, id).await?;
     audit::record(
         &txn,
         Some(actor.user_id),
         "user.update",
         format!("app_user/{id}"),
-        json!({ "role": body.role, "disabled": body.disabled, "ended_sessions": ended }),
+        json!({ "role": body.role, "disabled": body.disabled, "ended_sessions": ended,
+                "identities_removed": unlinked, "stranded": stranded }),
     )
     .await?;
-    let u = shown(&txn, vec![u])
+    let mut u = shown(&txn, vec![u])
         .await?
         .pop()
         .ok_or(ApiError::NotFound)?;
+    u.stranded = (unlinked > 0).then_some(stranded);
     txn.commit().await?;
     Ok(Json(u))
 }

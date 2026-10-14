@@ -29,15 +29,39 @@ pub struct AccountLink {
 
 /// Account `id`, locked (no link is made for an account whose password or role
 /// changes meanwhile), if `actor` may reach it: whether it has a password.
-async fn reach(txn: &DatabaseTransaction, actor: &Actor, id: i64) -> Result<bool, ApiError> {
+pub(super) async fn reach(
+    txn: &DatabaseTransaction,
+    actor: &Actor,
+    id: i64,
+) -> Result<bool, ApiError> {
+    reach_as(txn, actor, id, " FOR UPDATE").await
+}
+
+/// As [`reach`], for a read: nothing locked.
+pub(super) async fn reach_read<C: ConnectionTrait>(
+    db: &C,
+    actor: &Actor,
+    id: i64,
+) -> Result<bool, ApiError> {
+    reach_as(db, actor, id, "").await
+}
+
+async fn reach_as<C: ConnectionTrait>(
+    db: &C,
+    actor: &Actor,
+    id: i64,
+    lock: &str,
+) -> Result<bool, ApiError> {
     if id == actor.user_id {
         return Err(ApiError::invalid("your own account: see /me"));
     }
-    let row = txn
+    let row = db
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "SELECT tenant_id, role, password_hash IS NOT NULL AS password FROM app_user
-             WHERE id = $1 FOR UPDATE",
+            format!(
+                "SELECT tenant_id, role, password_hash IS NOT NULL AS password FROM app_user
+                 WHERE id = $1{lock}"
+            ),
             [id.into()],
         ))
         .await?

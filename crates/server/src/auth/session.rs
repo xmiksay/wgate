@@ -34,12 +34,13 @@ pub fn hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
-/// How a session was made, for the audit log.
+/// How a session was made, for the audit log; an OIDC session names its provider
+/// (`session.provider_id`) and ends with it.
 #[derive(Clone, Copy)]
 pub enum Method {
     Password,
     PasswordTotp,
-    Oidc,
+    Oidc(i64),
 }
 
 impl Method {
@@ -47,7 +48,14 @@ impl Method {
         match self {
             Self::Password => "password",
             Self::PasswordTotp => "password_totp",
-            Self::Oidc => "oidc",
+            Self::Oidc(_) => "oidc",
+        }
+    }
+
+    fn provider(self) -> Option<i64> {
+        match self {
+            Self::Oidc(p) => Some(p),
+            _ => None,
         }
     }
 }
@@ -100,14 +108,15 @@ pub async fn create(
     let token = random_token();
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "INSERT INTO session (token_hash, user_id, csrf, expires_at, method, stage)
-         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6)",
+        "INSERT INTO session (token_hash, user_id, csrf, expires_at, method, provider_id, stage)
+         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6, $7)",
         [
             hash(&token).into(),
             user_id.into(),
             random_token().into(),
             (stage.ttl_secs() as f64).into(),
             method.as_str().into(),
+            method.provider().into(),
             stage.as_str().into(),
         ],
     ))
@@ -129,7 +138,7 @@ pub async fn upgrade<C: ConnectionTrait>(
     let done = db
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "UPDATE session SET token_hash = $2, stage = 'full', method = $3,
+            "UPDATE session SET token_hash = $2, stage = 'full', method = $3, provider_id = $5,
                  expires_at = CASE WHEN stage = 'full' THEN expires_at
                                    ELSE now() + make_interval(secs => $4) END,
                  seen_at = now()
@@ -139,6 +148,7 @@ pub async fn upgrade<C: ConnectionTrait>(
                 hash(&token).into(),
                 method.as_str().into(),
                 (MAX_AGE_SECS as f64).into(),
+                method.provider().into(),
             ],
         ))
         .await?
@@ -213,9 +223,10 @@ pub async fn end<C: ConnectionTrait>(db: &C, token: &str) -> Result<Option<i64>,
 }
 
 /// The user of a live session (in any stage), refreshing its idle clock; a dead
-/// session is removed. An admin's `full` session made by a password alone (from
-/// before TOTP was mandatory) is in the `enrol` stage while TOTP is off, and over
-/// once it is on (set up in another session).
+/// session is removed (so is one made through a provider disabled since: disabling
+/// ends them, and this catches a login that raced it). An admin's `full` session
+/// made by a password alone (from before TOTP was mandatory) is in the `enrol` stage
+/// while TOTP is off, and over once it is on (set up in another session).
 pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor>, ApiError> {
     let token_hash: Value = hash(token).into();
     let row = db
@@ -225,11 +236,13 @@ pub async fn lookup(db: &DatabaseConnection, token: &str) -> Result<Option<Actor
                 "SELECT s.id, s.csrf, s.stage, s.method, u.id AS user_id, u.role, u.tenant_id,
                         u.email, u.totp_enabled_at IS NOT NULL AS totp,
                         s.expires_at > now() AND s.seen_at > now() - interval '{IDLE}'
-                            AND u.disabled_at IS NULL AND t.disabled_at IS NULL AS live,
+                            AND u.disabled_at IS NULL AND t.disabled_at IS NULL
+                            AND p.disabled_at IS NULL AS live,
                         s.seen_at < now() - interval '1 minute' AS stale
                  FROM session s
                  JOIN app_user u ON u.id = s.user_id
                  LEFT JOIN tenant t ON t.id = u.tenant_id
+                 LEFT JOIN oidc_provider p ON p.id = s.provider_id
                  WHERE s.token_hash = $1"
             ),
             [token_hash],

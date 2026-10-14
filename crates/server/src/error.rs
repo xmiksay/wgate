@@ -21,6 +21,10 @@ pub enum ApiError {
     /// Every password hash slot taken: try again in a moment.
     #[error("the server is busy; try again")]
     Busy,
+    /// An OIDC provider could not be reached (or was refused by the outbound checks);
+    /// the cause is in the log.
+    #[error("the provider is unavailable; try again later")]
+    ProviderUnavailable,
     #[error("not allowed")]
     Forbidden,
     /// An admin who logs in with a password must set up TOTP before anything else.
@@ -46,7 +50,8 @@ pub enum ApiError {
 /// The JSON body of every error.
 #[derive(Serialize, ToSchema)]
 pub struct ErrorBody {
-    /// `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,
+    /// `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`,
+    /// `unavailable`, `forbidden`,
     /// `totp_required`, `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
     pub error: &'static str,
     pub message: String,
@@ -63,12 +68,21 @@ impl ApiError {
         }
     }
 
+    /// For the log: an internal error with its whole chain of causes.
+    pub fn chain(&self) -> String {
+        match self {
+            Self::Internal(e) => format!("{e:#}"),
+            e => e.to_string(),
+        }
+    }
+
     fn parts(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
             Self::TooManyAttempts(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts"),
             Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "busy"),
+            Self::ProviderUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::TotpRequired => (StatusCode::FORBIDDEN, "totp_required"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),

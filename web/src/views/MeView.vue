@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
 import type { Role } from '../api/types'
+import LinkedSignIns from '../components/me/LinkedSignIns.vue'
 import PasswordChange from '../components/me/PasswordChange.vue'
 import TotpManage from '../components/me/TotpManage.vue'
 import TotpSetup from '../components/me/TotpSetup.vue'
@@ -72,5 +73,6 @@ const reload = () => sessionStore.load()
         you an invite link to set one.
       </p>
     </UiSection>
+    <LinkedSignIns />
   </template>
 </template>

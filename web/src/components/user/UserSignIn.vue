@@ -11,6 +11,7 @@ import ErrorNote from '../ErrorNote.vue'
 import UiButton from '../UiButton.vue'
 import UiSection from '../UiSection.vue'
 import LinkDialog from './LinkDialog.vue'
+import UserIdentities from './UserIdentities.vue'
 
 const props = defineProps<{ user: User }>()
 /** The account's sign-in changed: reload it. */
@@ -84,7 +85,7 @@ async function resetTotp() {
       v-if="own"
       class="muted max-w-prose"
     >
-      This is your account: manage your password and two-factor on
+      This is your account: manage your password, two-factor and linked sign-ins on
       <RouterLink
         to="/me"
         class="link"
@@ -96,7 +97,7 @@ async function resetTotp() {
       v-else-if="!reachable"
       class="muted max-w-prose"
     >
-      Only a global admin manages an admin account's sign-in.
+      Only a global admin manages an admin account's sign-in, linked identities included.
     </p>
     <p
       v-else
@@ -117,6 +118,12 @@ async function resetTotp() {
     >
       Two-factor is off for {{ user.email }}; their sessions ended.
     </p>
+    <!-- A role or tenant change can delete identities: remount to reload them. -->
+    <UserIdentities
+      v-if="reachable"
+      :key="`${user.role}:${user.tenant_id}`"
+      :user="user"
+    />
     <LinkDialog
       v-if="shown"
       :link="shown.link"

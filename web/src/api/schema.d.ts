@@ -55,7 +55,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** The same answer for every email for now (no tenant providers yet). */
+        /**
+         * The enabled global providers and, for an existing account of a tenant, that
+         *     tenant's. An unknown email gets what an account without tenant providers gets:
+         *     the page reveals only which tenant an account is in, and only when that tenant
+         *     has its own provider.
+         */
         post: operations["login_options"];
         delete?: never;
         options?: never;
@@ -264,6 +269,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["my_identities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/identities/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unlinks one of the account's identities, and ends its other sessions made through
+         *     that provider. 422 if it is the last way in (no password, no other identity at
+         *     an enabled provider).
+         */
+        delete: operations["unlink_my_identity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/identities/{id}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Starts linking an identity at provider `id` to the signed-in account: an
+         *     enabled provider that serves it (a tenant's provider only its own tenant's
+         *     accounts). 404 for no such (enabled) provider, 403 for one that does not serve the
+         *     account, 409 if the account has an identity there already, 503 `unavailable` when
+         *     the provider cannot be reached (the cause is in the server's log).
+         */
+        post: operations["link_my_identity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/password": {
         parameters: {
             query?: never;
@@ -280,6 +345,26 @@ export interface paths {
          *     every other session of the account.
          */
         post: operations["change_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The enabled providers the signed-in account may link, any role: the global ones
+         *     and its tenant's.
+         */
+        get: operations["my_providers"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -545,6 +630,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_providers"];
+        put?: never;
+        /**
+         * 409 for a name already on the same login page; 422 for a malformed issuer, an
+         *     empty field, or `link_by_email` on a tenant's provider.
+         */
+        post: operations["create_provider"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_provider"];
+        put?: never;
+        post?: never;
+        /**
+         * Takes its identities along (an account left without a way in needs an invite
+         *     link) and ends the sessions made through it; audited with how many. 409 when an
+         *     admin account would be left without a way in, unless a global admin asks.
+         */
+        delete: operations["remove_provider"];
+        options?: never;
+        head?: never;
+        /**
+         * 403/409/422 as for a create. A new issuer drops the provider's identities (its
+         *     subjects were the old issuer's); that and disabling end the sessions made through
+         *     it, and answer with `stranded`: the accounts left without a way in. 409 when one
+         *     of those is an admin account, unless a global admin asks.
+         */
+        patch: operations["update_provider"];
+        trace?: never;
+    };
     "/routes/{id}": {
         parameters: {
             query?: never;
@@ -733,6 +865,53 @@ export interface paths {
         patch: operations["update_user"];
         trace?: never;
     };
+    "/users/{id}/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An account's identities, as far as invite and reset links reach (a tenant admin
+         *     their tenant's plain users, a global admin anyone; one's own: `/me`).
+         */
+        get: operations["user_identities"];
+        put?: never;
+        /**
+         * Pre-links an identity: its next login through that provider is this account. As
+         *     far as invite and reset links reach (a tenant admin their tenant's plain users, a
+         *     global admin anyone, nobody their own account: 422). The provider must serve the
+         *     account (422 otherwise); 409 if the subject is another account's or the account
+         *     has an identity there already.
+         */
+        post: operations["add_user_identity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}/identities/{identity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unlinks an identity of an account in reach (as for a pre-link), and ends the
+         *     account's sessions made through that provider. 422 for the last way in.
+         */
+        delete: operations["remove_user_identity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users/{id}/invite": {
         parameters: {
             query?: never;
@@ -860,7 +1039,8 @@ export interface components {
             /** @description What is in the way (e.g. the part of a rule no ceiling covers). */
             detail?: unknown;
             /**
-             * @description `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,
+             * @description `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`,
+             *     `unavailable`, `forbidden`,
              *     `totp_required`, `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
              */
             error: string;
@@ -879,6 +1059,23 @@ export interface components {
             from_network_id: number;
             /** Format: int64 */
             to_network_id: number;
+        };
+        Identity: {
+            /** @description RFC 3339, UTC. */
+            created_at: string;
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            provider_id: number;
+            provider_name: string;
+            /** @description The provider's subject identifier for the account. */
+            subject: string;
+        };
+        IdentityCreate: {
+            /** Format: int64 */
+            provider_id: number;
+            /** @description The provider's subject identifier (`sub`) for the account's owner. */
+            subject: string;
         };
         Inbound: components["schemas"]["ServiceBody"] & {
             comment: string;
@@ -901,6 +1098,24 @@ export interface components {
             /** @description The account the link is for. */
             email: string;
             purpose: components["schemas"]["Purpose"];
+        };
+        LinkStart: {
+            /**
+             * @description Send the browser here (the provider's login); it comes back to `/me`, with
+             *     `?linked=<provider id>` or `?error=` (`taken`: the identity is another
+             *     account's; `exists`, `forbidden`, `expired`, `cancelled`, `unavailable`,
+             *     `failed`). Only this browser, in this session, can finish it.
+             */
+            url: string;
+        };
+        LinkableProvider: {
+            /** @description A global provider (else the account's tenant's own). */
+            global: boolean;
+            /** Format: int64 */
+            id: number;
+            /** @description Whether the account has an identity there already (then unlink it first). */
+            linked: boolean;
+            name: string;
         };
         LoginOptions: {
             /** @description Always offered. */
@@ -998,11 +1213,81 @@ export interface components {
             peer: components["schemas"]["Peer"];
             warnings: string[];
         };
+        Provider: {
+            client_id?: string | null;
+            disabled: boolean;
+            /** Format: int64 */
+            id: number;
+            /**
+             * Format: int64
+             * @description How many accounts have linked an identity there.
+             */
+            identities?: number | null;
+            issuer?: string | null;
+            link_by_email: boolean;
+            /**
+             * @description Whether the caller manages it; a tenant admin sees a global provider's name
+             *     only (the fields below are then `None`).
+             */
+            managed: boolean;
+            name: string;
+            /**
+             * Format: int64
+             * @description In an update's answer only: how many accounts it left without a way to log
+             *     in (they need an invite link).
+             */
+            stranded?: number | null;
+            /**
+             * Format: int64
+             * @description `None` for a global provider.
+             */
+            tenant_id?: number | null;
+        };
+        ProviderCreate: {
+            client_id: string;
+            /** @description Write-only. */
+            client_secret: string;
+            disabled?: boolean;
+            /**
+             * @description Exactly as the provider's discovery names itself (a trailing slash counts);
+             *     `https`, or plain `http` to addresses in `oidc_allow_private` (checked when
+             *     it is asked).
+             */
+            issuer: string;
+            /** @description A first login binds by verified email (global providers, global admins only). */
+            link_by_email?: boolean;
+            /** @description On the login button; unique among the providers of the same login page. */
+            name: string;
+            /**
+             * Format: int64
+             * @description `None` makes a global provider (a global admin's call only).
+             */
+            tenant_id?: number | null;
+        };
         ProviderOption: {
-            /** @description Opaque: `admin` for the configured `[admin_oidc]` (later, database ids). */
+            /** @description The provider's id, as a string (opaque to the login page). */
             id: string;
             /** @description For the button. */
             name: string;
+        };
+        ProviderRemoved: {
+            /**
+             * Format: int64
+             * @description How many accounts the delete left without a way to log in (they need an
+             *     invite link).
+             */
+            stranded: number;
+        };
+        ProviderUpdate: {
+            client_id?: string | null;
+            /** @description Write-only; left out, the stored one stays. */
+            client_secret?: string | null;
+            /** @description Disabling ends the sessions made through it; nobody logs in or links there. */
+            disabled?: boolean | null;
+            /** @description A new issuer is another provider's subjects: its identities go. */
+            issuer?: string | null;
+            link_by_email?: boolean | null;
+            name?: string | null;
         };
         /** @enum {string} */
         Purpose: "invite" | "reset";
@@ -1159,6 +1444,12 @@ export interface components {
             id: number;
             /** @description `global_admin`, `tenant_admin` or `user`. */
             role: string;
+            /**
+             * @description In an update's answer only, when a promotion took identities at tenant
+             *     providers away: whether that left the account without a way in (send an
+             *     invite link).
+             */
+            stranded?: boolean | null;
             /**
              * Format: int64
              * @description `None` for a global admin.
@@ -1677,6 +1968,115 @@ export interface operations {
             };
         };
     };
+    my_identities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Identity"][];
+                };
+            };
+        };
+    };
+    unlink_my_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    link_my_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The provider */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The `wgate_login` cookie is set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkStart"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     change_password: {
         parameters: {
             query?: never;
@@ -1719,6 +2119,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    my_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkableProvider"][];
                 };
             };
         };
@@ -2276,6 +2695,195 @@ export interface operations {
             };
         };
     };
+    list_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Provider"][];
+                };
+            };
+        };
+    };
+    create_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderCreate"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Provider"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Provider"];
+                };
+            };
+        };
+    };
+    remove_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderRemoved"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderUpdate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Provider"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     remove_route: {
         parameters: {
             query?: never;
@@ -2660,6 +3268,128 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["User"];
+                };
+            };
+        };
+    };
+    user_identities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Identity"][];
+                };
+            };
+        };
+    };
+    add_user_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityCreate"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Identity"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    remove_user_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+                identity_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

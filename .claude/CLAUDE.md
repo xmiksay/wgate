@@ -40,16 +40,24 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   `login_known` + the brake, `login_claim()`/`login_succeeded()`, session stage;
   `m0003_totp.sql`: the sealed TOTP secret + `totp_last_step`, the code pace
   `totp_wrong`/`totp_next_at`, `recovery_code`,
-  `account_token` (invite/reset links);
+  `account_token` (invite/reset links); `m0004_providers.sql`: `oidc_provider`
+  name/sealed secret/`link_by_email`/disabled (several per tenant), `identity`,
+  `session.provider_id`, `oidc_sub` dropped;
   append a new `m000N_*.sql` to `MIGRATIONS`, never edit a released one;
-  `tests/upgrade.rs` upgrades a 0.1.0 database), `grants.sql` (agent role), `desired_state()` loader, `agent` (the
+  `tests/upgrade.rs` upgrades a 0.1.0 and a pre-m0004 database), `grants.sql` (agent role), `desired_state()` loader, `agent` (the
   agent's only writes: `hub_key`, `agent_status`); shared by server and agent
 - `crates/server` — Axum + OIDC; unprivileged. `auth/` (per [accounts](../docs/accounts.md):
   `local` password login + `/auth/options`, `password` argon2id, the `Hasher`
   semaphore (503 `busy`) + lockout schedule, `account` the claim-before-verify
   lockout/brake (`login_claim`; `local::detached` runs an attempt to its end),
   `limit` per-client and per-/48 attempts + `X-Forwarded-For` from
-  `trusted_proxies`, `oidc` the optional `[admin_oidc]` login, `session` (stages
+  `trusted_proxies`, `provider` the DB providers (sealed secret, validation, the
+  per-provider discovery cache, `serves`/`binds_by_email` rules), `outbound` the
+  providers' HTTP client (public addresses only but `oidc_allow_private`, resolver
+  filtered, 1 MiB answers), `oidc` the round trip
+  (`/auth/oidc/{id}` login or a `/me` link bound to its session; the `wgate_login`
+  cookie sealed with `secret_key`) + `oidc_done` (sign in / bind), `identity` resolve/bind/unlink (never the
+  last way in), `logout`, `session` (stages
   `full`/`totp`/`enrol`; finishing a login rotates the token), `totp` RFC 6238 +
   recovery codes (pure, `now` a parameter: `AppState::clock`, set by hand in tests),
   `factor` their SQL (a code's step used once; `wait_turn` the per-account pace of
@@ -60,13 +68,17 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   TOTP counts as `enrol`) / `Actor` (admins) + CSRF),
   `seal.rs` (`secret_key`: AES-256-GCM blobs, the row as associated data),
   `api/` (one module per resource; `me_totp` the profile's TOTP, `credentials` an
-  admin's links and TOTP reset (tenant admins: own plain users only, never self);
+  admin's links and TOTP reset (tenant admins: own plain users only, never self;
+  `reach` is shared with `identities`: `/me` link/unlink + admin pre-link),
+  `providers` + `provider_types` (CRUD; tenant admins their tenant's, global ones
+  by name only; never stranding an admin unless a global admin asks);
   `users` (an admin role is given, taken or touched by a global admin only),
   `devices`; `clientconf` renders configs from the compiled
   state, `openapi` lists every path), `error.rs` (`ApiError`, SQLSTATE
   mapping), `audit.rs`, `wgkey.rs` (x25519, zeroized); config
   `server.example.toml`, unit `deploy/wgate-server.service`. Tests: `tests/*.rs`
-  against Postgres containers and a mock IdP (`tests/common/idp.rs`); handlers that
+  against Postgres containers and mock IdPs (`tests/common/idp.rs`, as many as a test
+  starts; `tests/common/oidc.rs` drives round trips); handlers that
   need the client address get `ConnectInfo` from `serve` (tests inject it:
   `tests/common/login.rs`); a secret-never-logged test is its own binary
   (`tests/common/capture.rs`);

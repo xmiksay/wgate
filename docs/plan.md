@@ -309,8 +309,9 @@ API and UI:
 - `/me` links and unlinks identities (never the last method)
 - admins pre-link and unlink
 
-Auto-link by verified email only through the account's own tenant provider, or a
-global provider with `link_by_email` for an account that is not a global admin.
+Auto-link by verified email only through the account's own tenant provider (for its
+plain users: admin accounts link from `/me` or a global admin pre-links), or a global
+provider with `link_by_email` for an account that is not a global admin.
 
 Tests, two mock IdPs:
 - tenant A's provider never logs in a B account, nor a global admin
