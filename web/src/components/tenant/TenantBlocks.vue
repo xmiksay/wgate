@@ -21,17 +21,18 @@ const emit = defineEmits<{ changed: [] }>()
 
 const { busy, error: writeError, run } = useSubmit()
 const prefix = ref(24)
-const { value: cidr, offer: offerCidr } = useSuggestion('')
+const range = useSuggestion('')
+const { value: cidr } = range
 const hint = ref('')
 
 async function suggest() {
+  const t = range.ticket()
   hint.value = ''
   try {
     const s = await call(api.GET('/free-block', { params: { query: { prefix: prefix.value } } }))
-    offerCidr(s.free ?? '')
-    if (!s.free) hint.value = `No free /${prefix.value} in the pool.`
+    if (range.offer(s.free ?? '', t) && !s.free) hint.value = `No free /${prefix.value} in the pool.`
   } catch {
-    hint.value = 'No suggestion: type a range.'
+    if (range.current(t)) hint.value = 'No suggestion: type a range.'
   }
 }
 
@@ -47,6 +48,8 @@ async function add() {
     ),
   )
   if (ok) {
+    // The range is taken now, typed or not: make room for the next suggestion.
+    range.reset()
     emit('changed')
     await suggest()
   }

@@ -360,6 +360,14 @@ async fn suggestions_point_at_free_space() {
         .get(&format!("/tenants/{}/free-range?prefix=25", w.t1))
         .await;
     assert_eq!(v["free"], "10.50.0.128/25");
+    // Only inside the chosen block: another tenant's block is none of theirs.
+    let (_, v) = g
+        .get(&format!(
+            "/tenants/{}/free-range?prefix=25&block_id={}",
+            w.t1, w.block2
+        ))
+        .await;
+    assert_eq!(v["free"], serde_json::Value::Null);
     let (_, v) = g.get("/free-block?prefix=24").await;
     assert_eq!(v["free"], "10.50.2.0/24");
     let (_, v) = g.get("/free-port").await;

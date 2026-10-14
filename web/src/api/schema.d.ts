@@ -489,7 +489,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** A free range of `prefix` in the tenant's blocks. */
+        /** A free range of `prefix` in the tenant's blocks (or in one of them). */
         get: operations["free_range"];
         put?: never;
         post?: never;
@@ -1767,6 +1767,8 @@ export interface operations {
         parameters: {
             query: {
                 prefix: number;
+                /** @description Only inside this block of the tenant's. */
+                block_id?: number | null;
             };
             header?: never;
             path: {

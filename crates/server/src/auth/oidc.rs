@@ -151,50 +151,49 @@ pub async fn callback(
     jar: CookieJar,
     Query(q): Query<Callback>,
 ) -> (CookieJar, Redirect) {
-    let result = match &q.error {
-        Some(error) => {
-            tracing::warn!(%error, "login refused by the provider");
-            Err(None)
-        }
-        None => complete(&state, jar.clone(), q).await.map_err(Some),
+    let refuse = |jar: CookieJar, why: &str| (jar, Redirect::to(&format!("/login?error={why}")));
+    // Nothing counts, and nothing is cleared, unless it answers this browser's login:
+    // a stray link to the callback must not cancel a sign-in in progress.
+    let Some(pending) = pending_login(&jar, q.state.as_deref()) else {
+        return refuse(jar, "expired");
     };
-    match result {
+    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(LOGIN_COOKIE_PATH));
+    if let Some(error) = &q.error {
+        let error: String = error.chars().take(64).collect();
+        tracing::warn!(error = ?error, "login refused by the provider");
+        return refuse(jar, "cancelled");
+    }
+    match complete(&state, jar.clone(), pending, q.code).await {
         Ok(done) => done,
         Err(e) => {
             let why = match e {
-                None => "cancelled",
-                Some(ApiError::Forbidden) => "forbidden",
-                Some(ApiError::BadRequest(_)) => "expired",
-                Some(e) => {
+                ApiError::Forbidden => "forbidden",
+                ApiError::BadRequest(_) => "expired",
+                e => {
                     tracing::error!(error = %e, "login failed");
                     "failed"
                 }
             };
-            let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(LOGIN_COOKIE_PATH));
-            (jar, Redirect::to(&format!("/login?error={why}")))
+            refuse(jar, why)
         }
     }
+}
+
+/// This browser's login, if `state` is its and it is not stale.
+fn pending_login(jar: &CookieJar, state: Option<&str>) -> Option<Pending> {
+    jar.get(LOGIN_COOKIE)
+        .and_then(|c| URL_SAFE_NO_PAD.decode(c.value()).ok())
+        .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
+        .filter(|p| state.is_some_and(|s| bool::from(p.state.as_bytes().ct_eq(s.as_bytes()))))
+        .filter(|p| (0..=LOGIN_TTL_SECS).contains(&(unix_now() - p.started)))
 }
 
 async fn complete(
     state: &AppState,
     jar: CookieJar,
-    q: Callback,
+    pending: Pending,
+    code: Option<String>,
 ) -> Result<(CookieJar, Redirect), ApiError> {
-    let pending = jar
-        .get(LOGIN_COOKIE)
-        .and_then(|c| URL_SAFE_NO_PAD.decode(c.value()).ok())
-        .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
-        .filter(|p| {
-            q.state
-                .as_ref()
-                .is_some_and(|s| bool::from(p.state.as_bytes().ct_eq(s.as_bytes())))
-        })
-        .filter(|p| (0..=LOGIN_TTL_SECS).contains(&(unix_now() - p.started)))
-        .ok_or_else(|| {
-            ApiError::BadRequest("this login was not started in this browser; start again".into())
-        })?;
-    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(LOGIN_COOKIE_PATH));
     let nonce = Nonce::new(pending.nonce);
 
     let client = state.oidc.client(state).await?;
@@ -203,7 +202,7 @@ async fn complete(
         ApiError::Forbidden
     };
     let exchange = client
-        .exchange_code(AuthorizationCode::new(q.code.ok_or_else(|| {
+        .exchange_code(AuthorizationCode::new(code.ok_or_else(|| {
             ApiError::BadRequest("no code from the provider".into())
         })?))
         .map_err(|e| refused("no token endpoint", &e))?

@@ -187,22 +187,39 @@ async fn unverified_emails_and_strangers_are_refused() {
         .await
         .unwrap();
     assert_eq!(refusal(&res).as_deref(), Some("expired"));
-    // Cancelled at the provider, or back without a code: the login page says so.
-    for (query, why) in [
-        ("error=access_denied&state=s", "cancelled"),
-        ("state=s", "expired"),
+    // Cancelled at the provider, or back without a code: the login page says so. A
+    // stray link (not this browser's login) cancels nothing and keeps its cookie.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let fresh = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::json!({ "started": now, "state": "s", "nonce": "n", "verifier": "v" })
+            .to_string(),
+    );
+    for (query, cookie, why) in [
+        ("error=access_denied&state=s", true, "cancelled"),
+        ("state=s", true, "expired"),
+        ("error=access_denied&state=s", false, "expired"),
+        ("error=access_denied&state=other", true, "expired"),
     ] {
+        let mut req = Request::get(format!("/auth/callback?{query}"));
+        if cookie {
+            req = req.header(header::COOKIE, format!("wgate_login={fresh}"));
+        }
         let res = e
             .app
             .clone()
-            .oneshot(
-                Request::get(format!("/auth/callback?{query}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(req.body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(refusal(&res).as_deref(), Some(why), "{query}");
+        assert_eq!(refusal(&res).as_deref(), Some(why), "{query} {cookie}");
+        let cleared = res.headers().contains_key(header::SET_COOKIE);
+        assert_eq!(
+            cleared,
+            why != "expired" || query == "state=s",
+            "{query} {cookie}"
+        );
     }
     // Without a session: not signed in.
     assert_eq!(

@@ -1370,7 +1370,7 @@
         "tags": [
           "info"
         ],
-        "summary": "A free range of `prefix` in the tenant's blocks.",
+        "summary": "A free range of `prefix` in the tenant's blocks (or in one of them).",
         "operationId": "free_range",
         "parameters": [
           {
@@ -1381,6 +1381,19 @@
               "type": "integer",
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "block_id",
+            "in": "query",
+            "description": "Only inside this block of the tenant's.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
             }
           },
           {

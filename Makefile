@@ -20,8 +20,15 @@ help: ## Show this help
 deps: ## Install web dependencies
 	cd web && $(NVM) npm ci
 
+# Built only when its sources changed: a fresh web/dist would make build.rs re-stage it
+# and the server recompile.
+WEB_SRC := $(shell find web/src web/public -type f 2>/dev/null) web/index.html \
+	web/package-lock.json web/vite.config.ts $(wildcard web/tsconfig*.json)
+
 .PHONY: web
-web: ## Build the Vue UI into web/dist
+web: web/dist/index.html ## Build the Vue UI into web/dist (when its sources changed)
+
+web/dist/index.html: $(WEB_SRC)
 	cd web && $(NVM) npm run build
 
 .PHONY: build
