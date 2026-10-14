@@ -114,6 +114,55 @@ files reject unknown keys.
 
 `public_url` on `https` makes the session cookie `Secure`; on plain `http` it is not.
 
+### Example: a lone test hub
+
+The host `vpn.example.org` with a LAN `192.168.100.0/24` (its own address `.10`), Postgres
+on the host. Tenants get `10.50.0.0/16`; the LAN is infrastructure they may be granted
+(reached SNATed from `.10`), so it is also reserved — nobody may route it.
+
+`/etc/wgate/server.toml`:
+
+```toml
+listen = "127.0.0.1:8470"
+database_url = "postgres://wgate:SERVER_PASSWORD@127.0.0.1:5432/wgate"
+public_url = "https://vpn.example.org"
+endpoint_host = "vpn.example.org"
+pool = ["10.50.0.0/16"]
+routed_space = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+reserved = ["192.168.100.0/24"]
+snat_source = "192.168.100.10"
+node_cidrs = ["192.168.100.0/24"]
+
+[admin_oidc]
+issuer = "https://accounts.google.com"
+client_id = "CLIENT_ID.apps.googleusercontent.com"
+client_secret = "CLIENT_SECRET"
+```
+
+`/etc/wgate/agent.toml`:
+
+```toml
+database_url = "postgres://wgate_agent:AGENT_PASSWORD@127.0.0.1:5432/wgate"
+pool = ["10.50.0.0/16"]
+routed_space = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+reserved = ["192.168.100.0/24"]
+snat_source = "192.168.100.10"
+node_cidrs = ["192.168.100.0/24"]
+# Defaults, shown for reference:
+keys_dir = "/var/lib/wgate/keys"
+state_file = "/var/lib/wgate/state.json"
+reconcile_interval_secs = 60
+```
+
+```sh
+chown root:wgate /etc/wgate/server.toml && chmod 0640 /etc/wgate/server.toml
+chown root:root /etc/wgate/agent.toml && chmod 0600 /etc/wgate/agent.toml
+```
+
+A host with only a public address and no LAN: `node_cidrs = []`, `reserved = []`, and
+`snat_source` its public address (nothing is SNATed then) — tenants reach only the peers
+and routed LANs their rules grant.
+
 ## 6. Units
 
 Installed in step 2 (or `cp deploy/*.service /etc/systemd/system/` from a checkout).
@@ -142,7 +191,7 @@ vpn.example.org {
 
 1. Log in at `public_url`; the status bar at the top shows `applied (rev N)`.
 2. Create a tenant `test` with a block (e.g. `10.50.0.0/24`) and a ceiling (say icmp to
-   one host on `node_cidrs`), a network `test` (`10.50.0.0/25`
+   one host on `node_cidrs`, e.g. `192.168.100.10/32`), a network `test` (`10.50.0.0/25`
    inside the block, port 51899) with the same rule — a rule
    outside the ceiling is refused — then a user, a device and a peer.
 3. Download the config to a laptop, `wg-quick up ./test.conf`: the granted destination
