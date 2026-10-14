@@ -4,7 +4,7 @@ Architecture and decisions: [design.md](design.md). Each step = one branch + PR 
 `master`. A step is done when `make lint` + `make test` are green (netns tests run in CI
 under sudo).
 
-## Phase 1 — MVP (the global admin manages everything)
+## Phase 1 — MVP (the global admin manages everything; local accounts + linked identities)
 
 ### 1.1 Repo skeleton
 - Cargo workspace `crates/{core,server,agent,wgate}`, edition 2024, `rust-toolchain.toml`
@@ -175,7 +175,7 @@ under sudo).
   - `pool`, `routed_space`, `reserved`, `snat_source`, `node_cidrs` (as the agent's:
     the server compiles the state to render client configs)
   - `[admin_oidc]` issuer (verbatim, as discovery wants it)/client_id/client_secret
-  - `[[tenant_oidc]]` comes with phase 2
+  - providers move to the DB in 1.10 ([accounts](accounts.md))
 - OIDC login (generic, PKCE S256, nonce) for global admins only; the verified email
   matches first, then `sub` is pinned; the role comes from the DB. Bootstrap:
   `wgate admin grant <email>`. The login's state, nonce and PKCE verifier live in
@@ -246,7 +246,83 @@ under sudo).
     peer in another network keeps working
   - disabling network B1 deletes its interface while A1's stream keeps running
 
-### 1.8 Deployment (repo `ansible`, its own branch there)
+### 1.8 Local accounts — password login
+Per [accounts](accounts.md). Migration `m0002`:
+- email unique across wgate
+- `app_user` gets `password_hash`, `failed_logins` and `locked_until`
+- `session` gets `stage` and `method`
+
+Then:
+- argon2id passwords for every role
+- `POST /auth/options` and `POST /auth/password`
+- lockout per account (Postgres), plus 20 attempts a minute per IP (in memory;
+  `X-Forwarded-For` only from `trusted_proxies`)
+- the same 401 for every failure; every attempt audited
+- `[admin_oidc]` becomes optional (the button shows only when it is set)
+
+CLI: `wgate user password <email>` (prompted). UI: email first, then a password field
+and the provider button; "change password" on `/me`.
+
+Tests:
+- login, lockout and its reset
+- per-IP limit
+- unknown email = wrong password (status and body)
+- password change ends other sessions
+- the password never appears in a log or the audit
+
+### 1.9 TOTP, invite and reset links
+`secret_key` in `server.toml` and `wgate keygen`. AES-256-GCM blobs with the row as
+associated data (unit tests: round trip, a blob in the wrong row fails).
+
+Migration `m0003`:
+- `app_user` gets the TOTP columns
+- `recovery_code`
+- `account_token`
+
+TOTP:
+- set up with a QR and confirm with a code
+- 10 recovery codes, shown once
+- one use per code (`totp_last_step`)
+- admins with a password are forced through the `enrol` stage
+- `/auth/totp` for the `totp` stage (5 min)
+
+Invite and reset links (24 h, single use; a new one voids the old). CLI:
+`wgate user totp-reset <email>`. UI: TOTP setup on `/me`, the `/account/<token>` page,
+and invite/reset buttons on the users page.
+
+Tests:
+- RFC 6238 vectors
+- replay refused
+- recovery codes are single use
+- an admin in the `enrol` stage gets 403 everywhere but setup
+- link expiry and reuse
+- a reset ends sessions
+
+### 1.10 OIDC providers in the DB, linked identities
+Migration `m0004`:
+- `oidc_provider` gets `name`, an encrypted `client_secret`, `link_by_email` and
+  `disabled_at`; one tenant may have several
+- the `identity` table
+- `oidc_sub` and `[admin_oidc]` go
+
+API and UI:
+- provider CRUD: global admins all, tenant admins their own tenant's; the secret is
+  write-only
+- the login page lists the providers per email (global plus the account's tenant's)
+- `/me` links and unlinks identities (never the last method)
+- admins pre-link and unlink
+
+Auto-link by verified email only through the account's own tenant provider, or a
+global provider with `link_by_email` for an account that is not a global admin.
+
+Tests, two mock IdPs:
+- tenant A's provider never logs in a B account, nor a global admin
+- a `link_by_email` global provider binds; without the flag it does not
+- a tenant admin cannot set `link_by_email` or touch another tenant's provider
+- a disabled provider refuses
+- the secret never comes back
+
+### 1.11 Deployment (repo `ansible`, its own branch there)
 - `group_vars/pg`: database `wgate` + roles `wgate`, `wgate_agent`;
   `make pg-password-new ROLE=wgate` and the same for `wgate_agent`.
 - Role `wgate` (defaults: version + sha256):
@@ -275,7 +351,7 @@ under sudo).
 
   Then delete the tenant.
 
-### 1.9 Onboarding
+### 1.12 Onboarding
 - Tenants nexial and krcmar, a `/24` block each, one network each (`nexial`,
   `krcmar`). Ceiling and network rule:
   - `tcp 172.16.16.1/32 6443`
@@ -285,18 +361,13 @@ under sudo).
 
 ## Phase 2 — Self-service
 
-- Tenant OIDC from `[[tenant_oidc]]` + an `oidc_provider` row. Login:
-  - email → domain → tenant, or a tenant picker
-  - match `(issuer, email)` → bind `sub`; afterwards only `(issuer, sub)`
-  - unknown user → 403
 - Tenant-admin UI: networks inside own blocks, membership, routers, rules (within the
   ceiling), the tenant's audit log.
 - User UI: my devices and peers, add to a network (server key / pasted public key),
   revoke; a per-user peer limit (default 5, editable by the tenant admin).
 - Audit: every write with the actor; the global admin filters by tenant.
-- Tests: integration against a mock IdP with two issuers (a user of tenant A cannot
-  log in through B's IdP, cannot see or create anything in B; a tenant admin cannot
-  create federations or widen the ceiling).
+- Tests: a tenant admin cannot see or create anything in another tenant, cannot
+  create federations or widen the ceiling.
 
 ## Phase 3 — wg0 under wgate
 

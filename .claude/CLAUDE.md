@@ -1,7 +1,7 @@
 # wgate
 
 Multi-tenant WireGuard gateway (pool → tenants → networks → peers). Read [design](../docs/design.md) for architecture and
-decisions ([enforcement](../docs/enforcement.md) for `table inet wgate`), [plan](../docs/plan.md) for the step you are on.
+decisions ([enforcement](../docs/enforcement.md) for `table inet wgate`, [accounts](../docs/accounts.md) for login), [plan](../docs/plan.md) for the step you are on.
 
 ## Commands
 
