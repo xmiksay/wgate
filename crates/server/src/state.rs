@@ -20,6 +20,8 @@ impl AppState {
     pub fn new(db: DatabaseConnection, config: Config) -> anyhow::Result<Self> {
         let http = openidconnect::reqwest::ClientBuilder::new()
             .redirect(openidconnect::reqwest::redirect::Policy::none())
+            // A provider that hangs must not hold the discovery lock forever.
+            .timeout(std::time::Duration::from_secs(10))
             .build()?;
         Ok(Self {
             db,

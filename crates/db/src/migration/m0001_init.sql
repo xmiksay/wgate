@@ -364,14 +364,6 @@ CREATE TABLE session (
     expires_at timestamptz NOT NULL
 );
 
--- An OIDC login between the redirect and the callback (a few minutes at most).
-CREATE TABLE login_state (
-    state         text PRIMARY KEY,
-    nonce         text NOT NULL,
-    pkce_verifier text NOT NULL,
-    created_at    timestamptz NOT NULL DEFAULT now()
-);
-
 -- Foreign keys get no index by themselves; cascades and per-peer lookups need them.
 CREATE INDEX ON tenant_block (tenant_id);
 CREATE INDEX ON network (tenant_id);

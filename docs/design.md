@@ -142,7 +142,6 @@ audit         id, at, actor_user_id, action, target, detail jsonb
 state_revision  revision                          # bumped + NOTIFY once per changing transaction
 agent_status    applied_revision, applied_at, error   # written by the agent
 session       token_hash (sha256), user_id, csrf, created_at, seen_at, expires_at
-login_state   state, nonce, pkce_verifier, created_at   # one OIDC round trip, ≤ 10 min
 ```
 
 Ports are `NULL` for icmp. OIDC client secrets stay out of the DB, in
@@ -239,8 +238,9 @@ Other peers are unaffected; the interface never restarts.
 - Phase 1: only global admins log in, through `[admin_oidc]` in `server.toml`. The
   match is a verified email (any case) against a global admin, then `sub` is pinned;
   the role is the DB's. The first one comes from `wgate admin grant <email>`. The
-  round trip is bound to the browser that started it (a `wgate_login` cookie holds its
-  state); discovery is cached for an hour.
+  round trip lives in the browser that started it (the `wgate_login` cookie holds its
+  state, nonce and PKCE verifier; nothing is stored for a login that never returns);
+  discovery is cached for an hour.
 - Session: a random token in an `HttpOnly; Secure; SameSite=Lax` cookie; Postgres keeps
   only its sha256 (8 h idle, 7 d at most). Writes carry the session's `X-CSRF-Token`.
 - User: their devices and peers; "add to network" (server keypair → config + QR /

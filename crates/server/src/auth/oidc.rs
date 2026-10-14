@@ -1,8 +1,9 @@
 //! The global admins' login: OpenID Connect authorization code with PKCE. A login
 //! matches a global admin by the issuer's subject, or the first time by their verified
 //! email (which then pins the subject: an email changed at the IdP takes nothing over).
-//! The round trip is bound to the browser that started it (the `wgate_login` cookie
-//! carries its state), so nobody can hand someone else a callback to their account.
+//! The round trip lives in the browser that started it (the `wgate_login` cookie holds
+//! its state, nonce and PKCE verifier), so nobody can hand someone else a callback to
+//! their account, and an abandoned login leaves nothing behind.
 
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,8 @@ use axum::http::StatusCode;
 use axum::response::Redirect;
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
 use openidconnect::{
     AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet, EndpointNotSet,
@@ -18,7 +21,7 @@ use openidconnect::{
     TokenResponse,
 };
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
@@ -29,10 +32,7 @@ use crate::error::ApiError;
 use crate::state::AppState;
 
 /// Between the redirect and the callback.
-const LOGIN_TTL: &str = "10 minutes";
 const LOGIN_TTL_SECS: i64 = 600;
-/// Logins in progress at most; more get a 429 (each one is a row).
-const LOGINS_IN_PROGRESS: i64 = 1000;
 const LOGIN_COOKIE: &str = "wgate_login";
 /// How long discovered metadata (endpoints, signing keys) is reused.
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
@@ -105,40 +105,29 @@ pub async fn login(
         .add_scope(Scope::new("email".into()))
         .set_pkce_challenge(challenge)
         .url();
-    state
-        .db
-        .execute_raw(Statement::from_string(
-            DbBackend::Postgres,
-            format!("DELETE FROM login_state WHERE created_at < now() - interval '{LOGIN_TTL}'"),
-        ))
-        .await?;
-    let inserted = state
-        .db
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "INSERT INTO login_state (state, nonce, pkce_verifier)
-             SELECT $1, $2, $3 WHERE (SELECT count(*) FROM login_state) < $4",
-            [
-                csrf.secret().clone().into(),
-                nonce.secret().clone().into(),
-                verifier.secret().clone().into(),
-                LOGINS_IN_PROGRESS.into(),
-            ],
-        ))
-        .await?;
-    if inserted.rows_affected() == 0 {
-        return Err(ApiError::TooMany(
-            "too many logins in progress; try again shortly".into(),
-        ));
-    }
-    let cookie = Cookie::build((LOGIN_COOKIE, csrf.secret().clone()))
+    let pending = Pending {
+        state: csrf.secret().clone(),
+        nonce: nonce.secret().clone(),
+        verifier: verifier.secret().clone(),
+    };
+    let value = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&pending).map_err(anyhow::Error::from)?);
+    let cookie = Cookie::build((LOGIN_COOKIE, value))
         .http_only(true)
         .secure(state.config.secure_cookies())
         .same_site(SameSite::Lax)
-        .path("/auth")
+        .path(state.config.auth_path())
         .max_age(time_secs(LOGIN_TTL_SECS))
         .build();
     Ok((jar.add(cookie), Redirect::to(url.as_str())))
+}
+
+/// One login between the redirect and the callback, kept in the browser that started
+/// it: nothing is stored for a login that never comes back.
+#[derive(Serialize, Deserialize)]
+struct Pending {
+    state: String,
+    nonce: String,
+    verifier: String,
 }
 
 #[derive(Deserialize)]
@@ -153,52 +142,49 @@ pub async fn callback(
     jar: CookieJar,
     Query(q): Query<Callback>,
 ) -> Result<(CookieJar, Redirect), ApiError> {
-    let started_here = jar
+    let pending = jar
         .get(LOGIN_COOKIE)
-        .is_some_and(|c| bool::from(c.value().as_bytes().ct_eq(q.state.as_bytes())));
-    if !started_here {
-        return Err(ApiError::BadRequest(
-            "this login was not started in this browser; start again".into(),
-        ));
-    }
-    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path("/auth"));
-    // Taken once: a replayed callback finds nothing.
-    let pending = state
-        .db
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "DELETE FROM login_state
-                 WHERE state = $1 AND created_at > now() - interval '{LOGIN_TTL}'
-                 RETURNING nonce, pkce_verifier"
-            ),
-            [q.state.into()],
-        ))
-        .await?
-        .ok_or_else(|| ApiError::BadRequest("the login expired; start again".into()))?;
-    let nonce: String = pending.try_get("", "nonce")?;
-    let verifier: String = pending.try_get("", "pkce_verifier")?;
+        .and_then(|c| URL_SAFE_NO_PAD.decode(c.value()).ok())
+        .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
+        .filter(|p| bool::from(p.state.as_bytes().ct_eq(q.state.as_bytes())))
+        .ok_or_else(|| {
+            ApiError::BadRequest("this login was not started in this browser; start again".into())
+        })?;
+    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(state.config.auth_path()));
+    let nonce = Nonce::new(pending.nonce);
 
     let client = state.oidc.client(&state).await?;
     let refused = |what: &str, e: &dyn std::fmt::Display| {
         tracing::warn!(error = %e, "login refused: {what}");
         ApiError::Forbidden
     };
-    let response = client
+    let exchange = client
         .exchange_code(AuthorizationCode::new(q.code))
         .map_err(|e| refused("no token endpoint", &e))?
-        .set_pkce_verifier(PkceCodeVerifier::new(verifier))
+        .set_pkce_verifier(PkceCodeVerifier::new(pending.verifier))
         .request_async(&state.http)
-        .await
-        .map_err(|e| refused("token exchange", &e))?;
+        .await;
+    let response = match exchange {
+        Ok(r) => r,
+        Err(e) => {
+            // The provider may have moved its endpoints: the next login rediscovers.
+            state.oidc.forget().await;
+            return Err(refused("token exchange", &e));
+        }
+    };
     let id_token = response
         .id_token()
         .ok_or_else(|| refused("no ID token", &"missing"))?;
-    let claims = match id_token.claims(&client.id_token_verifier(), &Nonce::new(nonce)) {
-        Ok(claims) => claims,
-        Err(e) => {
+    let claims = match id_token.claims(&client.id_token_verifier(), &nonce) {
+        Ok(claims) => claims.clone(),
+        Err(_) => {
+            // Perhaps signed with a key newer than the cached ones: once more, fresh.
             state.oidc.forget().await;
-            return Err(refused("ID token", &e));
+            let fresh = state.oidc.client(&state).await?;
+            id_token
+                .claims(&fresh.id_token_verifier(), &nonce)
+                .map_err(|e| refused("ID token", &e))?
+                .clone()
         }
     };
     let subject = claims.subject().as_str();
@@ -275,8 +261,17 @@ pub async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), ApiError> {
-    if let Some(cookie) = jar.get(session::COOKIE) {
-        session::end(&state.db, cookie.value()).await?;
+    if let Some(cookie) = jar.get(session::COOKIE)
+        && let Some(user_id) = session::end(&state.db, cookie.value()).await?
+    {
+        audit::record(
+            &state.db,
+            Some(user_id),
+            "logout",
+            format!("app_user/{user_id}"),
+            json!({}),
+        )
+        .await?;
     }
     Ok((
         jar.remove(Cookie::build(session::COOKIE).path("/")),
