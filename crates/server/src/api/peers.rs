@@ -7,16 +7,16 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use ipnet::Ipv4Net;
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
-    QueryFilter, QueryOrder, QuerySelect,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DbBackend, EntityTrait,
+    IntoActiveModel, QueryFilter, QueryOrder, Statement,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 use wgate_core::is_wg_key;
 use wgate_db::entity::{peer, peer_route};
-use zeroize::Zeroizing;
 
 use super::clientconf::{self, Rendered};
 use super::routes::{Route, insert_route};
@@ -104,15 +104,13 @@ async fn peer_out<C: ConnectionTrait>(db: &C, p: peer::Model) -> Result<Peer, Ap
 }
 
 /// The peer, if the actor manages both its network's tenant and its device (a global
-/// admin's device only a global admin does). In a transaction, the row stays locked
-/// until it ends: two config downloads rotate one after the other.
+/// admin's device only a global admin does).
 pub(super) async fn owned<C: ConnectionTrait>(
     db: &C,
     actor: &Actor,
     id: i64,
 ) -> Result<peer::Model, ApiError> {
     let p = peer::Entity::find_by_id(id)
-        .lock_exclusive()
         .one(db)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -143,6 +141,13 @@ pub async fn list(
     if let Some(n) = f.network_id {
         actor.tenant(tenant_of_network(&s.db, n).await?)?;
         q = q.filter(peer::Column::NetworkId.eq(n));
+        if !actor.is_global() {
+            // A global admin's devices are a global admin's (see `owned`).
+            q = q.filter(Expr::cust(
+                "device_id IN (SELECT d.id FROM device d JOIN app_user u ON u.id = d.user_id
+                               WHERE u.tenant_id IS NOT NULL)",
+            ));
+        }
     } else {
         actor.global()?;
     }
@@ -232,17 +237,34 @@ pub async fn config(
     actor: Actor,
     Path(id): Path<i64>,
 ) -> Result<Json<ConfigOut>, ApiError> {
-    let txn = begin(&s.db).await?;
-    let p = owned(&txn, &actor, id).await?;
+    let p = owned(&s.db, &actor, id).await?;
     if p.revoked_at.is_some() {
         return Err(ApiError::invalid("the peer is revoked"));
     }
-    let mut private: Option<Zeroizing<String>> = None;
-    if p.key_source == "server" {
-        let pair = wgkey::generate();
-        let mut m = p.into_active_model();
-        m.public_key = Set(pair.public.clone());
-        m.update(&txn).await?;
+    let pair = (p.key_source == "server").then(wgkey::generate);
+    // Rendered with no transaction open (the render needs connections of its own),
+    // from the committed state: the rights do not depend on the key.
+    let mut warnings = vec![];
+    let private = pair.as_ref().map(|p| p.private.as_str());
+    let config = clientconf::render(&s, id, private, &mut warnings).await?;
+    if let (Some(pair), Some(_)) = (&pair, &config) {
+        let txn = begin(&s.db).await?;
+        // Only over the key this download started from: of two concurrent downloads,
+        // the later one learns that the earlier one's config is the live one.
+        let swapped = txn
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "UPDATE peer SET public_key = $1
+                 WHERE id = $2 AND public_key = $3 AND revoked_at IS NULL",
+                [pair.public.clone().into(), id.into(), p.public_key.into()],
+            ))
+            .await?
+            .rows_affected();
+        if swapped == 0 {
+            return Err(ApiError::Conflict(
+                "the peer changed meanwhile (another download or a revocation); try again".into(),
+            ));
+        }
         audit::record(
             &txn,
             Some(actor.user_id),
@@ -251,18 +273,6 @@ pub async fn config(
             json!({ "public_key": pair.public }),
         )
         .await?;
-        private = Some(pair.private);
-    }
-    // The rights do not depend on the key: the committed state renders the new one.
-    let mut warnings = vec![];
-    let config = clientconf::render(
-        &s,
-        id,
-        private.as_deref().map(String::as_str),
-        &mut warnings,
-    )
-    .await?;
-    if config.is_some() {
         txn.commit().await?;
     }
     Ok(Json(ConfigOut { config, warnings }))

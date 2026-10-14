@@ -68,6 +68,13 @@ impl Config {
         }
     }
 
+    /// Where `/auth/*` lives under `public_url` (the login cookie's path).
+    pub fn auth_path(&self) -> String {
+        self.public_url
+            .join("auth")
+            .map_or_else(|_| "/auth".to_owned(), |u| u.path().to_owned())
+    }
+
     /// The session cookie is `Secure` unless the portal runs on plain http (tests).
     pub fn secure_cookies(&self) -> bool {
         self.public_url.scheme() == "https"
@@ -83,6 +90,10 @@ mod tests {
         let c: Config = toml::from_str(include_str!("../server.example.toml")).unwrap();
         assert_eq!(c.endpoint_host, "vpn.mmik.cz");
         assert!(c.secure_cookies());
+        assert_eq!(c.auth_path(), "/auth");
+        let mut prefixed = c.clone();
+        prefixed.public_url = "https://example.org/wgate/".parse().unwrap();
+        assert_eq!(prefixed.auth_path(), "/wgate/auth");
         assert!(!format!("{c:?}").contains(&c.admin_oidc.client_secret));
         let example = include_str!("../server.example.toml");
         assert!(toml::from_str::<Config>(&format!("{example}\nbogus = 1")).is_err());

@@ -288,6 +288,8 @@ async fn a_global_admins_peer_is_out_of_a_tenant_admins_reach() {
         let (s, _) = a.call(method.clone(), &uri, body).await;
         assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}");
     }
+    let (_, listed) = a.get(&format!("/peers?network_id={}", w.network)).await;
+    assert_eq!(listed, json!([]), "nor listed");
     // The agent's own words reach global admins only.
     sql(&w.e.db, "INSERT INTO agent_status (applied_revision, applied_at, error) VALUES (0, now(), 'wg-other: boom')").await;
     let (_, v) = a.get("/status").await;

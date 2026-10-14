@@ -331,6 +331,10 @@ pub async fn add_ceiling(
     actor.global()?;
     let (proto, port_from, port_to) = body.service.columns()?;
     let txn = begin(&s.db).await?;
+    tenant::Entity::find_by_id(id)
+        .one(&txn)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     clear_of_others_lans(&txn, id, body.dst.trunc()).await?;
     let c = ceiling::ActiveModel {
         tenant_id: Set(id),

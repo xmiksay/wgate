@@ -1735,7 +1735,7 @@
           },
           "error": {
             "type": "string",
-            "description": "`unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid`,\n`too_many` or `internal`."
+            "description": "`unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid` or\n`internal`."
           },
           "message": {
             "type": "string"

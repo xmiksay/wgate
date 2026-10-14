@@ -177,10 +177,10 @@ under sudo).
   - `[[tenant_oidc]]` comes with phase 2
 - OIDC login (generic, PKCE S256, nonce) for global admins only; the verified email
   matches first, then `sub` is pinned; the role comes from the DB. Bootstrap:
-  `wgate admin grant <email>`. The login is bound to its browser (`wgate_login`
-  cookie), at most 1000 in progress. Sessions in Postgres (sha256 of the token, 8 h idle,
+  `wgate admin grant <email>`. The login's state, nonce and PKCE verifier live in
+  its browser (`wgate_login` cookie), so the server keeps nothing per login. Sessions in Postgres (sha256 of the token, 8 h idle,
   7 d max), cookie `HttpOnly; Secure; SameSite=Lax`, `X-CSRF-Token` on writes.
-- Schema additions (in m0001): `session`, `login_state`, `peer.key_source`, a public
+- Schema additions (in m0001): `session`, `peer.key_source`, a public
   key that rotates only while active and server-made, `network.dns`, block → network
   cascade.
 - REST `/api/v1`: CRUD tenants, blocks, networks (mesh flag), users, devices, peers
@@ -193,7 +193,8 @@ under sudo).
   private key is never stored or logged (a test greps the log). `POST
   /peers/{id}/config` rotates a server key (new config, the old one dies); a pasted
   key gets a config without `PrivateKey`. Until the agent publishes the hub key, the
-  config is missing and a warning says so (and the key does not rotate). A peer of a
+  config is missing and a warning says so (and the key does not rotate). A rotation
+  swaps only the key it started from (a concurrent download gets 409). A peer of a
   global admin's device is the global admin's to manage.
 - Routed LANs as compile wants them (routed space, clear of the pool and the
   infrastructure); no ceiling or inbound source reaches another tenant's LAN (checked

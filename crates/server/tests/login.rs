@@ -51,22 +51,25 @@ async fn log_in(app: &axum::Router, idp: &idp::Idp, who: Next) -> Result<String,
     if res.status() != StatusCode::SEE_OTHER {
         return Err(res.status());
     }
-    let cookie = res
+    let cookies: Vec<&str> = res
         .headers()
         .get_all(header::SET_COOKIE)
         .iter()
         .map(|c| c.to_str().unwrap())
+        .collect();
+    // The login is over: its cookie goes (a replayed code is the provider's to refuse).
+    assert!(
+        cookies.iter().any(|c| c.starts_with("wgate_login=;")),
+        "{cookies:?}"
+    );
+    let cookie = cookies
+        .iter()
         .find(|c| c.starts_with("wgate_session="))
         .expect("a session cookie")
-        .to_owned();
+        .to_string();
     assert!(
         cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax"),
         "{cookie}"
-    );
-    // A replayed callback finds nothing.
-    assert_eq!(
-        get(Some(&started)).await.unwrap().status(),
-        StatusCode::BAD_REQUEST
     );
     Ok(cookie.split(';').next().unwrap().to_owned())
 }

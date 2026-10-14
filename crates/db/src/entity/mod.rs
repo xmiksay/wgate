@@ -7,7 +7,6 @@ pub mod device;
 pub mod federation;
 pub mod hub_key;
 pub mod inbound;
-pub mod login_state;
 pub mod network;
 pub mod oidc_provider;
 pub mod peer;

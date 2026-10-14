@@ -45,14 +45,16 @@ pub async fn create(db: &DatabaseConnection, user_id: i64) -> Result<String, Api
     Ok(token)
 }
 
-pub async fn end(db: &DatabaseConnection, token: &str) -> Result<(), ApiError> {
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "DELETE FROM session WHERE token_hash = $1",
-        [hash(token).into()],
-    ))
-    .await?;
-    Ok(())
+/// Whose session it was, if it was still there.
+pub async fn end(db: &DatabaseConnection, token: &str) -> Result<Option<i64>, ApiError> {
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "DELETE FROM session WHERE token_hash = $1 RETURNING user_id",
+            [hash(token).into()],
+        ))
+        .await?;
+    Ok(row.map(|r| r.try_get("", "user_id")).transpose()?)
 }
 
 /// The signed-in user of a live session, refreshing its idle clock; a dead session is
