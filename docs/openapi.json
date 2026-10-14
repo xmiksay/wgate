@@ -68,6 +68,139 @@
         }
       }
     },
+    "/auth/account/{token}": {
+      "get": {
+        "tags": [
+          "links"
+        ],
+        "summary": "A live link's account and purpose; 404 for any other token (unknown, used,\nexpired, voided, or an invite for an account that has a password by now). Limited per client as login attempts are.",
+        "operationId": "account_link",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkInfo"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "/"
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "links"
+        ],
+        "summary": "Sets the account's password and uses the link up; a reset link also ends the\naccount's sessions and clears its lockouts. No session: log in next. 404 as for\nthe `GET`, 422 for a password out of bounds, 429/503 as for a login.",
+        "operationId": "use_account_link",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewPassword"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The password is set"
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "/"
+          }
+        ]
+      }
+    },
     "/auth/options": {
       "post": {
         "tags": [
@@ -109,7 +242,7 @@
         "tags": [
           "local"
         ],
-        "summary": "204 with the session cookie, or 401 `invalid_credentials` for any failure; 429\n(with `Retry-After`) after 20 attempts a minute from one client or 100 from one\nIPv6 /48; 503 `busy` when every hashing slot stays taken for 2 s.",
+        "summary": "204 with the session cookie, or 401 `invalid_credentials` for any failure. The\nsession's `stage` (`GET /api/v1/session`) says what is next: `totp` for an\naccount with TOTP on (`POST /auth/totp`), `enrol` for an admin without it, else\n`full`. 429\n(with `Retry-After`) after 20 attempts a minute from one client or 100 from one\nIPv6 /48; 503 `busy` when every hashing slot stays taken for 2 s.",
         "operationId": "login_password",
         "requestBody": {
           "content": {
@@ -146,6 +279,75 @@
             }
           },
           "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "servers": [
+          {
+            "url": "/"
+          }
+        ]
+      }
+    },
+    "/auth/totp": {
+      "post": {
+        "tags": [
+          "challenge"
+        ],
+        "summary": "Only for a session in the `totp` stage (5 minutes from the password), with its\n`X-CSRF-Token` (from `GET /api/v1/session`). 204 with a new session cookie for the\nnow `full` session; 401 `invalid_credentials` for any failure (the session stays\nfor another try until it expires, or until the client is locked out: then it\nends), 401 `unauthorized` without such a session; 400 unless exactly one of\n`code` and `recovery_code`; 403 without the CSRF token; 429 (with `Retry-After`)\nas for `/auth/password`, or when the account's next code attempt is more than\n30 s away (attempts since the last right code are spaced out: the first two at\nonce, then 1 s, 2 s, 4 s, … at most 5 minutes apart; a reply may take up to 30 s).",
+        "operationId": "login_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpLogin"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Signed in: a new session cookie is set"
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -216,7 +418,7 @@
     "/devices": {
       "get": {
         "tags": [
-          "users"
+          "devices"
         ],
         "operationId": "devices",
         "parameters": [
@@ -251,7 +453,7 @@
       },
       "post": {
         "tags": [
-          "users"
+          "devices"
         ],
         "operationId": "add_device",
         "requestBody": {
@@ -281,7 +483,7 @@
     "/devices/{id}": {
       "delete": {
         "tags": [
-          "users"
+          "devices"
         ],
         "summary": "Takes the device's peers along.",
         "operationId": "remove_device",
@@ -304,7 +506,7 @@
       },
       "patch": {
         "tags": [
-          "users"
+          "devices"
         ],
         "operationId": "rename_device",
         "parameters": [
@@ -516,6 +718,229 @@
         "responses": {
           "204": {
             "description": "Changed; the other sessions are over"
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/recovery-codes": {
+      "post": {
+        "tags": [
+          "me_totp"
+        ],
+        "summary": "Needs a current TOTP code, counted like a login attempt (422 when wrong, then\n429): ten new recovery codes, the old ones void. 422 with TOTP off.",
+        "operationId": "regenerate_recovery_codes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/totp": {
+      "delete": {
+        "tags": [
+          "me_totp"
+        ],
+        "summary": "Needs the current password, counted like a login attempt as for a password\nchange (422 when wrong, then 429). Admins may not: they need TOTP (422). Removes\nthe recovery codes too.",
+        "operationId": "remove_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordProof"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "TOTP is off"
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/totp/confirm": {
+      "post": {
+        "tags": [
+          "me_totp"
+        ],
+        "summary": "Turns the pending secret on with one of its codes: the recovery codes. In the\n`enrol` stage the session becomes `full` under a new cookie (audited as the\nenrolment). 422 for a wrong code (or none pending); not counted as a login\nattempt: it checks the secret the setup just handed out.",
+        "operationId": "confirm_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/totp/setup": {
+      "post": {
+        "tags": [
+          "me_totp"
+        ],
+        "summary": "A new secret, pending until `/me/totp/confirm` (a pending one is replaced). In a\n`full` session it takes the current password, counted like a login attempt as\nfor a password change (422 when wrong, then 429); the `enrol` stage sends no\nbody. 409 with TOTP on; 422 for an account without a password.",
+        "operationId": "setup_totp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SetupRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "422": {
             "description": "",
@@ -1187,7 +1612,7 @@
         "tags": [
           "info"
         ],
-        "summary": "Any role; only admins may use the rest of the API.",
+        "summary": "Any role, any stage; only admins may use the rest of the API.",
         "operationId": "session",
         "responses": {
           "200": {
@@ -1698,10 +2123,216 @@
           }
         }
       }
+    },
+    "/users/{id}/invite": {
+      "post": {
+        "tags": [
+          "credentials"
+        ],
+        "summary": "A link to set the first password of an account that has none (409 if it has\none: send a reset link). Voids the account's older links. 403 out of reach (a\ntenant admin: their tenant's plain users only), 422 for your own account.",
+        "operationId": "invite_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountLink"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}/reset": {
+      "post": {
+        "tags": [
+          "credentials"
+        ],
+        "summary": "A link to set a new password; following it also ends the account's sessions and\nclears its lockouts. Voids the account's older links. 403/404/422 as for an\ninvite.",
+        "operationId": "reset_user_password",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountLink"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}/totp-reset": {
+      "post": {
+        "tags": [
+          "credentials"
+        ],
+        "summary": "Turns the account's TOTP off (with its recovery codes) and ends its sessions: its\nnext password login sets TOTP up again (an admin's must). 403/404/422 as for an\ninvite.",
+        "operationId": "reset_user_totp",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "TOTP is off; the account's sessions are over"
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AccountLink": {
+        "type": "object",
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "description": "24 hours from now (RFC 3339, UTC)."
+          },
+          "url": {
+            "type": "string",
+            "description": "`<public_url>/account/<token>`, for the account's owner. Shown this once."
+          }
+        }
+      },
       "AuditEntry": {
         "type": "object",
         "required": [
@@ -1898,7 +2529,7 @@
           },
           "error": {
             "type": "string",
-            "description": "`unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,\n`not_found`, `bad_request`, `conflict`, `invalid` or `internal`."
+            "description": "`unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,\n`totp_required`, `not_found`, `bad_request`, `conflict`, `invalid` or `internal`."
           },
           "message": {
             "type": "string"
@@ -2027,6 +2658,22 @@
               "type": "string"
             },
             "description": "E.g. a source so broad that every target peer becomes a full tunnel."
+          }
+        }
+      },
+      "LinkInfo": {
+        "type": "object",
+        "required": [
+          "email",
+          "purpose"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The account the link is for."
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/Purpose"
           }
         }
       },
@@ -2191,6 +2838,18 @@
           }
         }
       },
+      "NewPassword": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "12 to 256 characters."
+          }
+        }
+      },
       "OptionsRequest": {
         "type": "object",
         "required": [
@@ -2230,6 +2889,18 @@
           },
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "PasswordProof": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "The account's current password."
           }
         }
       },
@@ -2357,6 +3028,28 @@
           "name": {
             "type": "string",
             "description": "For the button."
+          }
+        }
+      },
+      "Purpose": {
+        "type": "string",
+        "enum": [
+          "invite",
+          "reset"
+        ]
+      },
+      "RecoveryCodes": {
+        "type": "object",
+        "required": [
+          "recovery_codes"
+        ],
+        "properties": {
+          "recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ten single-use codes for when the authenticator is gone. Shown this once."
           }
         }
       },
@@ -2521,7 +3214,10 @@
           "user_id",
           "email",
           "role",
-          "csrf"
+          "csrf",
+          "stage",
+          "has_password",
+          "totp_enabled"
         ],
         "properties": {
           "csrf": {
@@ -2531,8 +3227,16 @@
           "email": {
             "type": "string"
           },
+          "has_password": {
+            "type": "boolean",
+            "description": "Whether the account has a password (to change; TOTP needs one)."
+          },
           "role": {
             "$ref": "#/components/schemas/Role"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/Stage",
+            "description": "How far the login got: `totp` waits for `POST /auth/totp`, `enrol` for the\nTOTP setup (`/me/totp/setup`, `/me/totp/confirm`); only `full` uses the API."
           },
           "tenant_id": {
             "type": [
@@ -2541,11 +3245,36 @@
             ],
             "format": "int64"
           },
+          "totp_enabled": {
+            "type": "boolean",
+            "description": "Whether TOTP is on (not merely set up)."
+          },
           "user_id": {
             "type": "integer",
             "format": "int64"
           }
         }
+      },
+      "SetupRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The current password; not needed right after a password login (the `enrol`\nstage of one)."
+          }
+        }
+      },
+      "Stage": {
+        "type": "string",
+        "description": "How far a login got.",
+        "enum": [
+          "full",
+          "totp",
+          "enrol"
+        ]
       },
       "Status": {
         "type": "object",
@@ -2661,13 +3390,64 @@
           }
         }
       },
+      "TotpCode": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The authenticator's 6 digits."
+          }
+        }
+      },
+      "TotpLogin": {
+        "type": "object",
+        "description": "One of the two.",
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The authenticator's 6 digits."
+          },
+          "recovery_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One of the account's recovery codes, instead (each works once)."
+          }
+        }
+      },
+      "TotpSetup": {
+        "type": "object",
+        "required": [
+          "otpauth_uri",
+          "qr_svg"
+        ],
+        "properties": {
+          "otpauth_uri": {
+            "type": "string",
+            "description": "For an authenticator app; holds the secret. Shown this once."
+          },
+          "qr_svg": {
+            "type": "string",
+            "description": "The same as a QR code."
+          }
+        }
+      },
       "User": {
         "type": "object",
         "required": [
           "id",
           "email",
           "role",
-          "disabled"
+          "disabled",
+          "has_password",
+          "totp_enabled"
         ],
         "properties": {
           "disabled": {
@@ -2675,6 +3455,10 @@
           },
           "email": {
             "type": "string"
+          },
+          "has_password": {
+            "type": "boolean",
+            "description": "Whether it has a password (then an invite is refused: send a reset link)."
           },
           "id": {
             "type": "integer",
@@ -2691,6 +3475,10 @@
             ],
             "format": "int64",
             "description": "`None` for a global admin."
+          },
+          "totp_enabled": {
+            "type": "boolean",
+            "description": "Whether TOTP is on."
           }
         }
       },

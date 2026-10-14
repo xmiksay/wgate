@@ -53,9 +53,10 @@ fn respond(file: rust_embed::EmbeddedFile, cache: &'static str) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // `/account/<token>` carries a live link's token: no request may pass it on.
     headers.insert(
         header::REFERRER_POLICY,
-        HeaderValue::from_static("same-origin"),
+        HeaderValue::from_static("no-referrer"),
     );
     res
 }

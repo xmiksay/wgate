@@ -12,13 +12,15 @@ use axum::extract::{ConnectInfo, FromRequestParts, State};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum_extra::extract::CookieJar;
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
 
 use super::account::{self, Verdict};
 use super::password::{Password, Permit};
-use super::{limit, oidc, session};
+use super::session::Stage;
+use super::{Role, limit, oidc, session};
 use crate::audit;
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -44,11 +46,11 @@ impl FromRequestParts<AppState> for ClientIp {
 }
 
 impl ClientIp {
-    /// One attempt from this client at `email`'s account, if it has any left: its
-    /// IPv6 site's limit (which a client the account knows skips), then its own. The
-    /// site is counted first: what it refuses takes no client window, so it cannot
-    /// churn everyone else's out of the table.
-    pub async fn attempt(&self, state: &AppState, email: &str) -> Result<(), ApiError> {
+    /// One attempt from this client at `email`'s account (`None`: no account yet, a
+    /// link's token), if it has any left: its IPv6 site's limit (which a client the
+    /// account knows skips), then its own. The site is counted first: what it refuses
+    /// takes no client window, so it cannot churn everyone else's out of the table.
+    pub async fn attempt(&self, state: &AppState, email: Option<&str>) -> Result<(), ApiError> {
         let over = |wait| {
             tracing::warn!(ip = %self.0, "login attempts over the limit");
             ApiError::TooManyAttempts(wait)
@@ -59,11 +61,17 @@ impl ClientIp {
         if let Some(wait) = limiter.client_full(self.0, now) {
             return Err(over(wait));
         }
-        if let Err(wait) = limiter.check_site(self.0, now)
-            && !(limiter.may_look_up(self.0, now)
-                && account::known(&state.db, email, self.0).await?)
-        {
-            return Err(over(wait));
+        if let Err(wait) = limiter.check_site(self.0, now) {
+            let known = match email {
+                Some(email) => {
+                    limiter.may_look_up(self.0, now)
+                        && account::known(&state.db, email, self.0).await?
+                }
+                None => false,
+            };
+            if !known {
+                return Err(over(wait));
+            }
         }
         limiter.check(self.0, now).map_err(over)
     }
@@ -131,7 +139,10 @@ pub struct PasswordLogin {
     pub password: Password,
 }
 
-/// 204 with the session cookie, or 401 `invalid_credentials` for any failure; 429
+/// 204 with the session cookie, or 401 `invalid_credentials` for any failure. The
+/// session's `stage` (`GET /api/v1/session`) says what is next: `totp` for an
+/// account with TOTP on (`POST /auth/totp`), `enrol` for an admin without it, else
+/// `full`. 429
 /// (with `Retry-After`) after 20 attempts a minute from one client or 100 from one
 /// IPv6 /48; 503 `busy` when every hashing slot stays taken for 2 s.
 #[utoipa::path(
@@ -151,7 +162,7 @@ pub async fn login(
     Json(body): Json<PasswordLogin>,
 ) -> Result<(CookieJar, StatusCode), ApiError> {
     let email = body.email.trim().to_owned();
-    ip.attempt(&s, &email).await?;
+    ip.attempt(&s, Some(&email)).await?;
     let permit = s.hasher.permit().await?;
     let secure = s.config.secure_cookies();
     let token = detached(attempt(s, ip.0, email, body.password, permit)).await?;
@@ -176,7 +187,7 @@ async fn attempt(
         .hasher
         .verify(permit, password, claim.hash.clone())
         .await?;
-    let mut detail = attempt_detail(&claim, ip);
+    let mut detail = claim.detail(ip);
     detail["email"] = audit_email(&email);
     if !email_like(&email) {
         detail["email_chars"] = json!(email.chars().count());
@@ -199,23 +210,36 @@ async fn attempt(
         .await?;
         return Err(ApiError::InvalidCredentials);
     };
-    account::succeeded(&s.db, id, ip).await?;
-    let token = session::create(&s.db, id, session::Method::Password).await?;
+    let stage = next_stage(&s, id).await?;
+    if stage == Stage::Full {
+        account::succeeded(&s.db, id, ip).await?;
+    } else {
+        account::password_only(&s.db, &claim, ip).await?;
+    }
+    let token = session::create(&s.db, id, session::Method::Password, stage).await?;
+    detail["stage"] = json!(stage.as_str());
     audit::record(&s.db, Some(id), "login.password.ok", target, detail).await?;
     Ok(token)
 }
 
-/// The audit's view of an attempt: the client, the failures in a row so far and, when
-/// this one locked the client out, until when.
-pub fn attempt_detail(claim: &account::Claim, ip: IpAddr) -> serde_json::Value {
-    let mut d = json!({ "ip": ip.to_string() });
-    if let Some(n) = claim.failures {
-        d["failed_logins"] = json!(n);
-    }
-    if let Some(until) = &claim.locked_until {
-        d["locked_until"] = json!(until);
-    }
-    d
+/// After a right password: a TOTP code if the account has TOTP on; for an admin
+/// without it, setting it up (admins must have it).
+async fn next_stage(s: &AppState, id: i64) -> Result<Stage, ApiError> {
+    let row =
+        s.db.query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT role, totp_enabled_at IS NOT NULL AS totp FROM app_user WHERE id = $1",
+            [id.into()],
+        ))
+        .await?
+        .ok_or(ApiError::InvalidCredentials)?;
+    Ok(if row.try_get::<bool>("", "totp")? {
+        Stage::Totp
+    } else if Role::parse(&row.try_get::<String>("", "role")?) == Some(Role::User) {
+        Stage::Full
+    } else {
+        Stage::Enrol
+    })
 }
 
 /// People type their password into the email box: only something shaped like an

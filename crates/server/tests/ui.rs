@@ -24,7 +24,12 @@ async fn get(app: &axum::Router, path: &str) -> (StatusCode, axum::http::HeaderM
 #[tokio::test]
 async fn client_routes_get_the_app_with_its_policy() {
     let e = common::env().await;
-    for path in ["/", "/tenants/7", "/networks/3/peers"] {
+    for path in [
+        "/",
+        "/tenants/7",
+        "/networks/3/peers",
+        "/account/some-token",
+    ] {
         let (status, headers, body) = get(&e.app, path).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert!(
@@ -35,6 +40,8 @@ async fn client_routes_get_the_app_with_its_policy() {
         let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
         assert!(csp.contains("frame-ancestors 'none'") && csp.contains("script-src 'self'"));
         assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+        // A link's token in the path never leaves in a Referer.
+        assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
     }
 }
 

@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { api, call } from '../api/client'
 import { TENANT_ROLES, type Tenant, type User } from '../api/types'
 import { useLoad } from '../composables/useLoad'
+import { signInText } from '../lib/format'
 import { useSubmit } from '../composables/useSubmit'
 import { useSessionStore } from '../stores/session'
 import ErrorNote from './ErrorNote.vue'
@@ -26,8 +27,9 @@ const email = ref('')
 const tenantChoice = ref<number | null>(props.tenantId ?? null)
 const role = ref<string>('user')
 
+// Admin roles are a global admin's to give; a tenant admin makes plain users only.
 const roles = computed<readonly string[]>(() =>
-  tenantChoice.value === null ? ['global_admin'] : TENANT_ROLES,
+  tenantChoice.value === null ? ['global_admin'] : isGlobal.value ? TENANT_ROLES : ['user'],
 )
 watch(roles, (r) => {
   if (!r.includes(role.value)) role.value = r[r.length - 1] ?? 'user'
@@ -65,6 +67,7 @@ async function create() {
         <th v-if="tenantId === undefined">
           Tenant
         </th>
+        <th>Sign-in</th>
         <th>State</th>
       </template>
       <tr
@@ -83,6 +86,7 @@ async function create() {
         <td v-if="tenantId === undefined">
           {{ tenantName(u.tenant_id) }}
         </td>
+        <td>{{ signInText(u) }}</td>
         <td>{{ u.disabled ? 'disabled' : 'active' }}</td>
       </tr>
     </UiTable>

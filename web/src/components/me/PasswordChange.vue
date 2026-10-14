@@ -6,6 +6,7 @@ import ErrorNote from '../ErrorNote.vue'
 import UiButton from '../UiButton.vue'
 import UiField from '../UiField.vue'
 import UiSection from '../UiSection.vue'
+import { useNewPassword } from '../../composables/useNewPassword'
 import { useSubmit } from '../../composables/useSubmit'
 
 defineProps<{ email: string }>()
@@ -13,30 +14,18 @@ defineProps<{ email: string }>()
 const { busy, error, run } = useSubmit()
 const currentInput = useTemplateRef<HTMLInputElement>('currentInput')
 const current = ref('')
-const next = ref('')
-const repeat = ref('')
 const changed = ref(false)
-
-// Code points, as the server counts them (not UTF-16 units).
-const length = computed(() => [...next.value].length)
-const problem = computed(() => {
-  if (!next.value) return ''
-  if (length.value < PASSWORD_MIN || length.value > PASSWORD_MAX) {
-    return `A password has ${PASSWORD_MIN} to ${PASSWORD_MAX} characters.`
-  }
-  if (repeat.value && repeat.value !== next.value) return 'The new passwords differ.'
-  return ''
-})
-const ready = computed(
-  () => current.value !== '' && next.value !== '' && next.value === repeat.value && !problem.value,
-)
+const fresh = useNewPassword()
+const { next, repeat, problem } = fresh
+const ready = computed(() => current.value !== '' && fresh.ready.value)
 
 async function submit() {
   if (!ready.value || busy.value) return
   changed.value = false
   const body = { current: current.value, new: next.value }
   if (await run(() => call(api.POST('/me/password', { body })))) {
-    current.value = next.value = repeat.value = ''
+    current.value = ''
+    fresh.clear()
     changed.value = true
   } else if (error.value?.status === 422 || error.value?.status === 429) {
     current.value = ''
@@ -51,10 +40,6 @@ async function submit() {
       class="max-w-sm space-y-3"
       @submit.prevent="submit"
     >
-      <p class="muted">
-        Signing in only through a provider? Such an account has no password to change
-        here; an admin sets one with <code class="mono">wgate user password &lt;email&gt;</code>.
-      </p>
       <!-- For password managers: the account the new password belongs to. -->
       <input
         :value="email"

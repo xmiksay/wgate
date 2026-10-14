@@ -36,6 +36,8 @@ export function setCsrf(token: string) {
 /** Wired in main.ts, so this module needs neither the router nor a store. */
 export const hooks = {
   unauthorized: () => {},
+  /** A session the page took for `full` has to set TOTP up first. */
+  totpRequired: () => {},
   wrote: () => {},
 }
 
@@ -44,11 +46,17 @@ const middleware: Middleware = {
     if (request.method !== 'GET' && csrf) request.headers.set('X-CSRF-Token', csrf)
     return request
   },
-  onResponse({ request, response }) {
+  async onResponse({ request, response }) {
     // A 401 from /session itself is the router guard's to handle: it is how we learn
     // there is no session at all.
     if (response.status === 401 && !new URL(request.url).pathname.endsWith('/session')) {
       hooks.unauthorized()
+    } else if (response.status === 403) {
+      const body = (await response
+        .clone()
+        .json()
+        .catch(() => null)) as { error?: unknown } | null
+      if (body?.error === 'totp_required') hooks.totpRequired()
     } else if (response.ok && request.method !== 'GET') {
       hooks.wrote()
     }

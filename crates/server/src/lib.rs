@@ -1,12 +1,13 @@
-//! The portal: REST API (`/api/v1`), the login (`/auth`: password, the global
-//! admins' OIDC) and the embedded UI. Unprivileged: it only writes the database; the
-//! agent applies what changed.
+//! The portal: REST API (`/api/v1`), the login (`/auth`: password and TOTP,
+//! invite and reset links, the global admins' OIDC) and the embedded UI.
+//! Unprivileged: it only writes the database; the agent applies what changed.
 
 mod api;
 mod audit;
 mod auth;
 pub mod config;
 mod error;
+mod seal;
 mod state;
 mod ui;
 mod wgkey;
@@ -16,18 +17,26 @@ use std::net::SocketAddr;
 use anyhow::Context;
 use axum::Router;
 use axum::routing::{get, post};
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{
+    ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement, TransactionTrait,
+};
 use serde_json::json;
 
 pub use api::openapi;
 pub use auth::password::Password;
 pub use config::Config;
-pub use state::AppState;
+pub use seal::SecretKey;
+pub use state::{AppState, Clock};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/auth/options", post(auth::local::options))
         .route("/auth/password", post(auth::local::login))
+        .route("/auth/totp", post(auth::challenge::login))
+        .route(
+            "/auth/account/{token}",
+            get(auth::links::info).post(auth::links::redeem),
+        )
         .route("/auth/login", get(auth::oidc::login))
         .route("/auth/oidc/{id}", get(auth::oidc::start))
         .route("/auth/callback", get(auth::oidc::callback))
@@ -95,6 +104,22 @@ pub async fn set_password(
     auth::account::set_password(db, email, password)
         .await
         .map_err(cli_error)
+}
+
+/// `wgate user totp-reset <email>`: turns the account's TOTP off (with its recovery
+/// codes) and ends its sessions.
+pub async fn totp_reset(db: &DatabaseConnection, email: &str) -> anyhow::Result<i64> {
+    let txn = db.begin().await.context("begin")?;
+    let id = api::credentials::totp_reset_cli(&txn, email)
+        .await
+        .map_err(cli_error)?;
+    txn.commit().await.context("commit")?;
+    Ok(id)
+}
+
+/// `wgate keygen`: a new `secret_key` for `server.toml`.
+pub fn keygen() -> anyhow::Result<String> {
+    Ok(SecretKey::generate()?.to_base64())
 }
 
 /// An internal error keeps its cause on the command line.

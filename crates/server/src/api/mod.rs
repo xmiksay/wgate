@@ -3,8 +3,11 @@
 //! decide who may and what the rights allow.
 
 mod clientconf;
+pub(crate) mod credentials;
+mod devices;
 mod info;
 mod me;
+mod me_totp;
 mod networks;
 mod openapi;
 mod peers;
@@ -36,6 +39,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/session", get(info::session))
         .route("/me/password", post(me::change_password))
+        .route("/me/totp", delete(me_totp::remove))
+        .route("/me/totp/setup", post(me_totp::setup))
+        .route("/me/totp/confirm", post(me_totp::confirm))
+        .route("/me/recovery-codes", post(me_totp::regenerate))
         .route("/status", get(info::status))
         .route("/audit", get(info::audit))
         .route("/openapi.json", get(openapi::spec))
@@ -84,10 +91,13 @@ pub fn router() -> Router<AppState> {
         .route("/federations/{id}", delete(rights::remove_federation))
         .route("/users", get(users::list).post(users::create))
         .route("/users/{id}", patch(users::update).delete(users::remove))
-        .route("/devices", get(users::devices).post(users::add_device))
+        .route("/users/{id}/invite", post(credentials::invite))
+        .route("/users/{id}/reset", post(credentials::reset))
+        .route("/users/{id}/totp-reset", post(credentials::totp_reset))
+        .route("/devices", get(devices::devices).post(devices::add_device))
         .route(
             "/devices/{id}",
-            patch(users::rename_device).delete(users::remove_device),
+            patch(devices::rename_device).delete(devices::remove_device),
         )
         .route("/peers", get(peers::list).post(peers::create))
         .route("/peers/{id}", get(peers::get).delete(peers::remove))

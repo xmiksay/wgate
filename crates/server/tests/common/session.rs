@@ -104,6 +104,18 @@ impl Client {
         (status, value)
     }
 
+    /// A POST labelled JSON whose body is empty, as some clients send for "no body".
+    pub async fn post_empty_json(&self, uri: &str) -> StatusCode {
+        let req = Request::post(format!("/api/v1{uri}"))
+            .header(header::COOKIE, format!("wgate_session={}", self.token))
+            .header("x-csrf-token", &self.csrf)
+            .header(header::CONTENT_TYPE, "application/json")
+            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))))
+            .body(Body::empty())
+            .unwrap();
+        self.app.clone().oneshot(req).await.unwrap().status()
+    }
+
     pub async fn get(&self, uri: &str) -> (StatusCode, Value) {
         self.call(Method::GET, uri, None).await
     }

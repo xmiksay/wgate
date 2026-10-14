@@ -182,6 +182,7 @@ impl World {
         server.database_url = url;
         server.public_url = "http://portal.test".parse().unwrap();
         server.endpoint_host = ENDPOINT.into();
+        server.secret_key = Some(wgate_server::SecretKey::generate().unwrap());
         server.pool = agent.pool.clone();
         server.routed_space = agent.routed_space.clone();
         server.reserved = agent.reserved.clone();

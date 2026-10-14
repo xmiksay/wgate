@@ -17,7 +17,8 @@ use wgate_core::{next_free_net, next_peer_ip, next_port};
 use wgate_db::entity::{audit, network, peer, tenant_block};
 
 use super::{from_db, tenant_of_network};
-use crate::auth::{Account, Actor, Role};
+use crate::auth::session::Stage;
+use crate::auth::{Actor, AnyStage, Role};
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -29,18 +30,41 @@ pub struct Session {
     pub tenant_id: Option<i64>,
     /// Send it back as `X-CSRF-Token` on every write.
     pub csrf: String,
+    /// How far the login got: `totp` waits for `POST /auth/totp`, `enrol` for the
+    /// TOTP setup (`/me/totp/setup`, `/me/totp/confirm`); only `full` uses the API.
+    pub stage: Stage,
+    /// Whether the account has a password (to change; TOTP needs one).
+    pub has_password: bool,
+    /// Whether TOTP is on (not merely set up).
+    pub totp_enabled: bool,
 }
 
-/// Any role; only admins may use the rest of the API.
+/// Any role, any stage; only admins may use the rest of the API.
 #[utoipa::path(get, path = "/session", responses((status = 200, body = Session)))]
-pub async fn session(Account(actor): Account) -> Json<Session> {
-    Json(Session {
+pub async fn session(
+    State(s): State<AppState>,
+    AnyStage(actor): AnyStage,
+) -> Result<Json<Session>, ApiError> {
+    let row =
+        s.db.query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT password_hash IS NOT NULL AS has_password,
+                    totp_enabled_at IS NOT NULL AS totp_enabled
+             FROM app_user WHERE id = $1",
+            [actor.user_id.into()],
+        ))
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    Ok(Json(Session {
         user_id: actor.user_id,
         email: actor.email,
         role: actor.role,
         tenant_id: actor.tenant_id,
         csrf: actor.csrf,
-    })
+        stage: actor.stage,
+        has_password: row.try_get("", "has_password")?,
+        totp_enabled: row.try_get("", "totp_enabled")?,
+    }))
 }
 
 #[derive(Serialize, ToSchema)]

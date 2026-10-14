@@ -274,7 +274,13 @@ async fn complete(
         .map(|e| e.as_str());
 
     let user_id = global_admin(state, subject, email).await?;
-    let token = session::create(&state.db, user_id, session::Method::Oidc).await?;
+    let token = session::create(
+        &state.db,
+        user_id,
+        session::Method::Oidc,
+        session::Stage::Full,
+    )
+    .await?;
     audit::record(
         &state.db,
         Some(user_id),

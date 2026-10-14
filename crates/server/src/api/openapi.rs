@@ -4,8 +4,10 @@
 use axum::Json;
 use utoipa::OpenApi;
 
-use super::{info, me, networks, peers, rights, routes, tenants, users};
-use crate::auth::{Actor, local};
+use super::{
+    credentials, devices, info, me, me_totp, networks, peers, rights, routes, tenants, users,
+};
+use crate::auth::{Actor, challenge, links, local};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -16,7 +18,9 @@ use crate::auth::{Actor, local};
     ),
     servers((url = "/api/v1")),
     paths(
-        local::options, local::login, me::change_password,
+        local::options, local::login, challenge::login, links::info, links::redeem,
+        me::change_password, me_totp::setup, me_totp::confirm, me_totp::remove,
+        me_totp::regenerate,
         info::session, info::status, info::audit, info::free_ip, info::free_range,
         info::free_block, info::free_port,
         tenants::list, tenants::get, tenants::create, tenants::update, tenants::remove,
@@ -27,7 +31,8 @@ use crate::auth::{Actor, local};
         rights::rules, rights::add_rule, rights::remove_rule,
         rights::federations, rights::add_federation, rights::remove_federation,
         users::list, users::create, users::update, users::remove,
-        users::devices, users::add_device, users::rename_device, users::remove_device,
+        credentials::invite, credentials::reset, credentials::totp_reset,
+        devices::devices, devices::add_device, devices::rename_device, devices::remove_device,
         peers::list, peers::get, peers::create, peers::config, peers::revoke, peers::remove,
         routes::add_route, routes::remove_route,
     )

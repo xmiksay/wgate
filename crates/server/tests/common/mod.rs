@@ -5,19 +5,22 @@ pub mod capture;
 pub mod idp;
 pub mod login;
 mod session;
+pub mod totp;
 
 use axum::Router;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-use wgate_server::{AppState, Config};
+use wgate_server::{AppState, Clock, Config};
 
 pub struct Env {
     pub _container: ContainerAsync<Postgres>,
     pub url: String,
     pub db: DatabaseConnection,
     pub app: Router,
+    /// The server's TOTP clock, set by hand: mid-step, moved on only by the tests.
+    pub clock: Clock,
 }
 
 /// The test config: the example's addresses, plain http, `issuer` for the admins.
@@ -26,6 +29,8 @@ pub fn config(url: &str, issuer: &str) -> Config {
     c.database_url = url.to_owned();
     c.public_url = "http://portal.test".parse().unwrap();
     c.endpoint_host = "127.0.0.1".into();
+    // The example's is a placeholder the server refuses.
+    c.secret_key = Some(wgate_server::SecretKey::generate().unwrap());
     if let Some(oidc) = c.admin_oidc.as_mut() {
         oidc.issuer = issuer.to_owned();
     }
@@ -49,12 +54,16 @@ pub async fn env_with(issuer: &str, edit: impl FnOnce(&mut Config)) -> Env {
     wgate_db::migrate(&db).await.expect("migrate");
     let mut config = config(&url, issuer);
     edit(&mut config);
-    let app = wgate_server::router(AppState::new(db.clone(), config).unwrap());
+    let mut state = AppState::new(db.clone(), config).unwrap();
+    let clock = Clock::manual(1_800_000_015);
+    state.clock = clock.clone();
+    let app = wgate_server::router(state);
     Env {
         _container: container,
         url,
         db,
         app,
+        clock,
     }
 }
 

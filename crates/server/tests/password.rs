@@ -37,10 +37,21 @@ async fn every_role_logs_in_with_a_password() {
     .unwrap();
     account(&e.db, "admin@acme.test", "tenant_admin", Some(t), PW).await;
     let user = account(&e.db, "user@acme.test", "user", Some(t), PW).await;
-    for (email, role, tenants) in [
-        ("ROOT@example.org", "global_admin", StatusCode::OK),
-        ("admin@acme.test", "tenant_admin", StatusCode::OK),
-        (" user@acme.test", "user", StatusCode::FORBIDDEN),
+    // Admins set up TOTP first (`totp.rs`); a user without it is signed in.
+    for (email, role, stage, tenants) in [
+        (
+            "ROOT@example.org",
+            "global_admin",
+            "enrol",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "admin@acme.test",
+            "tenant_admin",
+            "enrol",
+            StatusCode::FORBIDDEN,
+        ),
+        (" user@acme.test", "user", "full", StatusCode::FORBIDDEN),
     ] {
         let r = login(&e.app, email, PW).await;
         assert_eq!(r.status, StatusCode::NO_CONTENT, "{email}: {}", r.body);
@@ -50,7 +61,7 @@ async fn every_role_logs_in_with_a_password() {
         }
         let c = login::client(&e.app, &r.session().unwrap()).await;
         let (_, s) = c.get("/session").await;
-        assert_eq!(s["role"], role);
+        assert_eq!((&s["role"], &s["stage"]), (&json!(role), &json!(stage)));
         // What they may do is their role's: a plain user has no admin API.
         assert_eq!(c.get("/tenants").await.0, tenants, "{role}");
     }

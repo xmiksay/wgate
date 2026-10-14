@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { ApiError, api, asApiError, auth, call, setCsrf } from '../api/client'
-import type { LoginOptions, Session } from '../api/types'
+import type { LoginOptions, Session, TotpLogin } from '../api/types'
 
 export const useSessionStore = defineStore('session', () => {
   const session = ref<Session | null>(null)
@@ -9,9 +9,11 @@ export const useSessionStore = defineStore('session', () => {
   /** Why there is no session, shown on the login page (none for a plain 401). */
   const problem = ref('')
 
-  const isGlobal = computed(() => session.value?.role === 'global_admin')
+  /** The login is done: a `totp` or `enrol` session may only finish it. */
+  const signedIn = computed(() => session.value?.stage === 'full')
+  const isGlobal = computed(() => signedIn.value && session.value?.role === 'global_admin')
   /** Plain users may only use their own profile: every admin route is a 403 for them. */
-  const isAdmin = computed(() => session.value != null && session.value.role !== 'user')
+  const isAdmin = computed(() => signedIn.value && session.value?.role !== 'user')
 
   async function load() {
     try {
@@ -39,6 +41,24 @@ export const useSessionStore = defineStore('session', () => {
     if (!session.value) throw new ApiError(0, 'session', problem.value || 'Signing in failed.')
   }
 
+  /**
+   * The second step of a password login (`stage` totp); throws when refused. A failure
+   * reloads the session: a lockout or the 5 minutes running out ends it.
+   */
+  async function verify(body: TotpLogin) {
+    // The `auth` client sends no CSRF token on its own; this endpoint checks it.
+    const headers = { 'X-CSRF-Token': session.value?.csrf ?? '' }
+    try {
+      await call(auth.POST('/auth/totp', { body, headers }))
+    } catch (e) {
+      await load()
+      if (!session.value) problem.value = 'The sign-in ended (expired, or too many tries): start again.'
+      throw e
+    }
+    await load()
+    if (!signedIn.value) throw new ApiError(0, 'session', problem.value || 'Signing in failed.')
+  }
+
   function clear() {
     session.value = null
     setCsrf('')
@@ -56,5 +76,18 @@ export const useSessionStore = defineStore('session', () => {
     clear()
   }
 
-  return { session, loaded, problem, isGlobal, isAdmin, load, options, signIn, clear, logout }
+  return {
+    session,
+    loaded,
+    problem,
+    signedIn,
+    isGlobal,
+    isAdmin,
+    load,
+    options,
+    signIn,
+    verify,
+    clear,
+    logout,
+  }
 })

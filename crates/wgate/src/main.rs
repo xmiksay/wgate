@@ -48,6 +48,8 @@ enum Command {
         )]
         config: std::path::PathBuf,
     },
+    /// Print a new `secret_key` for server.toml (32 random bytes, base64)
+    Keygen,
     /// Apply database migrations (as the owner role, before the units restart)
     Migrate {
         /// Postgres URL; direct to Postgres, not through pgbouncer
@@ -67,6 +69,9 @@ enum UserCommand {
     /// Set <email>'s password, prompted twice (the first line of stdin when it is not
     /// a terminal); clears the lockout and ends the account's sessions
     Password { email: String },
+    /// Turn <email>'s TOTP off (with its recovery codes) and end the account's
+    /// sessions; an admin sets it up again at the next password login
+    TotpReset { email: String },
 }
 
 #[tokio::main]
@@ -103,6 +108,21 @@ async fn main() -> anyhow::Result<()> {
                 .context("connect to the database")?;
             let id = wgate_server::set_password(&db, &email, password).await?;
             tracing::info!(user = id, %email, "password set");
+            Ok(())
+        }
+        Command::User {
+            command: UserCommand::TotpReset { email },
+            database_url,
+        } => {
+            let db = sea_orm::Database::connect(&database_url)
+                .await
+                .context("connect to the database")?;
+            let id = wgate_server::totp_reset(&db, &email).await?;
+            tracing::info!(user = id, %email, "TOTP reset");
+            Ok(())
+        }
+        Command::Keygen => {
+            println!("{}", wgate_server::keygen()?);
             Ok(())
         }
         Command::Agent { config } => {

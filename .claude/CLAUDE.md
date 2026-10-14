@@ -38,6 +38,9 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   exclusion constraints own address ranges, ownership checks; `m0001_state.sql`: the
   revision + NOTIFY triggers; `m0002_accounts.sql`: passwords, `login_failure`,
   `login_known` + the brake, `login_claim()`/`login_succeeded()`, session stage;
+  `m0003_totp.sql`: the sealed TOTP secret + `totp_last_step`, the code pace
+  `totp_wrong`/`totp_next_at`, `recovery_code`,
+  `account_token` (invite/reset links);
   append a new `m000N_*.sql` to `MIGRATIONS`, never edit a released one;
   `tests/upgrade.rs` upgrades a 0.1.0 database), `grants.sql` (agent role), `desired_state()` loader, `agent` (the
   agent's only writes: `hub_key`, `agent_status`); shared by server and agent
@@ -46,9 +49,20 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   semaphore (503 `busy`) + lockout schedule, `account` the claim-before-verify
   lockout/brake (`login_claim`; `local::detached` runs an attempt to its end),
   `limit` per-client and per-/48 attempts + `X-Forwarded-For` from
-  `trusted_proxies`, `oidc` the optional `[admin_oidc]` login, `session` (only
-  stage `full` is signed in), `Account` (any role) / `Actor` (admins) + CSRF),
-  `api/` (one module per resource; `clientconf` renders configs from the compiled
+  `trusted_proxies`, `oidc` the optional `[admin_oidc]` login, `session` (stages
+  `full`/`totp`/`enrol`; finishing a login rotates the token), `totp` RFC 6238 +
+  recovery codes (pure, `now` a parameter: `AppState::clock`, set by hand in tests),
+  `factor` their SQL (a code's step used once; `wait_turn` the per-account pace of
+  code attempts), `challenge` `POST /auth/totp` (claimed like a password: the
+  password's claim stays counted until the code), `links` invite/reset links;
+  `AnyStage` (any stage: `/session`, TOTP setup, `/auth/totp`) / `Account` (any
+  role, `full`; `enrol` → 403 `totp_required`; an admin's password session without
+  TOTP counts as `enrol`) / `Actor` (admins) + CSRF),
+  `seal.rs` (`secret_key`: AES-256-GCM blobs, the row as associated data),
+  `api/` (one module per resource; `me_totp` the profile's TOTP, `credentials` an
+  admin's links and TOTP reset (tenant admins: own plain users only, never self);
+  `users` (an admin role is given, taken or touched by a global admin only),
+  `devices`; `clientconf` renders configs from the compiled
   state, `openapi` lists every path), `error.rs` (`ApiError`, SQLSTATE
   mapping), `audit.rs`, `wgkey.rs` (x25519, zeroized); config
   `server.example.toml`, unit `deploy/wgate-server.service`. Tests: `tests/*.rs`

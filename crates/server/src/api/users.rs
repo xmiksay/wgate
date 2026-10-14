@@ -1,21 +1,23 @@
-//! Users and their devices. A tenant admin manages their tenant's (never a global
-//! admin); a global admin manages anyone's.
+//! Users. A tenant admin manages their tenant's plain users; a global admin anyone,
+//! and alone gives or takes an admin role.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use std::collections::HashMap;
+
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter,
-    QueryOrder,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DbBackend, EntityTrait,
+    IntoActiveModel, QueryFilter, QueryOrder, QuerySelect, Statement,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
-use wgate_db::entity::{app_user, device};
+use wgate_db::entity::app_user;
 
-use super::{begin, tenant_of_user};
+use super::begin;
 use crate::audit;
-use crate::auth::Actor;
+use crate::auth::{Actor, account, session};
 use crate::error::{ApiError, unique_violation};
 use crate::state::AppState;
 
@@ -28,18 +30,62 @@ pub struct User {
     /// `global_admin`, `tenant_admin` or `user`.
     pub role: String,
     pub disabled: bool,
+    /// Whether it has a password (then an invite is refused: send a reset link).
+    pub has_password: bool,
+    /// Whether TOTP is on.
+    pub totp_enabled: bool,
 }
 
-impl From<app_user::Model> for User {
-    fn from(u: app_user::Model) -> Self {
+impl User {
+    fn new(u: app_user::Model, (has_password, totp_enabled): (bool, bool)) -> Self {
         Self {
             id: u.id,
             tenant_id: u.tenant_id,
             email: u.email,
             role: u.role,
             disabled: u.disabled_at.is_some(),
+            has_password,
+            totp_enabled,
         }
     }
+}
+
+/// (has a password, TOTP on) of the accounts `ids` (columns outside the entity).
+async fn login_flags<C: ConnectionTrait>(
+    db: &C,
+    ids: Vec<i64>,
+) -> Result<HashMap<i64, (bool, bool)>, ApiError> {
+    let rows = db
+        .query_all_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT id, password_hash IS NOT NULL AS p, totp_enabled_at IS NOT NULL AS t
+             FROM app_user WHERE id = ANY($1::bigint[])",
+            [ids.into()],
+        ))
+        .await?;
+    rows.iter()
+        .map(|r| {
+            Ok((
+                r.try_get("", "id")?,
+                (r.try_get("", "p")?, r.try_get("", "t")?),
+            ))
+        })
+        .collect()
+}
+
+/// `users` as the API shows them.
+async fn shown<C: ConnectionTrait>(
+    db: &C,
+    users: Vec<app_user::Model>,
+) -> Result<Vec<User>, ApiError> {
+    let flags = login_flags(db, users.iter().map(|u| u.id).collect()).await?;
+    Ok(users
+        .into_iter()
+        .map(|u| {
+            let f = flags.get(&u.id).copied().unwrap_or_default();
+            User::new(u, f)
+        })
+        .collect())
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -64,10 +110,21 @@ pub struct UserFilter {
 }
 
 /// Who may manage a user of `tenant` (`None` = global admins: global admins only).
-fn may_manage(actor: &Actor, tenant: Option<i64>) -> Result<(), ApiError> {
+pub(super) fn may_manage(actor: &Actor, tenant: Option<i64>) -> Result<(), ApiError> {
     match tenant {
         Some(t) => actor.tenant(t),
         None => actor.global(),
+    }
+}
+
+/// Who may create, change or delete an account of `tenant` with `role` (as it is, and
+/// as it becomes): an admin role is a global admin's alone, so a tenant admin can
+/// neither make an admin nor turn one into a user it then reaches (links, resets).
+fn may_change(actor: &Actor, tenant: Option<i64>, role: &str) -> Result<(), ApiError> {
+    if role == "user" {
+        may_manage(actor, tenant)
+    } else {
+        actor.global()
     }
 }
 
@@ -92,9 +149,7 @@ pub async fn list(
     if let Some(t) = f.tenant_id {
         q = q.filter(app_user::Column::TenantId.eq(t));
     }
-    Ok(Json(
-        q.all(&s.db).await?.into_iter().map(User::from).collect(),
-    ))
+    Ok(Json(shown(&s.db, q.all(&s.db).await?).await?))
 }
 
 #[utoipa::path(post, path = "/users", operation_id = "create_user", request_body = UserCreate, responses((status = 201, body = User)))]
@@ -103,7 +158,7 @@ pub async fn create(
     actor: Actor,
     Json(body): Json<UserCreate>,
 ) -> Result<(StatusCode, Json<User>), ApiError> {
-    may_manage(&actor, body.tenant_id)?;
+    may_change(&actor, body.tenant_id, &body.role)?;
     check_role(&body.role, body.tenant_id)?;
     let txn = begin(&s.db).await?;
     let u = app_user::ActiveModel {
@@ -130,7 +185,8 @@ pub async fn create(
     )
     .await?;
     txn.commit().await?;
-    Ok((StatusCode::CREATED, Json(u.into())))
+    // New: no password, no TOTP.
+    Ok((StatusCode::CREATED, Json(User::new(u, (false, false)))))
 }
 
 #[utoipa::path(patch, path = "/users/{id}", operation_id = "update_user", request_body = UserUpdate, responses((status = 200, body = User)))]
@@ -145,13 +201,19 @@ pub async fn update(
     }
     let txn = begin(&s.db).await?;
     let u = app_user::Entity::find_by_id(id)
+        .lock_exclusive()
         .one(&txn)
         .await?
         .ok_or(ApiError::NotFound)?;
-    may_manage(&actor, u.tenant_id)?;
+    may_change(&actor, u.tenant_id, &u.role)?;
     let tenant = u.tenant_id;
+    // To or from an admin role: its sessions and unused links end, so neither a link
+    // made for a user nor a session from before carries over (and a new admin's next
+    // password login sets TOTP up).
+    let changed = body.role.as_deref().is_some_and(|r| r != u.role);
     let mut m = u.into_active_model();
     if let Some(role) = &body.role {
+        may_change(&actor, tenant, role)?;
         check_role(role, tenant)?;
         m.role = Set(role.clone());
     }
@@ -159,16 +221,26 @@ pub async fn update(
         m.disabled_at = Set(disabled.then(|| chrono::Utc::now().fixed_offset()));
     }
     let u = m.update(&txn).await?;
+    let ended = if changed {
+        account::void_links(&txn, id).await?;
+        session::end_others(&txn, id, None).await?
+    } else {
+        0
+    };
     audit::record(
         &txn,
         Some(actor.user_id),
         "user.update",
         format!("app_user/{id}"),
-        json!({ "role": body.role, "disabled": body.disabled }),
+        json!({ "role": body.role, "disabled": body.disabled, "ended_sessions": ended }),
     )
     .await?;
+    let u = shown(&txn, vec![u])
+        .await?
+        .pop()
+        .ok_or(ApiError::NotFound)?;
     txn.commit().await?;
-    Ok(Json(u.into()))
+    Ok(Json(u))
 }
 
 /// Takes the user's devices and peers along.
@@ -182,156 +254,18 @@ pub async fn remove(
         return Err(ApiError::invalid("you cannot delete yourself"));
     }
     let txn = begin(&s.db).await?;
-    may_manage(&actor, tenant_of_user(&txn, id).await?)?;
+    let u = app_user::Entity::find_by_id(id)
+        .lock_exclusive()
+        .one(&txn)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    may_change(&actor, u.tenant_id, &u.role)?;
     app_user::Entity::delete_by_id(id).exec(&txn).await?;
     audit::record(
         &txn,
         Some(actor.user_id),
         "user.delete",
         format!("app_user/{id}"),
-        json!({}),
-    )
-    .await?;
-    txn.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct Device {
-    pub id: i64,
-    pub user_id: i64,
-    pub name: String,
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct DeviceCreate {
-    pub user_id: i64,
-    pub name: String,
-}
-
-#[derive(Deserialize, ToSchema)]
-pub struct DeviceRename {
-    pub name: String,
-}
-
-#[derive(Deserialize, IntoParams)]
-pub struct DeviceFilter {
-    pub user_id: Option<i64>,
-}
-
-impl From<device::Model> for Device {
-    fn from(d: device::Model) -> Self {
-        Self {
-            id: d.id,
-            user_id: d.user_id,
-            name: d.name,
-        }
-    }
-}
-
-#[utoipa::path(get, path = "/devices", params(DeviceFilter), responses((status = 200, body = [Device])))]
-pub async fn devices(
-    State(s): State<AppState>,
-    actor: Actor,
-    Query(f): Query<DeviceFilter>,
-) -> Result<Json<Vec<Device>>, ApiError> {
-    let mut q = device::Entity::find().order_by_asc(device::Column::Id);
-    if let Some(user) = f.user_id {
-        may_manage(&actor, tenant_of_user(&s.db, user).await?)?;
-        q = q.filter(device::Column::UserId.eq(user));
-    } else if let Some(own) = actor.scope() {
-        let users = app_user::Entity::find()
-            .filter(app_user::Column::TenantId.eq(own))
-            .all(&s.db)
-            .await?;
-        q = q.filter(device::Column::UserId.is_in(users.into_iter().map(|u| u.id)));
-    }
-    Ok(Json(
-        q.all(&s.db).await?.into_iter().map(Device::from).collect(),
-    ))
-}
-
-#[utoipa::path(post, path = "/devices", request_body = DeviceCreate, responses((status = 201, body = Device)))]
-pub async fn add_device(
-    State(s): State<AppState>,
-    actor: Actor,
-    Json(body): Json<DeviceCreate>,
-) -> Result<(StatusCode, Json<Device>), ApiError> {
-    let txn = begin(&s.db).await?;
-    may_manage(&actor, tenant_of_user(&txn, body.user_id).await?)?;
-    let d = device::ActiveModel {
-        user_id: Set(body.user_id),
-        name: Set(body.name),
-        ..Default::default()
-    }
-    .insert(&txn)
-    .await?;
-    audit::record(
-        &txn,
-        Some(actor.user_id),
-        "device.create",
-        format!("device/{}", d.id),
-        json!({ "user_id": d.user_id, "name": d.name }),
-    )
-    .await?;
-    txn.commit().await?;
-    Ok((StatusCode::CREATED, Json(d.into())))
-}
-
-async fn device_tenant<C: sea_orm::ConnectionTrait>(
-    db: &C,
-    id: i64,
-) -> Result<Option<i64>, ApiError> {
-    let d = device::Entity::find_by_id(id)
-        .one(db)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    tenant_of_user(db, d.user_id).await
-}
-
-#[utoipa::path(patch, path = "/devices/{id}", request_body = DeviceRename, responses((status = 200, body = Device)))]
-pub async fn rename_device(
-    State(s): State<AppState>,
-    actor: Actor,
-    Path(id): Path<i64>,
-    Json(body): Json<DeviceRename>,
-) -> Result<Json<Device>, ApiError> {
-    let txn = begin(&s.db).await?;
-    may_manage(&actor, device_tenant(&txn, id).await?)?;
-    let mut m = device::Entity::find_by_id(id)
-        .one(&txn)
-        .await?
-        .ok_or(ApiError::NotFound)?
-        .into_active_model();
-    m.name = Set(body.name.clone());
-    let d = m.update(&txn).await?;
-    audit::record(
-        &txn,
-        Some(actor.user_id),
-        "device.update",
-        format!("device/{id}"),
-        json!({ "name": body.name }),
-    )
-    .await?;
-    txn.commit().await?;
-    Ok(Json(d.into()))
-}
-
-/// Takes the device's peers along.
-#[utoipa::path(delete, path = "/devices/{id}", responses((status = 204)))]
-pub async fn remove_device(
-    State(s): State<AppState>,
-    actor: Actor,
-    Path(id): Path<i64>,
-) -> Result<StatusCode, ApiError> {
-    let txn = begin(&s.db).await?;
-    may_manage(&actor, device_tenant(&txn, id).await?)?;
-    device::Entity::delete_by_id(id).exec(&txn).await?;
-    audit::record(
-        &txn,
-        Some(actor.user_id),
-        "device.delete",
-        format!("device/{id}"),
         json!({}),
     )
     .await?;
