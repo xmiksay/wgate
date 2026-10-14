@@ -21,6 +21,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The same answer for every email for now (no tenant providers yet). */
+        post: operations["login_options"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 204 with the session cookie, or 401 `invalid_credentials` for any failure; 429
+         *     (with `Retry-After`) after 20 attempts a minute from one client or 100 from one
+         *     IPv6 /48; 503 `busy` when every hashing slot stays taken for 2 s.
+         */
+        post: operations["login_password"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/blocks/{id}": {
         parameters: {
             query?: never;
@@ -166,6 +204,28 @@ export interface paths {
         put?: never;
         post?: never;
         delete: operations["remove_inbound"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Needs the current password. A wrong one counts like a failed login from this
+         *     client: 422 while attempts remain, then 429 (with `Retry-After`) during the
+         *     lockout. 422 for an account without a password, 503 `busy` as for a login. Ends
+         *     every other session of the account.
+         */
+        post: operations["change_password"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -384,6 +444,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Any role; only admins may use the rest of the API. */
         get: operations["session"];
         put?: never;
         post?: never;
@@ -590,8 +651,8 @@ export interface components {
             /** @description What is in the way (e.g. the part of a rule no ceiling covers). */
             detail?: unknown;
             /**
-             * @description `unauthorized`, `forbidden`, `not_found`, `bad_request`, `conflict`, `invalid` or
-             *     `internal`.
+             * @description `unauthorized`, `invalid_credentials`, `too_many_attempts`, `busy`, `forbidden`,
+             *     `not_found`, `bad_request`, `conflict`, `invalid` or `internal`.
              */
             error: string;
             message: string;
@@ -626,6 +687,12 @@ export interface components {
             inbound: components["schemas"]["Inbound"];
             /** @description E.g. a source so broad that every target peer becomes a full tunnel. */
             warnings: string[];
+        };
+        LoginOptions: {
+            /** @description Always offered. */
+            password: boolean;
+            /** @description Sign in through one of these at `GET /auth/oidc/{id}`. */
+            providers: components["schemas"]["ProviderOption"][];
         };
         Network: {
             /** Format: int64 */
@@ -667,6 +734,18 @@ export interface components {
             mesh?: boolean | null;
             name?: string | null;
         };
+        OptionsRequest: {
+            email: string;
+        };
+        PasswordChange: {
+            current: string;
+            /** @description 12 to 256 characters. */
+            new: string;
+        };
+        PasswordLogin: {
+            email: string;
+            password: string;
+        };
         Peer: {
             /** Format: int64 */
             device_id: number;
@@ -697,6 +776,12 @@ export interface components {
             peer: components["schemas"]["Peer"];
             warnings: string[];
         };
+        ProviderOption: {
+            /** @description Opaque: `admin` for the configured `[admin_oidc]` (later, database ids). */
+            id: string;
+            /** @description For the button. */
+            name: string;
+        };
         Rendered: {
             /** @description The `wg-quick` config. */
             config: string;
@@ -707,7 +792,7 @@ export interface components {
             qr_svg?: string | null;
         };
         /** @enum {string} */
-        Role: "global_admin" | "tenant_admin";
+        Role: "global_admin" | "tenant_admin" | "user";
         Route: {
             cidr: string;
             /** Format: int64 */
@@ -856,6 +941,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditEntry"][];
+                };
+            };
+        };
+    };
+    login_options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OptionsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginOptions"];
+                };
+            };
+        };
+    };
+    login_password: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordLogin"];
+            };
+        };
+        responses: {
+            /** @description Signed in: the session cookie is set */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };
@@ -1103,6 +1257,52 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    change_password: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordChange"];
+            };
+        };
+        responses: {
+            /** @description Changed; the other sessions are over */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
         };
     };

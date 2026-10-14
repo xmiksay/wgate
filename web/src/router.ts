@@ -4,6 +4,7 @@ import { useSessionStore } from './stores/session'
 import AuditView from './views/AuditView.vue'
 import FederationsView from './views/FederationsView.vue'
 import LoginView from './views/LoginView.vue'
+import MeView from './views/MeView.vue'
 import NetworkDetailView from './views/NetworkDetailView.vue'
 import NotFoundView from './views/NotFoundView.vue'
 import TenantDetailView from './views/TenantDetailView.vue'
@@ -17,6 +18,8 @@ declare module 'vue-router' {
     public?: boolean
     /** For global admins only (the server refuses the rest anyway). */
     global?: boolean
+    /** Open to plain users too; every other route is for admins. */
+    everyone?: boolean
   }
 }
 
@@ -27,6 +30,7 @@ export const router = createRouter({
   routes: [
     { path: '/', component: NotFoundView },
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
+    { path: '/me', component: MeView, meta: { everyone: true } },
     { path: '/tenants', component: TenantsView, meta: { global: true } },
     { path: '/tenants/:id(\\d+)', component: TenantDetailView, props: id },
     { path: '/networks/:id(\\d+)', component: NetworkDetailView, props: id },
@@ -45,7 +49,11 @@ router.beforeEach(async (to) => {
   const store = useSessionStore()
   if (!store.loaded) await store.load()
   const s = store.session
-  const home = s?.role === 'global_admin' ? '/tenants' : `/tenants/${s?.tenant_id}`
+  const home = !store.isAdmin
+    ? '/me'
+    : store.isGlobal
+      ? '/tenants'
+      : `/tenants/${s?.tenant_id}`
 
   if (!s) {
     if (to.meta.public) return true
@@ -58,6 +66,7 @@ router.beforeEach(async (to) => {
     if (resume && resume !== to.fullPath) return resume
   }
   if (to.meta.public || to.path === '/') return home
+  if (!to.meta.everyone && !store.isAdmin) return home
   if (to.meta.global && !store.isGlobal) return home
   return true
 })

@@ -1,7 +1,9 @@
 //! A migrated Postgres, the router, and signed-in clients for the API tests.
 #![allow(dead_code, clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+pub mod capture;
 pub mod idp;
+pub mod login;
 mod session;
 
 use axum::Router;
@@ -24,11 +26,18 @@ pub fn config(url: &str, issuer: &str) -> Config {
     c.database_url = url.to_owned();
     c.public_url = "http://portal.test".parse().unwrap();
     c.endpoint_host = "127.0.0.1".into();
-    c.admin_oidc.issuer = issuer.to_owned();
+    if let Some(oidc) = c.admin_oidc.as_mut() {
+        oidc.issuer = issuer.to_owned();
+    }
     c
 }
 
 pub async fn env_with_issuer(issuer: &str) -> Env {
+    env_with(issuer, |_| {}).await
+}
+
+/// As [`env_with_issuer`], the config changed by `edit` first.
+pub async fn env_with(issuer: &str, edit: impl FnOnce(&mut Config)) -> Env {
     let container = Postgres::default()
         .with_tag("17-alpine")
         .start()
@@ -38,7 +47,9 @@ pub async fn env_with_issuer(issuer: &str) -> Env {
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let db = Database::connect(&url).await.expect("connect");
     wgate_db::migrate(&db).await.expect("migrate");
-    let app = wgate_server::router(AppState::new(db.clone(), config(&url, issuer)).unwrap());
+    let mut config = config(&url, issuer);
+    edit(&mut config);
+    let app = wgate_server::router(AppState::new(db.clone(), config).unwrap());
     Env {
         _container: container,
         url,

@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Redirect;
 use axum_extra::extract::CookieJar;
@@ -28,6 +28,7 @@ use tokio::sync::Mutex;
 
 use super::session;
 use crate::audit;
+use crate::config::Oidc;
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -72,8 +73,16 @@ impl Provider {
     }
 }
 
+/// The one provider of plan 1.8, as `/auth/options` lists it.
+pub const ADMIN_PROVIDER: &str = "admin";
+
+/// `NotFound` without `[admin_oidc]`.
+fn config(state: &AppState) -> Result<&Oidc, ApiError> {
+    state.config.admin_oidc.as_ref().ok_or(ApiError::NotFound)
+}
+
 async fn discover(state: &AppState) -> Result<Client, ApiError> {
-    let oidc = &state.config.admin_oidc;
+    let oidc = config(state)?;
     let issuer = IssuerUrl::new(oidc.issuer.clone()).map_err(anyhow::Error::from)?;
     let metadata = CoreProviderMetadata::discover_async(issuer, &state.http)
         .await
@@ -91,11 +100,30 @@ async fn discover(state: &AppState) -> Result<Client, ApiError> {
     .set_redirect_uri(RedirectUrl::from_url(redirect)))
 }
 
-/// `GET /auth/login`: off to the provider.
+/// `GET /auth/oidc/{id}`: off to provider `id` (only [`ADMIN_PROVIDER`] for now).
+pub async fn start(
+    state: State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> Result<(CookieJar, Redirect), ApiError> {
+    if id != ADMIN_PROVIDER {
+        return Ok((jar, Redirect::to(UNAVAILABLE)));
+    }
+    login(state, jar).await
+}
+
+/// Where a login through a provider that is not configured lands.
+const UNAVAILABLE: &str = "/login?error=unavailable";
+
+/// `GET /auth/login`: off to the admins' provider; the login page says so when there
+/// is none.
 pub async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, Redirect), ApiError> {
+    if state.config.admin_oidc.is_none() {
+        return Ok((jar, Redirect::to(UNAVAILABLE)));
+    }
     let client = state.oidc.client(&state).await?;
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let (url, csrf, nonce) = client
@@ -172,6 +200,7 @@ pub async fn callback(
             let why = match e {
                 ApiError::Forbidden => "forbidden",
                 ApiError::BadRequest(_) => "expired",
+                ApiError::NotFound => "unavailable",
                 e => {
                     tracing::error!(error = %e, "login failed");
                     "failed"
@@ -245,22 +274,16 @@ async fn complete(
         .map(|e| e.as_str());
 
     let user_id = global_admin(state, subject, email).await?;
-    let token = session::create(&state.db, user_id).await?;
+    let token = session::create(&state.db, user_id, session::Method::Oidc).await?;
     audit::record(
         &state.db,
         Some(user_id),
         "login",
         format!("app_user/{user_id}"),
-        json!({ "issuer": state.config.admin_oidc.issuer }),
+        json!({ "issuer": config(state)?.issuer }),
     )
     .await?;
-    let cookie = Cookie::build((session::COOKIE, token))
-        .http_only(true)
-        .secure(state.config.secure_cookies())
-        .same_site(SameSite::Lax)
-        .path("/")
-        .max_age(time_secs(session::MAX_AGE_SECS))
-        .build();
+    let cookie = session::cookie(token, state.config.secure_cookies());
     Ok((jar.add(cookie), Redirect::to("/")))
 }
 

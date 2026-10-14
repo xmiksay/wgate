@@ -10,6 +10,8 @@ pub struct Model {
     pub oidc_sub: Option<String>,
     pub role: String,
     pub disabled_at: Option<DateTimeWithTimeZone>,
+    // Not here: `password_hash` and the `brake_*` columns. The server's login code
+    // reads and writes them in SQL only, so a hash never sits in a (Debug) model.
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

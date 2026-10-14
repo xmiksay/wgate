@@ -15,6 +15,19 @@ pub struct Pg {
 }
 
 pub async fn pg(before_migrate: &str) -> Pg {
+    let pg = empty().await;
+    if !before_migrate.is_empty() {
+        pg.db
+            .execute_unprepared(before_migrate)
+            .await
+            .expect("setup");
+    }
+    wgate_db::migrate(&pg.db).await.expect("migrate");
+    pg
+}
+
+/// A throwaway Postgres 17 without any migration.
+pub async fn empty() -> Pg {
     let container = Postgres::default()
         .with_tag("17-alpine")
         .start()
@@ -23,10 +36,6 @@ pub async fn pg(before_migrate: &str) -> Pg {
     let port = container.get_host_port_ipv4(5432).await.expect("port");
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let db = Database::connect(&url).await.expect("connect");
-    if !before_migrate.is_empty() {
-        db.execute_unprepared(before_migrate).await.expect("setup");
-    }
-    wgate_db::migrate(&db).await.expect("migrate");
     Pg {
         _container: container,
         url,

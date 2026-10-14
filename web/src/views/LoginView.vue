@@ -1,41 +1,94 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, nextTick, ref, useTemplateRef } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import type { ProviderOption } from '../api/types'
 import UiButton from '../components/UiButton.vue'
+import UiField from '../components/UiField.vue'
+import { useSubmit } from '../composables/useSubmit'
+import { takeRoute } from '../lib/resume'
 import { useSessionStore } from '../stores/session'
 
-const { problem } = storeToRefs(useSessionStore())
+const sessionStore = useSessionStore()
+const { problem } = storeToRefs(sessionStore)
 const route = useRoute()
+const router = useRouter()
+const { busy, error, run } = useSubmit()
 
-// Why the server's /auth/callback sent the browser back here.
+// Why the server sent the browser back here from a provider login.
 const refusals: Record<string, string> = {
   forbidden: 'This account is not a global admin.',
   expired: 'The sign-in expired or was started in another browser; try again.',
   failed: 'Signing in failed; try again, or check the server log.',
   cancelled: 'Sign-in was cancelled or refused at the identity provider.',
+  unavailable: 'That sign-in provider is not configured.',
 }
+
+const email = ref('')
+const password = ref('')
+/** Set once the email is in: the second step, with what the server offers for it. */
+const providers = ref<ProviderOption[] | null>(null)
+const passwordInput = useTemplateRef<HTMLInputElement>('passwordInput')
+const emailInput = useTemplateRef<HTMLInputElement>('emailInput')
+
 const shown = computed(() => {
-  const error = route.query.error
-  return (typeof error === 'string' && refusals[error]) || problem.value
+  const e = error.value
+  // Every refused login is the same 401: the server tells nothing about the account.
+  if (e) return e.status === 401 ? 'Wrong email or password.' : e.message
+  const why = route.query.error
+  return (typeof why === 'string' && refusals[why]) || problem.value
 })
 
-function signIn() {
-  // A full navigation: the server sends the browser to the IdP and back to `/`.
-  window.location.assign('/auth/login')
+async function next() {
+  const address = email.value.trim()
+  if (!address || busy.value) return
+  let offered: ProviderOption[] = []
+  if (await run(async () => (offered = (await sessionStore.options(address)).providers))) {
+    email.value = address
+    providers.value = offered
+    await nextTick()
+    passwordInput.value?.focus()
+  }
+}
+
+async function change() {
+  providers.value = null
+  password.value = ''
+  error.value = null
+  await nextTick()
+  emailInput.value?.focus()
+}
+
+async function signIn() {
+  if (!password.value || busy.value) return
+  if (await run(() => sessionStore.signIn(email.value, password.value))) {
+    password.value = ''
+    // The guard sends `/` home; a route remembered before the login goes first.
+    await router.push(takeRoute() ?? '/')
+  } else if (error.value?.status === 401) {
+    password.value = ''
+    passwordInput.value?.focus()
+  }
+}
+
+function viaProvider(p: ProviderOption) {
+  // A full navigation: the server sends the browser to the provider and back to `/`.
+  window.location.assign(`/auth/oidc/${encodeURIComponent(p.id)}`)
 }
 </script>
 
 <template>
   <div
-    class="mx-auto mt-16 max-w-sm space-y-4 rounded-lg border border-slate-200 bg-white p-6 text-center dark:border-slate-700 dark:bg-slate-900"
+    class="mx-auto mt-16 max-w-sm space-y-4 rounded-lg border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-900"
   >
-    <h1 class="text-xl font-semibold">
-      wgate
-    </h1>
-    <p class="muted">
-      WireGuard gateway portal
-    </p>
+    <div class="text-center">
+      <h1 class="text-xl font-semibold">
+        wgate
+      </h1>
+      <p class="muted">
+        WireGuard gateway portal
+      </p>
+    </div>
     <p
       v-if="shown"
       role="alert"
@@ -43,11 +96,95 @@ function signIn() {
     >
       {{ shown }}
     </p>
-    <UiButton
-      variant="primary"
-      @click="signIn"
+
+    <form
+      v-if="!providers"
+      class="space-y-3"
+      @submit.prevent="next"
     >
-      Sign in
-    </UiButton>
+      <UiField label="Email">
+        <input
+          ref="emailInput"
+          v-model="email"
+          type="email"
+          name="username"
+          autocomplete="username"
+          class="input"
+          required
+          autofocus
+        >
+      </UiField>
+      <UiButton
+        type="submit"
+        variant="primary"
+        class="w-full"
+        :disabled="busy || !email.trim()"
+      >
+        Continue
+      </UiButton>
+    </form>
+
+    <template v-else>
+      <div class="flex items-center justify-between gap-2 text-sm">
+        <span class="truncate font-medium">{{ email }}</span>
+        <button
+          type="button"
+          class="link shrink-0"
+          :disabled="busy"
+          @click="change"
+        >
+          change
+        </button>
+      </div>
+      <form
+        class="space-y-3"
+        @submit.prevent="signIn"
+      >
+        <!-- For password managers: the account this password belongs to. -->
+        <input
+          :value="email"
+          type="email"
+          name="username"
+          autocomplete="username"
+          class="sr-only"
+          tabindex="-1"
+          aria-hidden="true"
+          readonly
+        >
+        <UiField label="Password">
+          <input
+            ref="passwordInput"
+            v-model="password"
+            type="password"
+            name="password"
+            autocomplete="current-password"
+            class="input"
+            required
+          >
+        </UiField>
+        <UiButton
+          type="submit"
+          variant="primary"
+          class="w-full"
+          :disabled="busy || !password"
+        >
+          Sign in
+        </UiButton>
+      </form>
+      <div
+        v-if="providers.length"
+        class="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-700"
+      >
+        <UiButton
+          v-for="p in providers"
+          :key="p.id"
+          class="w-full"
+          :disabled="busy"
+          @click="viaProvider(p)"
+        >
+          Sign in with {{ p.name }}
+        </UiButton>
+      </div>
+    </template>
   </div>
 </template>

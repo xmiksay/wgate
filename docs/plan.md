@@ -248,14 +248,14 @@ under sudo).
 
 ### 1.8 Local accounts — password login
 Per [accounts](accounts.md). Migration `m0002`:
-- email unique across wgate
-- `app_user` gets `password_hash`, `failed_logins` and `locked_until`
-- `session` gets `stage` and `method`
+email unique across wgate; `app_user.password_hash` + the account brake;
+`login_failure`, `login_known`, `login_claim()`; `session.stage` and `method`.
 
 Then:
 - argon2id passwords for every role
 - `POST /auth/options` and `POST /auth/password`
-- lockout per account (Postgres), plus 20 attempts a minute per IP (in memory;
+- lockout per account and client, a brake per account that known clients skip
+  (Postgres), plus 20 attempts a minute per client and 100 per IPv6 /48 (in memory;
   `X-Forwarded-For` only from `trusted_proxies`)
 - the same 401 for every failure; every attempt audited
 - `[admin_oidc]` becomes optional (the button shows only when it is set)
@@ -263,12 +263,9 @@ Then:
 CLI: `wgate user password <email>` (prompted). UI: email first, then a password field
 and the provider button; "change password" on `/me`.
 
-Tests:
-- login, lockout and its reset
-- per-IP limit
-- unknown email = wrong password (status and body)
-- password change ends other sessions
-- the password never appears in a log or the audit
+Tests: login, lockout and its reset, the limits, unknown email = wrong password
+(status and body), a password change ends other sessions, no password in a log or
+the audit.
 
 ### 1.9 TOTP, invite and reset links
 `secret_key` in `server.toml` and `wgate keygen`. AES-256-GCM blobs with the row as

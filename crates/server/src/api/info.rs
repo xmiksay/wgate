@@ -17,7 +17,7 @@ use wgate_core::{next_free_net, next_peer_ip, next_port};
 use wgate_db::entity::{audit, network, peer, tenant_block};
 
 use super::{from_db, tenant_of_network};
-use crate::auth::{Actor, Role};
+use crate::auth::{Account, Actor, Role};
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -31,8 +31,9 @@ pub struct Session {
     pub csrf: String,
 }
 
+/// Any role; only admins may use the rest of the API.
 #[utoipa::path(get, path = "/session", responses((status = 200, body = Session)))]
-pub async fn session(actor: Actor) -> Json<Session> {
+pub async fn session(Account(actor): Account) -> Json<Session> {
     Json(Session {
         user_id: actor.user_id,
         email: actor.email,

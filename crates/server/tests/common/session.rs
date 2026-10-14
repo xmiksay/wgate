@@ -2,8 +2,11 @@
 //! them. No `Env`: the full-stack netns tests include this file too.
 #![allow(dead_code, clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+use std::net::SocketAddr;
+
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use serde_json::Value;
@@ -79,7 +82,9 @@ impl Client {
         let mut req = Request::builder()
             .method(method)
             .uri(format!("/api/v1{uri}"))
-            .header(header::COOKIE, format!("wgate_session={}", self.token));
+            .header(header::COOKIE, format!("wgate_session={}", self.token))
+            // As `serve` adds it: the client's address.
+            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
         if csrf {
             req = req.header("x-csrf-token", &self.csrf);
         }

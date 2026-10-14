@@ -4,14 +4,19 @@
 use axum::Json;
 use utoipa::OpenApi;
 
-use super::{info, networks, peers, rights, routes, tenants, users};
-use crate::auth::Actor;
+use super::{info, me, networks, peers, rights, routes, tenants, users};
+use crate::auth::{Actor, local};
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "wgate", description = "Multi-tenant WireGuard gateway: portal API."),
+    info(
+        title = "wgate",
+        description = "Multi-tenant WireGuard gateway: portal API. The `/auth` paths are \
+                       at the root, not under `/api/v1`."
+    ),
     servers((url = "/api/v1")),
     paths(
+        local::options, local::login, me::change_password,
         info::session, info::status, info::audit, info::free_ip, info::free_range,
         info::free_block, info::free_port,
         tenants::list, tenants::get, tenants::create, tenants::update, tenants::remove,

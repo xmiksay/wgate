@@ -4,6 +4,7 @@
 
 mod clientconf;
 mod info;
+mod me;
 mod networks;
 mod openapi;
 mod peers;
@@ -34,6 +35,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/session", get(info::session))
+        .route("/me/password", post(me::change_password))
         .route("/status", get(info::status))
         .route("/audit", get(info::audit))
         .route("/openapi.json", get(openapi::spec))

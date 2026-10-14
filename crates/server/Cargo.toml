@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+argon2 = "0.5"
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 base64 = "0.22"
@@ -23,7 +24,7 @@ sha2 = "0.10"
 subtle = "2"
 thiserror = "2"
 time = "0.3"
-tokio = { workspace = true, features = ["net", "sync"] }
+tokio = { workspace = true, features = ["net", "sync", "rt", "time"] }
 toml = "1"
 tracing.workspace = true
 url = "2"
@@ -35,7 +36,7 @@ zeroize = "1"
 
 [dev-dependencies]
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber.workspace = true
 

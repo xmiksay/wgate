@@ -75,12 +75,20 @@ agent's `LISTEN`. `pg_hba.conf` must admit both roles from the hub.
 ```sh
 export WGATE_DATABASE_URL='postgres://wgate:…@127.0.0.1:5432/wgate'
 wgate migrate
-wgate admin grant you@example.org   # the first global admin
+wgate admin grant you@example.org      # the first global admin
+wgate user password you@example.org    # their password, prompted twice
 ```
 
-## 4. Login provider
+`wgate user password` never takes the password as an argument; when stdin is not a
+terminal it reads the first line of stdin instead (for scripts:
+`printf '%s\n' "$PW" | wgate user password you@example.org`). It also clears the
+account's lockouts and known clients and ends its sessions. A password has 12 to 256
+characters.
 
-Register an OIDC client (confidential, authorization code + PKCE, scopes `openid email`)
+## 4. Login provider (optional)
+
+The password is enough to log in. To offer a provider button next to it for the global
+admins, set `[admin_oidc]` in the server config and register an OIDC client (confidential, authorization code + PKCE, scopes `openid email`)
 at your provider with the redirect URI `<public_url>/auth/callback`, e.g.
 `https://vpn.example.org/auth/callback`. Most providers accept a plain-`http` redirect only
 for `localhost`. The admin logs in with the email granted above; the provider must report
@@ -110,7 +118,8 @@ files reject unknown keys.
 | `node_cidrs` | infrastructure tenants may be granted; reached SNATed |
 | `snat_source` | the host's address on `node_cidrs`, used as SNAT source |
 | `database_url` | `wgate` for the server, `wgate_agent` for the agent |
-| `[admin_oidc]` (server) | `issuer` exactly as the provider's discovery names it (a trailing slash counts), `client_id`, `client_secret` |
+| `trusted_proxies` (server) | the proxies whose `X-Forwarded-For` names the client, e.g. `["127.0.0.1/32"]` behind a local Caddy; default none (the TCP peer is the client). List only the proxies themselves, never a client or pod network: every listed address may claim to be any client. Login attempts are limited and locked out per client, so behind a proxy this must be set |
+| `[admin_oidc]` (server, optional) | `issuer` exactly as the provider's discovery names it (a trailing slash counts), `client_id`, `client_secret`; `name` for the login button (default the issuer's host). Without it there is no provider button |
 
 `public_url` on `https` makes the session cookie `Secure`; on plain `http` it is not.
 
@@ -132,7 +141,9 @@ routed_space = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 reserved = ["192.168.100.0/24"]
 snat_source = "192.168.100.10"
 node_cidrs = ["192.168.100.0/24"]
+trusted_proxies = ["127.0.0.1/32"]   # Caddy on the host (step 7)
 
+# Optional (step 4):
 [admin_oidc]
 issuer = "https://accounts.google.com"
 client_id = "CLIENT_ID.apps.googleusercontent.com"
@@ -189,7 +200,7 @@ vpn.example.org {
 
 ## 8. Smoke test
 
-1. Log in at `public_url`; the status bar at the top shows `applied (rev N)`.
+1. Log in at `public_url` with the email and password from step 3; the status bar at the top shows `applied (rev N)`.
 2. Create a tenant `test` with a block (e.g. `10.50.0.0/24`) and a ceiling (say icmp to
    one host on `node_cidrs`, e.g. `192.168.100.10/32`), a network `test` (`10.50.0.0/25`
    inside the block, port 51899) with the same rule — a rule

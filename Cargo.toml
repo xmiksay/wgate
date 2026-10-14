@@ -35,3 +35,10 @@ unimplemented = "warn"
 lto = true
 codegen-units = 1
 strip = true
+
+# Password hashing in tests and debug builds at release speed (a login costs one hash).
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

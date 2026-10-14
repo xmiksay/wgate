@@ -11,6 +11,10 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     pub seen_at: DateTimeWithTimeZone,
     pub expires_at: DateTimeWithTimeZone,
+    /// `full`, `totp` or `enrol`: only `full` may use the API.
+    pub stage: String,
+    /// `password` or `oidc`.
+    pub method: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -119,8 +119,10 @@ oidc_provider id, tenant_id NULL (= global), name, issuer, client_id, client_sec
 identity      id, user_id, provider_id, subject   # a linked login; unique per provider
                                                   # secret: config file
 app_user      id, tenant_id NULL (= global admin), email (unique across wgate),
-              password_hash, totp_secret (encrypted), lockout counters, role (global_admin | tenant_admin |
-              user), disabled_at
+              password_hash, totp_secret (encrypted), brake counters, role (global_admin |
+              tenant_admin | user), disabled_at
+login_failure user_id, client, failed, locked_until   # lockout per account and client
+login_known   user_id, client, last_ok_at             # clients that logged in (30 days)
 device        id, user_id, name, created_at
 peer          id, device_id, network_id, public_key, ip, key_source (server | pasted),
               created_at, revoked_at, active (generated: revoked_at IS NULL)
