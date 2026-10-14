@@ -1,4 +1,6 @@
-//! Signed-in API clients against the in-process router, as the server tests make them.
+//! Signed-in API clients against a router, with sessions made the way a login makes
+//! them. No `Env`: the full-stack netns tests include this file too.
+#![allow(dead_code, clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use axum::Router;
 use axum::body::Body;
@@ -8,15 +10,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
+/// A signed-in client: a user with `role` (tenant `tenant`) and a session made the
+/// way a login makes one.
 #[derive(Clone)]
 pub struct Client {
-    app: Router,
-    token: String,
-    csrf: String,
+    pub app: Router,
+    pub token: String,
+    pub csrf: String,
+    pub user_id: i64,
 }
 
-/// A user with `role` (tenant `tenant`) and a session made the way a login makes one.
-pub async fn sign_in(
+pub async fn sign_in_to(
     db: &DatabaseConnection,
     app: &Router,
     email: &str,
@@ -33,7 +37,8 @@ pub async fn sign_in(
         .unwrap()
         .unwrap();
     let user_id: i64 = row.try_get("", "id").unwrap();
-    let (token, csrf) = (format!("token-{user_id}"), format!("csrf-{user_id}"));
+    let token = format!("token-{user_id}");
+    let csrf = format!("csrf-{user_id}");
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "INSERT INTO session (token_hash, user_id, csrf, expires_at)
@@ -50,6 +55,7 @@ pub async fn sign_in(
         app: app.clone(),
         token,
         csrf,
+        user_id,
     }
 }
 
@@ -60,11 +66,23 @@ impl Client {
         uri: &str,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
-        let req = Request::builder()
+        self.call_with(method, uri, body, true).await
+    }
+
+    pub async fn call_with(
+        &self,
+        method: Method,
+        uri: &str,
+        body: Option<Value>,
+        csrf: bool,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder()
             .method(method)
             .uri(format!("/api/v1{uri}"))
-            .header(header::COOKIE, format!("wgate_session={}", self.token))
-            .header("x-csrf-token", &self.csrf);
+            .header(header::COOKIE, format!("wgate_session={}", self.token));
+        if csrf {
+            req = req.header("x-csrf-token", &self.csrf);
+        }
         let req = match body {
             Some(b) => req
                 .header(header::CONTENT_TYPE, "application/json")
@@ -77,10 +95,8 @@ impl Client {
         let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
             .await
             .unwrap();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
+        let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, value)
     }
 
     pub async fn get(&self, uri: &str) -> (StatusCode, Value) {
@@ -89,6 +105,20 @@ impl Client {
 
     pub async fn post(&self, uri: &str, body: Value) -> (StatusCode, Value) {
         self.call(Method::POST, uri, Some(body)).await
+    }
+
+    pub async fn patch(&self, uri: &str, body: Value) -> (StatusCode, Value) {
+        self.call(Method::PATCH, uri, Some(body)).await
+    }
+
+    pub async fn delete(&self, uri: &str) -> (StatusCode, Value) {
+        self.call(Method::DELETE, uri, None).await
+    }
+
+    /// The created row; panics with the response unless it is a 201.
+    pub async fn create(&self, uri: &str, body: Value) -> Value {
+        self.expect(StatusCode::CREATED, Method::POST, uri, Some(body))
+            .await
     }
 
     /// The response of a call that must answer `want`.
@@ -103,25 +133,4 @@ impl Client {
         assert_eq!(status, want, "{uri}: {v}");
         v
     }
-
-    /// The created row; panics with the response unless it is a 201.
-    pub async fn create(&self, uri: &str, body: Value) -> Value {
-        self.expect(StatusCode::CREATED, Method::POST, uri, Some(body))
-            .await
-    }
-
-    pub async fn patch(&self, uri: &str, body: Value) {
-        self.expect(StatusCode::OK, Method::PATCH, uri, Some(body))
-            .await;
-    }
-
-    pub async fn delete(&self, uri: &str) {
-        self.expect(StatusCode::NO_CONTENT, Method::DELETE, uri, None)
-            .await;
-    }
-}
-
-/// A row's `id`.
-pub fn id(v: &Value) -> i64 {
-    v["id"].as_i64().unwrap_or_else(|| panic!("no id in {v}"))
 }

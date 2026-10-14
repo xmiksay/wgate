@@ -8,6 +8,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use sea_orm::{Database, DatabaseConnection};
+use testcontainers_modules::postgres::Postgres;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+
 /// A network namespace deleted on drop, so a failed assertion leaves nothing behind.
 pub struct Netns(pub String);
 
@@ -120,4 +125,28 @@ impl Drop for Background {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Exit 0 when a TCP echo round trip (`py::PROBE`) works within a second.
+pub fn tcp_ok(from: &Netns, host: &str, port: u16) -> bool {
+    from.succeeds(&["python3", "-c", py::PROBE, host, &port.to_string()])
+}
+
+pub fn ping_ok(from: &Netns, host: &str) -> bool {
+    from.succeeds(&["ping", "-c", "1", "-W", "2", host])
+}
+
+/// A migrated Postgres 17 in Docker: the container (stops on drop), its URL, a
+/// connection.
+pub async fn postgres() -> (ContainerAsync<Postgres>, String, DatabaseConnection) {
+    let container = Postgres::default()
+        .with_tag("17-alpine")
+        .start()
+        .await
+        .expect("start postgres (is Docker running?)");
+    let port = container.get_host_port_ipv4(5432).await.expect("port");
+    let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let db = Database::connect(&url).await.expect("connect");
+    wgate_db::migrate(&db).await.expect("migrate");
+    (container, url, db)
 }

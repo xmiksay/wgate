@@ -1,13 +1,13 @@
 //! Rights between peers end to end: the mesh flag, a rule between two networks of a
 //! tenant (one way), and federation across tenants, which a tenant admin cannot make.
-//! Run with `make test-netns`.
+//! Every change shows in the peers' configs too. Run with `make test-netns`.
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::api::sign_in;
-use common::{World, tcp_ok};
+use common::netns::tcp_ok;
+use common::{World, echo, nets, sign_in_to};
 use serde_json::json;
 
 const A1X: &str = "10.50.0.2";
@@ -30,19 +30,24 @@ async fn mesh_rules_and_federation() {
         w.device(a.0, "z").await,
         w.device(b.0, "w").await,
     );
-    let (_, x) = w.peer_host("a1x", dx, a1, A1X).await;
+    let (px, x) = w.peer_host("a1x", dx, a1, A1X).await;
     let (_, y) = w.peer_host("a1y", dy, a1, A1Y).await;
-    let (_, z) = w.peer_host("a2", d2, a2, A2).await;
-    let (_, v) = w.peer_host("b1", db, b1, B1).await;
+    let (pz, z) = w.peer_host("a2", d2, a2, A2).await;
+    let (pv, v) = w.peer_host("b1", db, b1, B1).await;
+    // Something to refuse on the port next to the rule's.
+    let _other_port = echo(&z.ns, &["7001"]);
     let tcp = json!({ "proto": "tcp", "port_from": 7000 });
 
     // Default deny inside a network, until it is a mesh.
     assert!(!tcp_ok(&x.ns, A1Y, 7000), "mesh off");
     assert!(!tcp_ok(&y.ns, A1X, 7000), "mesh off");
-    w.admin
-        .patch(&format!("/networks/{a1}"), json!({ "mesh": true }))
+    w.update(&format!("/networks/{a1}"), json!({ "mesh": true }))
         .await;
-    w.settle().await;
+    assert_eq!(
+        w.refresh(&x.ns, px).await,
+        nets(&["10.50.0.1/32", "10.50.0.3/32"]),
+        "x's config: the hub and the other member"
+    );
     assert!(tcp_ok(&x.ns, A1Y, 7000), "mesh on");
     assert!(tcp_ok(&y.ns, A1X, 7000), "mesh on");
 
@@ -51,48 +56,64 @@ async fn mesh_rules_and_federation() {
     let mut rule = tcp.clone();
     rule["target_network_id"] = json!(a2);
     w.admin_create(&format!("/networks/{a1}/rules"), rule).await;
+    assert_eq!(
+        w.refresh(&x.ns, px).await,
+        nets(&["10.50.0.1/32", "10.50.0.3/32", "10.50.0.130/32"]),
+        "x's config gains A2"
+    );
+    assert_eq!(
+        w.refresh(&z.ns, pz).await,
+        nets(&["10.50.0.129/32", "10.50.0.2/31"]),
+        "z's config: A1 may reach it"
+    );
     assert!(tcp_ok(&x.ns, A2, 7000), "rule A1 → A2");
     assert!(tcp_ok(&y.ns, A2, 7000), "rule A1 → A2");
     assert!(!tcp_ok(&z.ns, A1X, 7000), "A2 → A1 stays denied");
+    assert!(tcp_ok(&z.ns, "127.0.0.1", 7001), "7001 is up");
     assert!(!tcp_ok(&x.ns, A2, 7001), "only the rule's port");
 
     // A1 → B1: denied, and a tenant admin of A cannot open it.
     assert!(!tcp_ok(&x.ns, B1, 7000), "another tenant");
-    let ta = sign_in(&w.db, &w.app, "admin@a.test", "tenant_admin", Some(a.0)).await;
+    let ta = sign_in_to(&w.db, &w.app, "admin@a.test", "tenant_admin", Some(a.0)).await;
+    let rules = format!("/networks/{a1}/rules");
     let mut cross = tcp.clone();
     cross["target_network_id"] = json!(b1);
-    let rules = format!("/networks/{a1}/rules");
-    ta.expect(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        Method::POST,
-        &rules,
-        Some(cross),
-    )
-    .await;
     let mut external = tcp.clone();
     external["dst"] = json!("10.50.1.0/25");
-    ta.expect(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        Method::POST,
-        &rules,
-        Some(external),
-    )
-    .await;
+    for body in [cross, external] {
+        ta.expect(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Method::POST,
+            &rules,
+            Some(body),
+        )
+        .await;
+    }
     let mut fed = tcp.clone();
     fed["from_network_id"] = json!(a1);
     fed["to_network_id"] = json!(b1);
-    ta.expect(
-        StatusCode::FORBIDDEN,
-        Method::POST,
-        "/federations",
-        Some(fed.clone()),
-    )
-    .await;
+    let (status, _) = ta.post("/federations", fed.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     w.settle().await;
     assert!(!tcp_ok(&x.ns, B1, 7000), "still denied");
 
     // A federation by the global admin opens it, one way.
     w.admin_create("/federations", fed).await;
+    assert_eq!(
+        w.refresh(&x.ns, px).await,
+        nets(&[
+            "10.50.0.1/32",
+            "10.50.0.3/32",
+            "10.50.0.130/32",
+            "10.50.1.2/32"
+        ]),
+        "x's config gains B1"
+    );
+    assert_eq!(
+        w.refresh(&v.ns, pv).await,
+        nets(&["10.50.0.2/31", "10.50.1.1/32"]),
+        "v's config: A1 may reach it"
+    );
     assert!(tcp_ok(&x.ns, B1, 7000), "federation A1 → B1");
     assert!(!tcp_ok(&v.ns, A1X, 7000), "B1 → A1 stays denied");
     assert!(!tcp_ok(&z.ns, B1, 7000), "A2 is not federated");

@@ -4,10 +4,12 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use common::netns::Netns;
-use common::{HUB_SERVICES, POD, World, echo, id, lines_until, stream, tcp_ok};
+use axum::http::StatusCode;
+use common::netns::{Netns, tcp_ok};
+use common::stream::{assert_alive, assert_cut, stream};
+use common::{HUB_SERVICES, POD, World, echo, id, nets, wg};
 use serde_json::json;
 
 const LAN_HOST: &str = "192.168.50.10";
@@ -35,7 +37,12 @@ async fn routed_lan_and_inbound_grants() {
 
     // router (A1, routes 192.168.50.0/24) ─ lan0 192.168.50.1 ─ lan 192.168.50.10
     let device = w.device(a.0, "router").await;
-    let (_, config) = w.peer(device, a1, "10.50.0.2", &["192.168.50.0/24"]).await;
+    let (pr, config) = w.peer(device, a1, "10.50.0.2", &["192.168.50.0/24"]).await;
+    assert_eq!(
+        wg::allowed_ips(&config),
+        nets(&["10.50.0.1/32", "172.16.16.1/32"]),
+        "the router's config: the hub and its rule, not its own LAN"
+    );
     let router = w.host("router", &config);
     let lan = Netns::new("lan");
     router
@@ -62,7 +69,7 @@ async fn routed_lan_and_inbound_grants() {
     }
     let _lan_echo = echo(&lan, &["7000"]);
     let (_, y) = w.peer_host("a1y", w.device(a.0, "y").await, a1, A1Y).await;
-    let (_, z) = w.peer_host("a2", w.device(a.0, "z").await, a2, A2).await;
+    let (pz, z) = w.peer_host("a2", w.device(a.0, "z").await, a2, A2).await;
     let routes = w.hub.output(&["ip", "route", "show", "192.168.50.0/24"]);
     assert!(routes.contains("dev wg-a1"), "{routes}");
 
@@ -78,10 +85,24 @@ async fn routed_lan_and_inbound_grants() {
         |target: i64| json!({ "proto": "tcp", "port_from": 7000, "target_network_id": target });
     w.admin_create(&format!("/networks/{a2}/rules"), tcp(a1))
         .await;
+    let router_now = nets(&["10.50.0.1/32", "10.50.0.130/32", "172.16.16.1/32"]);
+    assert_eq!(
+        w.refresh(&router.ns, pr).await,
+        router_now,
+        "A2 may reach the router"
+    );
+    let z_now = nets(&["10.50.0.129/32", "10.50.0.2/31", "192.168.50.0/24"]);
+    assert_eq!(
+        w.refresh(&z.ns, pz).await,
+        z_now,
+        "z may reach A1 and the LAN"
+    );
     assert!(tcp_ok(&z.ns, LAN_HOST, 7000), "rule A2 → A1 covers the LAN");
     assert!(!tcp_ok(&lan, A2, 7000), "but not the way back");
     w.admin_create(&format!("/networks/{a1}/rules"), tcp(a2))
         .await;
+    // The same addresses either way.
+    assert_eq!(w.refresh(&router.ns, pr).await, router_now);
     assert!(
         tcp_ok(&lan, A2, 7000),
         "rule A1 → A2 covers the LAN as a source"
@@ -95,23 +116,26 @@ async fn routed_lan_and_inbound_grants() {
             json!({ "source": "10.244.0.0/24", "proto": "tcp", "port_from": 7000 }),
         )
         .await;
+    let mut z_granted = z_now.clone();
+    z_granted.insert("10.244.0.0/24".into());
+    assert_eq!(
+        w.refresh(&z.ns, pz).await,
+        z_granted,
+        "z's config routes the pod"
+    );
     assert!(tcp_ok(&w.pod, A2, 7000), "granted");
     assert!(!tcp_ok(&w.pod, A1Y, 7000), "a grant for A2 only");
     assert!(!tcp_ok(&z.ns, POD, 7000), "inbound, not outbound");
 
     // Revoking the grant kills the pod's live stream.
     let live = stream(&w.pod, A2, 7000);
-    w.admin
+    assert_alive(&live, "the pod's stream");
+    let (status, v) = w
+        .admin
         .delete(&format!("/inbound/{}", id(&grant["inbound"])))
         .await;
-    let revoked = Instant::now();
-    let at = lines_until(&live, revoked + Duration::from_secs(2));
-    let cut = revoked + Duration::from_secs(1);
-    assert!(
-        at.iter().all(|t| *t < cut),
-        "the stream outlived the grant: {:?}",
-        at.last().map(|t| t.duration_since(revoked))
-    );
+    assert_eq!(status, StatusCode::NO_CONTENT, "{v}");
+    assert_cut(&live, Instant::now(), "the pod's stream");
     w.settle().await;
     assert!(!tcp_ok(&w.pod, A2, 7000), "the grant is gone");
 }

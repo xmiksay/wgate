@@ -10,26 +10,29 @@
 //! ```
 #![allow(dead_code, clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-pub mod api;
 #[path = "../../../agent/tests/common/mod.rs"]
 pub mod netns;
+#[path = "../../../server/tests/common/session.rs"]
+pub mod session;
+pub mod stream;
 pub mod wg;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-use axum::http::Method;
-use netns::py::{ECHO, PROBE, STREAM};
+use std::collections::BTreeSet;
+
+use axum::http::{Method, StatusCode};
+use netns::py::ECHO;
 use netns::{Background, Netns};
-use sea_orm::{Database, DatabaseConnection};
+use sea_orm::DatabaseConnection;
 use serde_json::{Value, json};
 use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use testcontainers_modules::testcontainers::ContainerAsync;
 use wgate_agent::System;
 use wgate_server::AppState;
 
-pub use api::{Client, id};
+pub use session::{Client, sign_in_to};
 
 pub const ENDPOINT: &str = "198.51.100.1";
 pub const NODE: &str = "172.19.9.11";
@@ -71,43 +74,14 @@ pub struct Host {
     pub ns: Netns,
 }
 
-/// Exit 0 when a TCP echo round trip works within a second.
-pub fn tcp_ok(from: &Netns, host: &str, port: u16) -> bool {
-    from.succeeds(&["python3", "-c", PROBE, host, &port.to_string()])
+/// A row's `id`.
+pub fn id(v: &Value) -> i64 {
+    v["id"].as_i64().unwrap_or_else(|| panic!("no id in {v}"))
 }
 
-pub fn ping_ok(from: &Netns, host: &str) -> bool {
-    from.succeeds(&["ping", "-c", "1", "-W", "2", host])
-}
-
-/// One echo connection, "ok" every 100 ms for a minute; returns once it is up.
-pub fn stream(from: &Netns, host: &str, port: u16) -> Background {
-    let s = from.spawn(&["python3", "-c", STREAM, host, &port.to_string(), "60"]);
-    assert_eq!(s.expect_line("stream is up"), "ok");
-    s
-}
-
-/// When each line of `s` arrived, up to `until` (lines already queued included).
-pub fn lines_until(s: &Background, until: Instant) -> Vec<Instant> {
-    let mut at = vec![];
-    while let Ok((t, _)) = s
-        .lines
-        .recv_timeout(until.saturating_duration_since(Instant::now()))
-    {
-        at.push(t);
-    }
-    at
-}
-
-/// The longest silence of a stream between `from` and `until`.
-pub fn longest_gap(from: Instant, until: Instant, at: &[Instant]) -> Duration {
-    let mut prev = from;
-    let mut gap = Duration::ZERO;
-    for t in at.iter().chain([&until]) {
-        gap = gap.max(t.saturating_duration_since(prev));
-        prev = prev.max(*t);
-    }
-    gap
+/// A set of CIDRs, to compare AllowedIPs with.
+pub fn nets(cidrs: &[&str]) -> BTreeSet<String> {
+    cidrs.iter().map(|c| (*c).to_owned()).collect()
 }
 
 fn veth(hub: &Netns, ns: &Netns, iface: &str) {
@@ -139,15 +113,7 @@ impl World {
             )
             .with_test_writer()
             .try_init();
-        let pg = Postgres::default()
-            .with_tag("17-alpine")
-            .start()
-            .await
-            .expect("start postgres (is Docker running?)");
-        let port = pg.get_host_port_ipv4(5432).await.expect("port");
-        let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
-        let db = Database::connect(&url).await.expect("connect");
-        wgate_db::migrate(&db).await.expect("migrate");
+        let (pg, url, db) = netns::postgres().await;
 
         let hub = Netns::new("hub");
         for argv in [
@@ -222,7 +188,7 @@ impl World {
         server.snat_source = agent.snat_source;
         server.node_cidrs = agent.node_cidrs.clone();
         let app = wgate_server::router(AppState::new(db.clone(), server).unwrap());
-        let admin = api::sign_in(&db, &app, "root@wgate.test", "global_admin", None).await;
+        let admin = sign_in_to(&db, &app, "root@wgate.test", "global_admin", None).await;
         let runner = System::in_netns(&hub.0);
         let task = tokio::spawn(async move {
             if let Err(e) = wgate_agent::run(agent, runner).await {
@@ -306,21 +272,8 @@ impl World {
         let peer = id(&v["peer"]);
         let config = match v["config"]["config"].as_str() {
             Some(c) => c.to_owned(),
-            None => {
-                // The hub key is not published yet: once it is, a download (which
-                // rotates the key) has the config.
-                self.settle().await;
-                let v = self
-                    .admin
-                    .expect(
-                        axum::http::StatusCode::OK,
-                        Method::POST,
-                        &format!("/peers/{peer}/config"),
-                        Some(json!({})),
-                    )
-                    .await;
-                v["config"]["config"].as_str().expect("a config").to_owned()
-            }
+            // The hub key is not published yet: once it is, a download has the config.
+            None => self.download(peer).await,
         };
         self.settle().await;
         (peer, config)
@@ -352,10 +305,40 @@ impl World {
         }
     }
 
+    /// A fresh config: the download rotates the server-made key, so the agent has to
+    /// catch up before the tunnel is re-upped with it.
+    async fn download(&self, peer: i64) -> String {
+        self.settle().await;
+        let uri = format!("/peers/{peer}/config");
+        let v = self
+            .admin
+            .expect(StatusCode::OK, Method::POST, &uri, Some(json!({})))
+            .await;
+        v["config"]["config"].as_str().expect("a config").to_owned()
+    }
+
+    /// Downloads `peer`'s config (what its rights render to now) and brings the
+    /// host's tunnel up again with it; returns its AllowedIPs.
+    pub async fn refresh(&self, ns: &Netns, peer: i64) -> BTreeSet<String> {
+        let config = self.download(peer).await;
+        self.settle().await;
+        ns.exec(&["ip", "link", "del", wg::IFACE], None);
+        wg::up(ns, &config);
+        wg::allowed_ips(&config)
+    }
+
     /// A peer and its client namespace.
     pub async fn peer_host(&self, tag: &str, device: i64, network: i64, ip: &str) -> (i64, Host) {
         let (peer, config) = self.peer(device, network, ip, &[]).await;
         (peer, self.host(tag, &config))
+    }
+
+    /// `PATCH` as the global admin (200), then wait for the agent.
+    pub async fn update(&self, uri: &str, body: Value) {
+        self.admin
+            .expect(StatusCode::OK, Method::PATCH, uri, Some(body))
+            .await;
+        self.settle().await;
     }
 
     /// `POST` as the global admin, then wait for the agent.
