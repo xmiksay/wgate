@@ -17,7 +17,9 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
 - `make test-netns` — `#[ignore]`d root tests in `crates/agent/tests/netns*.rs`
   (kernel accepts the golden ruleset; real packets vs. the rendered ruleset over veth
   links named `wg-*`, python3 endpoints; the agent end to end against Postgres in
-  Docker with real wg interfaces);
+  Docker with real wg interfaces) and `crates/wgate/tests/netns_e2e_*.rs` (full stack:
+  the API in process, the agent loop in a hub namespace, real WireGuard clients
+  brought up from the downloaded configs; world in `tests/common/`);
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
 - `make migrate` — `wgate migrate` with `WGATE_DATABASE_URL` (`.env.example`)

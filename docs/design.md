@@ -318,7 +318,9 @@ Makefile                 build, lint, test, test-netns, golden, release
 - **Netns** (`make test-netns`, root/CI): the ruleset against real packets (veth links
   named `wg-*`), then the agent with real wg interfaces: two tenants and federation,
   mesh on/off, a router LAN, inbound from outside the pool, ping/TCP allowed vs.
-  denied, revocation during a live TCP stream (it must stop).
+  denied, revocation during a live TCP stream (it must stop). The full-stack ones
+  (`crates/wgate/tests/netns_e2e_*.rs`) drive all of it through the API, with the
+  agent loop running and WireGuard clients brought up from the downloaded configs.
 
 ## Risks
 

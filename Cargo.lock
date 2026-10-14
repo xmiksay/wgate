@@ -4757,9 +4757,16 @@ name = "wgate"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "sea-orm",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "testcontainers-modules",
  "tokio",
+ "toml",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "wgate-agent",
