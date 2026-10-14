@@ -217,6 +217,15 @@ under sudo).
   rules, peers, routers), Users → detail (devices, peers), Federations, Inbound grants,
   Audit (simple list), status bar "applied / pending".
 - Peer creation dialog: config shown once + QR + download `.conf`.
+- Embedded with rust-embed (`build.rs` stages `web/dist`, or a stub page without
+  `make web`); `index.html` for client routes, a strict CSP (`img-src data:` for the
+  QR), unknown `/api` paths stay JSON 404s. A refused login returns to
+  `/login?error=forbidden|expired|failed`.
+- API types generated from `docs/openapi.json` (openapi-typescript + openapi-fetch),
+  kept current by `make golden`/`make lint`. Status polled every 5 s (1 s for 30 s
+  after a write, paused while hidden). Address fields prefilled from the `free-*`
+  suggestions. A server-key re-download asks first (the old config dies).
+- Frontend gate: eslint + vue-tsc only (no frontend unit tests).
 
 ### 1.7 Netns tests (`make test-netns`)
 - Rust test harness:

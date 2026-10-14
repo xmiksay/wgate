@@ -18,8 +18,8 @@ All through the Makefile (`make help`); `CARGO_BUILD_JOBS=4` is exported there.
   binaries are built as the user and run via `sudo -E` (cargo runner)
 - `make release` — static musl binary + sha256 in `dist/`
 - `make migrate` — `wgate migrate` with `WGATE_DATABASE_URL` (`.env.example`)
-- Golden files live in `crates/core/tests/golden/` and `docs/openapi.json`;
-  `make golden` rewrites them (review the diff). `ruleset.nft` is also loaded into a kernel by `make test-netns`.
+- Golden files live in `crates/core/tests/golden/`, `docs/openapi.json` and
+  `web/src/api/schema.d.ts`; `make golden` rewrites them (review the diff). `ruleset.nft` is also loaded into a kernel by `make test-netns`.
 
 Done = `make lint` + `make test` green, plus `make test-netns` when agent code, nft
 rendering (`crates/core/src/nft.rs`) or the goldens changed.
@@ -40,14 +40,19 @@ rendering (`crates/core/src/nft.rs`) or the goldens changed.
   mapping), `audit.rs`, `wgkey.rs` (x25519, zeroized); config
   `server.example.toml`, unit `deploy/wgate-server.service`. Tests: `tests/*.rs`
   against Postgres containers and a mock IdP (`tests/common/idp.rs`);
-  `docs/openapi.json` is a golden (`make golden`)
+  `docs/openapi.json` is a golden (`make golden`; operationIds must be unique).
+  `ui.rs` serves the embedded `web/dist` (staged by `build.rs`; a stub page without
+  `make web`) with a strict CSP, `index.html` for client routes
 - `crates/agent` — root with `CAP_NET_ADMIN` only, no HTTP listener; reconciles network
   by network through `ip`/`wg`/`nft` behind a `Runner` (faked in unit tests); who may
   hold which address this pass is one account (`reconcile/holdings.rs`); saves
   the last desired state (`state.rs`) to rebuild from when it boots without the
   database; config `agent.example.toml`, unit `deploy/wgate-agent.service`
 - `crates/wgate` — binary, `server | agent | migrate`
-- `web/` — Vue UI, embedded into the binary
+- `web/` — Vue UI, embedded into the binary. `src/api/schema.d.ts` is generated from
+  `docs/openapi.json` (`npm run api:gen`, checked by `make lint`); one typed client
+  `src/api/client.ts` (CSRF header, 401 → login); no `v-html`, nothing the CSP would
+  block; a server-made private key lives only in the dialog that shows it
 
 ## Rules
 

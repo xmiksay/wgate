@@ -35,6 +35,11 @@ make release     # static x86_64 musl binary + sha256 in dist/
 make help        # all targets
 ```
 
+The UI's API types are generated from `docs/openapi.json`: after `make golden` changes the
+spec, run `cd web && npm run api:gen` (`npm run api:check` fails while
+`web/src/api/schema.d.ts` is stale). `cd web && npm run dev` serves the UI with `/api`
+and `/auth` proxied to a server on `127.0.0.1:8470`.
+
 ## Configuration
 
 | Variable | Used by | What |

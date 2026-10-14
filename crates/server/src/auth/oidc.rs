@@ -141,11 +141,34 @@ pub struct Callback {
     state: String,
 }
 
-/// `GET /auth/callback`: back from the provider; a session for a global admin.
+/// `GET /auth/callback`: back from the provider; a session for a global admin, or
+/// the UI's login page saying why not (a browser lands here, not a script).
 pub async fn callback(
     State(state): State<AppState>,
     jar: CookieJar,
     Query(q): Query<Callback>,
+) -> (CookieJar, Redirect) {
+    match complete(&state, jar.clone(), q).await {
+        Ok(done) => done,
+        Err(e) => {
+            let why = match e {
+                ApiError::Forbidden => "forbidden",
+                ApiError::BadRequest(_) => "expired",
+                e => {
+                    tracing::error!(error = %e, "login failed");
+                    "failed"
+                }
+            };
+            let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(LOGIN_COOKIE_PATH));
+            (jar, Redirect::to(&format!("/login?error={why}")))
+        }
+    }
+}
+
+async fn complete(
+    state: &AppState,
+    jar: CookieJar,
+    q: Callback,
 ) -> Result<(CookieJar, Redirect), ApiError> {
     let pending = jar
         .get(LOGIN_COOKIE)
@@ -159,7 +182,7 @@ pub async fn callback(
     let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(LOGIN_COOKIE_PATH));
     let nonce = Nonce::new(pending.nonce);
 
-    let client = state.oidc.client(&state).await?;
+    let client = state.oidc.client(state).await?;
     let refused = |what: &str, e: &dyn std::fmt::Display| {
         tracing::warn!(error = %e, "login refused: {what}");
         ApiError::Forbidden
@@ -189,7 +212,7 @@ pub async fn callback(
         Err(_) => {
             // Perhaps signed with a key newer than the cached ones: once more, fresh.
             state.oidc.forget().await;
-            let fresh = state.oidc.client(&state).await?;
+            let fresh = state.oidc.client(state).await?;
             id_token
                 .claims(&fresh.id_token_verifier(), &nonce)
                 .map_err(|e| refused("ID token", &e))?
@@ -203,7 +226,7 @@ pub async fn callback(
         .filter(|_| claims.email_verified() == Some(true))
         .map(|e| e.as_str());
 
-    let user_id = global_admin(&state, subject, email).await?;
+    let user_id = global_admin(state, subject, email).await?;
     let token = session::create(&state.db, user_id).await?;
     audit::record(
         &state.db,

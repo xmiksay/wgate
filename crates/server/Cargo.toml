@@ -15,6 +15,7 @@ ipnet = { workspace = true, features = ["serde"] }
 openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.8"
+rust-embed = { version = "8", features = ["interpolate-folder-path", "mime-guess", "debug-embed"] }
 sea-orm = { version = "2", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-json", "with-ipnetwork", "postgres-array"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

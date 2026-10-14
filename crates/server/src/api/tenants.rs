@@ -54,7 +54,7 @@ pub struct TenantUpdate {
     pub disabled: Option<bool>,
 }
 
-#[utoipa::path(get, path = "/tenants", responses((status = 200, body = [Tenant])))]
+#[utoipa::path(get, path = "/tenants", operation_id = "list_tenants", responses((status = 200, body = [Tenant])))]
 pub async fn list(State(s): State<AppState>, actor: Actor) -> Result<Json<Vec<Tenant>>, ApiError> {
     let mut q = tenant::Entity::find().order_by_asc(tenant::Column::Id);
     if let Some(own) = actor.scope() {
@@ -65,7 +65,7 @@ pub async fn list(State(s): State<AppState>, actor: Actor) -> Result<Json<Vec<Te
     ))
 }
 
-#[utoipa::path(get, path = "/tenants/{id}", responses((status = 200, body = Tenant)))]
+#[utoipa::path(get, path = "/tenants/{id}", operation_id = "get_tenant", responses((status = 200, body = Tenant)))]
 pub async fn get(
     State(s): State<AppState>,
     actor: Actor,
@@ -79,7 +79,7 @@ pub async fn get(
     Ok(Json(t.into()))
 }
 
-#[utoipa::path(post, path = "/tenants", request_body = TenantCreate, responses((status = 201, body = Tenant)))]
+#[utoipa::path(post, path = "/tenants", operation_id = "create_tenant", request_body = TenantCreate, responses((status = 201, body = Tenant)))]
 pub async fn create(
     State(s): State<AppState>,
     actor: Actor,
@@ -106,7 +106,7 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(t.into())))
 }
 
-#[utoipa::path(patch, path = "/tenants/{id}", request_body = TenantUpdate, responses((status = 200, body = Tenant)))]
+#[utoipa::path(patch, path = "/tenants/{id}", operation_id = "update_tenant", request_body = TenantUpdate, responses((status = 200, body = Tenant)))]
 pub async fn update(
     State(s): State<AppState>,
     actor: Actor,
@@ -141,7 +141,7 @@ pub async fn update(
 
 /// Takes everything of the tenant along: blocks, networks, users, devices, peers,
 /// rules, ceilings.
-#[utoipa::path(delete, path = "/tenants/{id}", responses((status = 204)))]
+#[utoipa::path(delete, path = "/tenants/{id}", operation_id = "remove_tenant", responses((status = 204)))]
 pub async fn remove(
     State(s): State<AppState>,
     actor: Actor,

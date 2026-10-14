@@ -406,7 +406,7 @@
         "tags": [
           "networks"
         ],
-        "operationId": "list",
+        "operationId": "list_networks",
         "parameters": [
           {
             "name": "tenant_id",
@@ -442,7 +442,7 @@
           "networks"
         ],
         "summary": "Inside one of its tenant's blocks; slug, range and port are the network's for good.",
-        "operationId": "create",
+        "operationId": "create_network",
         "requestBody": {
           "content": {
             "application/json": {
@@ -472,7 +472,7 @@
         "tags": [
           "networks"
         ],
-        "operationId": "get",
+        "operationId": "get_network",
         "parameters": [
           {
             "name": "id",
@@ -502,7 +502,7 @@
           "networks"
         ],
         "summary": "Takes the network's peers, routes, rules, federations and grants along.",
-        "operationId": "remove",
+        "operationId": "remove_network",
         "parameters": [
           {
             "name": "id",
@@ -524,7 +524,7 @@
         "tags": [
           "networks"
         ],
-        "operationId": "update",
+        "operationId": "update_network",
         "parameters": [
           {
             "name": "id",
@@ -755,7 +755,7 @@
         "tags": [
           "peers"
         ],
-        "operationId": "list",
+        "operationId": "list_peers",
         "parameters": [
           {
             "name": "network_id",
@@ -802,7 +802,7 @@
         "tags": [
           "peers"
         ],
-        "operationId": "create",
+        "operationId": "create_peer",
         "requestBody": {
           "content": {
             "application/json": {
@@ -832,7 +832,7 @@
         "tags": [
           "peers"
         ],
-        "operationId": "get",
+        "operationId": "get_peer",
         "parameters": [
           {
             "name": "id",
@@ -861,7 +861,7 @@
         "tags": [
           "peers"
         ],
-        "operationId": "remove",
+        "operationId": "remove_peer",
         "parameters": [
           {
             "name": "id",
@@ -1078,7 +1078,7 @@
         "tags": [
           "tenants"
         ],
-        "operationId": "list",
+        "operationId": "list_tenants",
         "responses": {
           "200": {
             "description": "",
@@ -1099,7 +1099,7 @@
         "tags": [
           "tenants"
         ],
-        "operationId": "create",
+        "operationId": "create_tenant",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1129,7 +1129,7 @@
         "tags": [
           "tenants"
         ],
-        "operationId": "get",
+        "operationId": "get_tenant",
         "parameters": [
           {
             "name": "id",
@@ -1159,7 +1159,7 @@
           "tenants"
         ],
         "summary": "Takes everything of the tenant along: blocks, networks, users, devices, peers,\nrules, ceilings.",
-        "operationId": "remove",
+        "operationId": "remove_tenant",
         "parameters": [
           {
             "name": "id",
@@ -1181,7 +1181,7 @@
         "tags": [
           "tenants"
         ],
-        "operationId": "update",
+        "operationId": "update_tenant",
         "parameters": [
           {
             "name": "id",
@@ -1412,7 +1412,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "list",
+        "operationId": "list_users",
         "parameters": [
           {
             "name": "tenant_id",
@@ -1447,7 +1447,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "create",
+        "operationId": "create_user",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1478,7 +1478,7 @@
           "users"
         ],
         "summary": "Takes the user's devices and peers along.",
-        "operationId": "remove",
+        "operationId": "remove_user",
         "parameters": [
           {
             "name": "id",
@@ -1500,7 +1500,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "update",
+        "operationId": "update_user",
         "parameters": [
           {
             "name": "id",
