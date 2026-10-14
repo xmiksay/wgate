@@ -168,6 +168,7 @@ pub async fn free_range(
     Query(q): Query<Prefix>,
 ) -> Result<Json<Suggestion<String>>, ApiError> {
     actor.tenant(id)?;
+    super::tenants::tenant_exists(&s.db, id).await?;
     let blocks: Vec<Ipv4Net> = tenant_block::Entity::find()
         .filter(tenant_block::Column::TenantId.eq(id))
         .all(&s.db)

@@ -91,6 +91,7 @@ async fn blocks_stay_in_the_pool_and_clear_of_each_other() {
             Some(json!({ "dst": "0.0.0.0/0", "proto": "icmp" })),
         ),
         (Method::GET, "/tenants/999/ceilings", None),
+        (Method::GET, "/tenants/999/free-range?prefix=25", None),
     ] {
         let (s, _) = g.call(method.clone(), uri, body).await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{method} {uri}");

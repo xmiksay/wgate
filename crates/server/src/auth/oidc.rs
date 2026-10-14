@@ -17,10 +17,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
 use openidconnect::{
     AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet, EndpointNotSet,
-    EndpointSet, IssuerUrl, Nonce, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
-    TokenResponse,
+    EndpointSet, IssuerUrl, Nonce, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl,
+    RequestTokenError, Scope, TokenResponse,
 };
-use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use subtle::ConstantTimeEq;
@@ -34,6 +34,8 @@ use crate::state::AppState;
 /// Between the redirect and the callback.
 const LOGIN_TTL_SECS: i64 = 600;
 const LOGIN_COOKIE: &str = "wgate_login";
+/// Where the login routes are (see `router`): the only place the cookie goes.
+const LOGIN_COOKIE_PATH: &str = "/auth";
 /// How long discovered metadata (endpoints, signing keys) is reused.
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
 
@@ -116,7 +118,7 @@ pub async fn login(
         .http_only(true)
         .secure(state.config.secure_cookies())
         .same_site(SameSite::Lax)
-        .path("/auth")
+        .path(LOGIN_COOKIE_PATH)
         .max_age(time_secs(LOGIN_TTL_SECS))
         .build();
     Ok((jar.add(cookie), Redirect::to(url.as_str())))
@@ -154,7 +156,7 @@ pub async fn callback(
         .ok_or_else(|| {
             ApiError::BadRequest("this login was not started in this browser; start again".into())
         })?;
-    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path("/auth"));
+    let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(LOGIN_COOKIE_PATH));
     let nonce = Nonce::new(pending.nonce);
 
     let client = state.oidc.client(&state).await?;
@@ -168,8 +170,17 @@ pub async fn callback(
         .set_pkce_verifier(PkceCodeVerifier::new(pending.verifier))
         .request_async(&state.http)
         .await;
-    // No forget() here: anyone can make an exchange fail with a made-up code.
-    let response = exchange.map_err(|e| refused("token exchange", &e))?;
+    let response = match exchange {
+        Ok(r) => r,
+        // The provider's own refusal (a made-up code, say) says nothing about its
+        // endpoints: anyone can cause one, so it must not flush the cache.
+        Err(e @ RequestTokenError::ServerResponse(_)) => return Err(refused("token exchange", &e)),
+        Err(e) => {
+            // Unreachable or unintelligible: the provider may have moved its endpoints.
+            state.oidc.forget().await;
+            return Err(refused("token exchange", &e));
+        }
+    };
     let id_token = response
         .id_token()
         .ok_or_else(|| refused("no ID token", &"missing"))?;
@@ -263,22 +274,30 @@ pub async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), ApiError> {
-    if let Some(cookie) = jar.get(session::COOKIE) {
-        let txn = state.db.begin().await?;
-        if let Some(user_id) = session::end(&txn, cookie.value()).await? {
-            audit::record(
-                &txn,
-                Some(user_id),
-                "logout",
-                format!("app_user/{user_id}"),
-                json!({}),
-            )
-            .await?;
-        }
-        txn.commit().await?;
+    if let Some(cookie) = jar.get(session::COOKIE)
+        && let Err(e) = end_session(&state, cookie.value()).await
+    {
+        // The cookie goes anyway; the row expires on its own.
+        tracing::warn!(error = %e, "logout: ending the session");
     }
     Ok((
         jar.remove(Cookie::build(session::COOKIE).path("/")),
         StatusCode::NO_CONTENT,
     ))
+}
+
+async fn end_session(state: &AppState, token: &str) -> Result<(), ApiError> {
+    let txn = crate::api::begin(&state.db).await?;
+    if let Some(user_id) = session::end(&txn, token).await? {
+        audit::record(
+            &txn,
+            Some(user_id),
+            "logout",
+            format!("app_user/{user_id}"),
+            json!({}),
+        )
+        .await?;
+    }
+    txn.commit().await?;
+    Ok(())
 }

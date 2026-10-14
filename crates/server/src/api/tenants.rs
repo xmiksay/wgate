@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use ipnet::Ipv4Net;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
-    QueryFilter, QueryOrder, QuerySelect,
+    QueryFilter, QueryOrder,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -203,11 +203,10 @@ pub async fn blocks(
     Ok(Json(rows.into_iter().map(block).collect::<Result<_, _>>()?))
 }
 
-/// A missing tenant is a 404 on everything under it. Share-locked: a concurrent
-/// delete waits for the write that found it.
-async fn tenant_exists<C: ConnectionTrait>(db: &C, id: i64) -> Result<(), ApiError> {
+/// A missing tenant is a 404 on everything under it (a write that races its delete
+/// meets the foreign key).
+pub(super) async fn tenant_exists<C: ConnectionTrait>(db: &C, id: i64) -> Result<(), ApiError> {
     tenant::Entity::find_by_id(id)
-        .lock_shared()
         .one(db)
         .await?
         .ok_or(ApiError::NotFound)?;
