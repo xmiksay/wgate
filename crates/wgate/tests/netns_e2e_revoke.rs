@@ -4,14 +4,12 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use common::{NODE, World, lines_until, longest_gap, stream, tcp_ok};
+use common::netns::tcp_ok;
+use common::stream::{CUT, assert_alive, assert_cut, assert_flowing, stream};
+use common::{NODE, World};
 use serde_json::json;
-
-const CUT: Duration = Duration::from_secs(1);
-/// The stream echoes every 100 ms; a longer silence means it stalled.
-const STALL: Duration = Duration::from_millis(500);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs root and Docker: make test-netns"]
@@ -50,28 +48,18 @@ async fn revocation_cuts_live_streams_only_where_it_should() {
     );
 
     // Revoking the laptop's A1 peer kills its stream within a second.
+    assert_alive(&s_d1, "d1's stream");
     let (status, v) = w
         .admin
         .post(&format!("/peers/{in_a1}/revoke"), json!({}))
         .await;
     assert!(status.is_success(), "{v}");
     let revoked = Instant::now();
+    assert_cut(&s_d1, revoked, "the revoked A1 peer's stream");
+    // The same device's A2 tunnel, the other A1 member and B1 are untouched.
     let until = revoked + CUT * 2;
-    let cut = lines_until(&s_d1, until);
-    let since = |at: &[Instant]| at.last().map(|t| t.duration_since(revoked));
-    assert!(
-        cut.iter().all(|t| *t < revoked + CUT),
-        "the revoked stream ran on: {:?}",
-        since(&cut)
-    );
-    // The same device's A2 tunnel and the other A1 member are untouched.
-    for (what, s) in [("A2 tunnel", &s_d2), ("A1 member", &s_e1)] {
-        let at = lines_until(s, until);
-        assert!(
-            longest_gap(revoked, until, &at) < STALL,
-            "{what} stalled: {at:?}"
-        );
-        assert!(since(&at) > Some(CUT), "{what} stopped");
+    for (what, s) in [("A2 tunnel", &s_d2), ("A1 member", &s_e1), ("B1", &s_f1)] {
+        assert_flowing(s, revoked, until, what);
     }
     w.settle().await;
     assert!(!tcp_ok(&d1.ns, NODE, 8080), "revoked");
@@ -80,25 +68,20 @@ async fn revocation_cuts_live_streams_only_where_it_should() {
     assert_eq!(peers.lines().count(), 1, "only e1 is left: {peers}");
 
     // Disabling B1 deletes its interface while A1's stream keeps running.
-    w.admin
+    assert_alive(&s_f1, "B1's stream");
+    assert_alive(&s_e1, "A1's stream");
+    let (status, v) = w
+        .admin
         .patch(&format!("/networks/{b1}"), json!({ "disabled": true }))
         .await;
+    assert!(status.is_success(), "{v}");
     let disabled = Instant::now();
+    assert_cut(&s_f1, disabled, "B1's stream");
+    assert_flowing(&s_e1, disabled, disabled + CUT * 2, "A1's stream");
     w.settle().await;
     assert!(
         !w.hub.output(&["ip", "link"]).contains("wg-b1"),
         "wg-b1 is gone"
-    );
-    let until = Instant::now() + CUT;
-    let gone = lines_until(&s_f1, until);
-    assert!(
-        gone.iter().all(|t| *t < disabled + CUT),
-        "B1's stream ran on"
-    );
-    let at = lines_until(&s_e1, until);
-    assert!(
-        longest_gap(disabled, until, &at) < STALL,
-        "A1's stream stalled: {at:?}"
     );
     assert!(tcp_ok(&e1.ns, NODE, 8080), "A1 still works");
     assert!(!tcp_ok(&f1.ns, NODE, 8080), "B1 is off");

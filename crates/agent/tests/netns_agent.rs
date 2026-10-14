@@ -6,27 +6,11 @@ mod common;
 
 use std::sync::Arc;
 
-use common::Netns;
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use common::{Netns, postgres};
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 use wgate_agent::{Config, Memory, System, apply_saved, reconcile_once};
 
 const KEY: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
-
-async fn postgres() -> (ContainerAsync<Postgres>, String, DatabaseConnection) {
-    let container = Postgres::default()
-        .with_tag("17-alpine")
-        .start()
-        .await
-        .expect("start postgres (is Docker running?)");
-    let port = container.get_host_port_ipv4(5432).await.expect("port");
-    let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
-    let db = Database::connect(&url).await.expect("connect");
-    wgate_db::migrate(&db).await.expect("migrate");
-    (container, url, db)
-}
 
 async fn sql(db: &DatabaseConnection, sql: &str) {
     db.execute_unprepared(sql)

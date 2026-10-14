@@ -7,8 +7,8 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::py::{ECHO, PROBE, SPOOF, STREAM};
-use common::{Background, Netns};
+use common::py::{ECHO, SPOOF, STREAM};
+use common::{Background, Netns, ping_ok, tcp_ok};
 use ipnet::Ipv4Net;
 use wgate_core::{
     Claim, DesiredState, Federation, NetRule, Network, Peer, PortRange, RuleSet, Service, Tenant,
@@ -134,10 +134,6 @@ impl Lab {
     }
 }
 
-fn tcp_ok(from: &Netns, host: &str, port: u16) -> bool {
-    from.succeeds(&["python3", "-c", PROBE, host, &port.to_string()])
-}
-
 fn net(s: &str) -> Ipv4Net {
     s.parse().expect("cidr")
 }
@@ -231,21 +227,12 @@ fn state() -> DesiredState {
 fn external_access_follows_rules_and_snat() {
     let lab = Lab::new();
     lab.apply(&state());
-    assert!(
-        lab.a.succeeds(&["ping", "-c1", "-W1", NODE]),
-        "ping through SNAT"
-    );
+    assert!(ping_ok(&lab.a, NODE), "ping through SNAT");
     assert!(tcp_ok(&lab.a, NODE, 8080));
     assert!(!tcp_ok(&lab.a, NODE, 8081), "port not granted");
-    assert!(
-        !lab.b.succeeds(&["ping", "-c1", "-W1", NODE]),
-        "network 2 has no rule"
-    );
+    assert!(!ping_ok(&lab.b, NODE), "network 2 has no rule");
     // The pod has a route into the pool, so only the ruleset can stop these.
-    assert!(
-        !lab.pod.succeeds(&["ping", "-c1", "-W1", A]),
-        "nothing opens into a peer"
-    );
+    assert!(!ping_ok(&lab.pod, A), "nothing opens into a peer");
     assert!(!tcp_ok(&lab.pod, A, 7000), "nothing opens into a peer");
 }
 

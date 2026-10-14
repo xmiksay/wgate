@@ -4,10 +4,12 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::time::Instant;
 
 use axum::http::{Method, StatusCode};
-use common::{HUB_SERVICES, NODE, World, id, ping_ok, tcp_ok, wg};
+use common::netns::{ping_ok, tcp_ok};
+use common::stream::{assert_alive, assert_cut, stream};
+use common::{HUB_SERVICES, NODE, World, id, nets, wg};
 use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -65,9 +67,7 @@ async fn external_rights_snat_and_hub_services() {
         Some("10.50.0.2/32"),
         "{config}"
     );
-    let want: BTreeSet<String> = ["10.50.0.1/32", "172.16.16.1/32", "172.19.9.11/32"]
-        .map(String::from)
-        .into();
+    let want = nets(&["10.50.0.1/32", "172.16.16.1/32", "172.19.9.11/32"]);
     assert_eq!(wg::allowed_ips(&config), want, "{config}");
     let h = w.host("laptop", &config);
 
@@ -84,8 +84,13 @@ async fn external_rights_snat_and_hub_services() {
     assert!(!tcp_ok(&h.ns, HUB_SERVICES, 22), "but not the tenant's");
     assert!(!tcp_ok(&h.ns, NODE, 8080), "no rule for the node's 8080");
 
-    // Removing the rule takes the right away at once.
-    w.admin.delete(&format!("/rules/{api}")).await;
+    // Removing the rule takes the right away at once, from a live connection too:
+    // no conntrack shortcut keeps it.
+    let live = stream(&h.ns, HUB_SERVICES, 6443);
+    assert_alive(&live, "the API stream");
+    let (status, v) = w.admin.delete(&format!("/rules/{api}")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{v}");
+    assert_cut(&live, Instant::now(), "the API stream");
     w.settle().await;
     assert!(!tcp_ok(&h.ns, HUB_SERVICES, 6443), "the rule is gone");
     assert!(ping_ok(&h.ns, NODE), "the other rule stays");
