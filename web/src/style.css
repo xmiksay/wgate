@@ -1,1 +1,20 @@
 @import 'tailwindcss';
+
+@layer components {
+  .input {
+    @apply w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm
+      focus:border-sky-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900;
+  }
+
+  .link {
+    @apply text-sky-700 hover:underline dark:text-sky-400;
+  }
+
+  .mono {
+    @apply font-mono text-xs;
+  }
+
+  .muted {
+    @apply text-sm text-slate-500 dark:text-slate-400;
+  }
+}

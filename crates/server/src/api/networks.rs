@@ -102,7 +102,7 @@ async fn network_out(s: &AppState, n: network::Model) -> Result<Network, ApiErro
     })
 }
 
-#[utoipa::path(get, path = "/networks", params(NetworkFilter), responses((status = 200, body = [Network])))]
+#[utoipa::path(get, path = "/networks", operation_id = "list_networks", params(NetworkFilter), responses((status = 200, body = [Network])))]
 pub async fn list(
     State(s): State<AppState>,
     actor: Actor,
@@ -122,7 +122,7 @@ pub async fn list(
     Ok(Json(out))
 }
 
-#[utoipa::path(get, path = "/networks/{id}", responses((status = 200, body = Network)))]
+#[utoipa::path(get, path = "/networks/{id}", operation_id = "get_network", responses((status = 200, body = Network)))]
 pub async fn get(
     State(s): State<AppState>,
     actor: Actor,
@@ -137,7 +137,7 @@ pub async fn get(
 }
 
 /// Inside one of its tenant's blocks; slug, range and port are the network's for good.
-#[utoipa::path(post, path = "/networks", request_body = NetworkCreate, responses((status = 201, body = Network)))]
+#[utoipa::path(post, path = "/networks", operation_id = "create_network", request_body = NetworkCreate, responses((status = 201, body = Network)))]
 pub async fn create(
     State(s): State<AppState>,
     actor: Actor,
@@ -178,7 +178,7 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(network_out(&s, n).await?)))
 }
 
-#[utoipa::path(patch, path = "/networks/{id}", request_body = NetworkUpdate, responses((status = 200, body = Network)))]
+#[utoipa::path(patch, path = "/networks/{id}", operation_id = "update_network", request_body = NetworkUpdate, responses((status = 200, body = Network)))]
 pub async fn update(
     State(s): State<AppState>,
     actor: Actor,
@@ -218,7 +218,7 @@ pub async fn update(
 }
 
 /// Takes the network's peers, routes, rules, federations and grants along.
-#[utoipa::path(delete, path = "/networks/{id}", responses((status = 204)))]
+#[utoipa::path(delete, path = "/networks/{id}", operation_id = "remove_network", responses((status = 204)))]
 pub async fn remove(
     State(s): State<AppState>,
     actor: Actor,

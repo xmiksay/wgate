@@ -29,7 +29,7 @@ build: web ## Debug build of the whole workspace
 	cargo build
 
 .PHONY: run-server
-run-server: web ## Run the portal (WGATE_CONFIG or /etc/wgate/server.toml)
+run-server: web ## Run the portal (WGATE_SERVER_CONFIG or /etc/wgate/server.toml)
 	cargo run -p wgate -- server
 
 .PHONY: migrate
@@ -42,10 +42,10 @@ run-agent: ## Run the agent as root (needs CAP_NET_ADMIN)
 	$(DOTENV) sudo -E target/debug/wgate agent
 
 .PHONY: lint
-lint: ## clippy -D warnings, rustfmt check, eslint, vue-tsc
+lint: ## clippy -D warnings, rustfmt check, eslint, vue-tsc, API types up to date
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo fmt --all --check
-	cd web && $(NVM) npm run lint && npm run typecheck
+	cd web && $(NVM) npm run lint && npm run typecheck && npm run api:check
 
 .PHONY: fmt
 fmt: ## Format Rust sources
@@ -64,9 +64,10 @@ test-int: ## Rust integration tests (tests/; netns ones are #[ignore]d; db ones 
 	cargo test --workspace --test '*' -- --test-threads=4
 
 .PHONY: golden
-golden: ## Rewrite golden files (core outputs, docs/openapi.json) — review the diff!
+golden: ## Rewrite golden files (core outputs, docs/openapi.json + its TS types) — review the diff!
 	UPDATE_GOLDEN=1 cargo test -p wgate-core --lib
 	UPDATE_GOLDEN=1 cargo test -p wgate-server --test openapi
+	cd web && $(NVM) npm run api:gen
 
 # Test binaries are built as the user and only executed under sudo, so target/
 # stays user-owned.

@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint'
 
 // `no-undef` is left to vue-tsc, which knows the DOM globals from tsconfig `lib`.
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'src/api/schema.d.ts'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],

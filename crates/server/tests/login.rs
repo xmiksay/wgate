@@ -10,7 +10,14 @@ use tower::ServiceExt;
 
 /// `/auth/login`, then the provider's answer at `/auth/callback`: the session cookie
 /// (or the refusal's status).
-async fn log_in(app: &axum::Router, idp: &idp::Idp, who: Next) -> Result<String, StatusCode> {
+/// Where a callback sent the browser: the refusal's reason, if it was one.
+fn refusal(res: &axum::response::Response) -> Option<String> {
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let to = res.headers()[header::LOCATION].to_str().unwrap();
+    to.strip_prefix("/login?error=").map(str::to_owned)
+}
+
+async fn log_in(app: &axum::Router, idp: &idp::Idp, who: Next) -> Result<String, String> {
     let res = app
         .clone()
         .oneshot(Request::get("/auth/login").body(Body::empty()).unwrap())
@@ -45,11 +52,14 @@ async fn log_in(app: &axum::Router, idp: &idp::Idp, who: Next) -> Result<String,
     };
     // Someone else's browser (no login cookie, or another login's) gets nowhere.
     for other in [None, Some("wgate_login=another")] {
-        assert_eq!(get(other).await.unwrap().status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            refusal(&get(other).await.unwrap()).as_deref(),
+            Some("expired")
+        );
     }
     let res = get(Some(&started)).await.unwrap();
-    if res.status() != StatusCode::SEE_OTHER {
-        return Err(res.status());
+    if let Some(why) = refusal(&res) {
+        return Err(why);
     }
     let cookies: Vec<&str> = res
         .headers()
@@ -140,7 +150,7 @@ async fn a_global_admin_logs_in_and_their_subject_is_pinned() {
     // The same email under another subject is someone else.
     assert_eq!(
         log_in(&e.app, &idp, who("sub-2", "admin@example.org", true)).await,
-        Err(StatusCode::FORBIDDEN)
+        Err("forbidden".into())
     );
 }
 
@@ -153,11 +163,11 @@ async fn unverified_emails_and_strangers_are_refused() {
         .unwrap();
     assert_eq!(
         log_in(&e.app, &idp, who("sub-1", "admin@example.org", false)).await,
-        Err(StatusCode::FORBIDDEN)
+        Err("forbidden".into())
     );
     assert_eq!(
         log_in(&e.app, &idp, who("sub-9", "nobody@example.org", true)).await,
-        Err(StatusCode::FORBIDDEN)
+        Err("forbidden".into())
     );
     // A login started more than 10 minutes ago, whatever the browser kept.
     use base64::Engine;
@@ -176,7 +186,7 @@ async fn unverified_emails_and_strangers_are_refused() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(refusal(&res).as_deref(), Some("expired"));
     // Without a session: not signed in.
     assert_eq!(
         session_role(&e.app, "wgate_session=forged").await,

@@ -16,3 +16,16 @@ fn the_committed_spec_matches_the_code() {
         "docs/openapi.json is stale: run `make golden`"
     );
 }
+
+/// Generated clients key operations by id: two alike would collapse into one.
+#[test]
+fn operation_ids_are_unique() {
+    let spec = serde_json::to_value(wgate_server::openapi()).unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    for ops in spec["paths"].as_object().unwrap().values() {
+        for op in ops.as_object().unwrap().values() {
+            let id = op["operationId"].as_str().expect("an operationId");
+            assert!(seen.insert(id.to_owned()), "operationId {id} twice");
+        }
+    }
+}

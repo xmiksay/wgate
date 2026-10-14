@@ -131,7 +131,7 @@ async fn device_managed<C: ConnectionTrait>(
     }
 }
 
-#[utoipa::path(get, path = "/peers", params(PeerFilter), responses((status = 200, body = [Peer])))]
+#[utoipa::path(get, path = "/peers", operation_id = "list_peers", params(PeerFilter), responses((status = 200, body = [Peer])))]
 pub async fn list(
     State(s): State<AppState>,
     actor: Actor,
@@ -162,7 +162,7 @@ pub async fn list(
     Ok(Json(out))
 }
 
-#[utoipa::path(get, path = "/peers/{id}", responses((status = 200, body = Peer)))]
+#[utoipa::path(get, path = "/peers/{id}", operation_id = "get_peer", responses((status = 200, body = Peer)))]
 pub async fn get(
     State(s): State<AppState>,
     actor: Actor,
@@ -172,7 +172,7 @@ pub async fn get(
     Ok(Json(peer_out(&s.db, p).await?))
 }
 
-#[utoipa::path(post, path = "/peers", request_body = PeerCreate, responses((status = 201, body = PeerCreated)))]
+#[utoipa::path(post, path = "/peers", operation_id = "create_peer", request_body = PeerCreate, responses((status = 201, body = PeerCreated)))]
 pub async fn create(
     State(s): State<AppState>,
     actor: Actor,
@@ -316,7 +316,7 @@ pub async fn revoke(
     Ok(Json(peer_out(&s.db, p).await?))
 }
 
-#[utoipa::path(delete, path = "/peers/{id}", responses((status = 204)))]
+#[utoipa::path(delete, path = "/peers/{id}", operation_id = "remove_peer", responses((status = 204)))]
 pub async fn remove(
     State(s): State<AppState>,
     actor: Actor,

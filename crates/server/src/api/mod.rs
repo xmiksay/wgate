@@ -93,6 +93,8 @@ pub fn router() -> Router<AppState> {
         .route("/peers/{id}/revoke", post(peers::revoke))
         .route("/peers/{id}/routes", post(routes::add_route))
         .route("/routes/{id}", delete(routes::remove_route))
+        // An unknown API path is the API's 404, never the UI's index.html.
+        .fallback(async || ApiError::NotFound)
 }
 
 /// A write: READ COMMITTED (the schema refuses state writes at any other level).

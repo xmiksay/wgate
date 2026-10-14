@@ -1,4 +1,4 @@
-//! The portal: REST API (`/api/v1`) and the global admins' OIDC login. Unprivileged:
+//! The portal: REST API (`/api/v1`), the global admins' OIDC login and the embedded UI. Unprivileged:
 //! it only writes the database; the agent applies what changed.
 
 mod api;
@@ -7,6 +7,7 @@ mod auth;
 pub mod config;
 mod error;
 mod state;
+mod ui;
 mod wgkey;
 
 use anyhow::Context;
@@ -25,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/callback", get(auth::oidc::callback))
         .route("/auth/logout", post(auth::oidc::logout))
         .nest("/api/v1", api::router())
+        .fallback(ui::serve)
         .with_state(state)
 }
 

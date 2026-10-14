@@ -79,7 +79,7 @@ fn check_role(role: &str, tenant: Option<i64>) -> Result<(), ApiError> {
     }
 }
 
-#[utoipa::path(get, path = "/users", params(UserFilter), responses((status = 200, body = [User])))]
+#[utoipa::path(get, path = "/users", operation_id = "list_users", params(UserFilter), responses((status = 200, body = [User])))]
 pub async fn list(
     State(s): State<AppState>,
     actor: Actor,
@@ -97,7 +97,7 @@ pub async fn list(
     ))
 }
 
-#[utoipa::path(post, path = "/users", request_body = UserCreate, responses((status = 201, body = User)))]
+#[utoipa::path(post, path = "/users", operation_id = "create_user", request_body = UserCreate, responses((status = 201, body = User)))]
 pub async fn create(
     State(s): State<AppState>,
     actor: Actor,
@@ -126,7 +126,7 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(u.into())))
 }
 
-#[utoipa::path(patch, path = "/users/{id}", request_body = UserUpdate, responses((status = 200, body = User)))]
+#[utoipa::path(patch, path = "/users/{id}", operation_id = "update_user", request_body = UserUpdate, responses((status = 200, body = User)))]
 pub async fn update(
     State(s): State<AppState>,
     actor: Actor,
@@ -165,7 +165,7 @@ pub async fn update(
 }
 
 /// Takes the user's devices and peers along.
-#[utoipa::path(delete, path = "/users/{id}", responses((status = 204)))]
+#[utoipa::path(delete, path = "/users/{id}", operation_id = "remove_user", responses((status = 204)))]
 pub async fn remove(
     State(s): State<AppState>,
     actor: Actor,
