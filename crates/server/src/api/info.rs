@@ -178,6 +178,12 @@ pub async fn free_range(
     super::tenants::tenant_exists(&s.db, id).await?;
     let mut blocks = tenant_block::Entity::find().filter(tenant_block::Column::TenantId.eq(id));
     if let Some(block) = q.block_id {
+        // Someone else's block, or none at all: a 404, not "nothing free".
+        tenant_block::Entity::find_by_id(block)
+            .filter(tenant_block::Column::TenantId.eq(id))
+            .one(&s.db)
+            .await?
+            .ok_or(ApiError::NotFound)?;
         blocks = blocks.filter(tenant_block::Column::Id.eq(block));
     }
     let blocks: Vec<Ipv4Net> = blocks

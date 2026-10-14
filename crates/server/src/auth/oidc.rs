@@ -158,6 +158,9 @@ pub async fn callback(
         return refuse(jar, "expired");
     };
     let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path(LOGIN_COOKIE_PATH));
+    if !(0..=LOGIN_TTL_SECS).contains(&(unix_now() - pending.started)) {
+        return refuse(jar, "expired");
+    }
     if let Some(error) = &q.error {
         let error: String = error.chars().take(64).collect();
         tracing::warn!(error = ?error, "login refused by the provider");
@@ -179,13 +182,12 @@ pub async fn callback(
     }
 }
 
-/// This browser's login, if `state` is its and it is not stale.
+/// This browser's login, if `state` is its (stale or not).
 fn pending_login(jar: &CookieJar, state: Option<&str>) -> Option<Pending> {
     jar.get(LOGIN_COOKIE)
         .and_then(|c| URL_SAFE_NO_PAD.decode(c.value()).ok())
         .and_then(|b| serde_json::from_slice::<Pending>(&b).ok())
         .filter(|p| state.is_some_and(|s| bool::from(p.state.as_bytes().ct_eq(s.as_bytes()))))
-        .filter(|p| (0..=LOGIN_TTL_SECS).contains(&(unix_now() - p.started)))
 }
 
 async fn complete(

@@ -84,7 +84,7 @@ watch(
   [cidr, () => props.blocks],
   () => {
     const holder = props.blocks.find((b) => cidrContains(b.cidr, cidr.value)) ?? props.blocks[0]
-    block.offer(holder?.id ?? null, block.ticket())
+    block.offer(holder?.id ?? null)
   },
   { immediate: true },
 )
@@ -192,6 +192,7 @@ async function create() {
           v-model="cidr"
           class="input mono"
           required
+          @input="range.touch()"
         >
       </UiField>
       <UiField
@@ -202,6 +203,7 @@ async function create() {
           v-model="blockId"
           class="input"
           required
+          @change="block.touch()"
         >
           <option
             v-for="b in blocks"
@@ -223,6 +225,7 @@ async function create() {
           max="65535"
           class="input"
           required
+          @input="portField.touch()"
         >
       </UiField>
       <UiField

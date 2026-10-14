@@ -22,8 +22,10 @@ deps: ## Install web dependencies
 
 # Built only when its sources changed: a fresh web/dist would make build.rs re-stage it
 # and the server recompile.
-WEB_SRC := $(shell find web/src web/public -type f 2>/dev/null) web/index.html \
-	web/package-lock.json web/vite.config.ts $(wildcard web/tsconfig*.json)
+# Directories too: a deleted or renamed file changes only its directory's mtime.
+WEB_SRC := $(shell find web/src web/public web/scripts 2>/dev/null) web/index.html \
+	web/package.json web/package-lock.json web/.nvmrc web/vite.config.ts \
+	$(wildcard web/tsconfig*.json)
 
 .PHONY: web
 web: web/dist/index.html ## Build the Vue UI into web/dist (when its sources changed)
