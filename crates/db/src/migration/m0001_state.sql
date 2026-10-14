@@ -78,11 +78,13 @@ BEGIN
     -- table, whether inserting/deleting a row changes the state by itself, and the
     -- columns the state depends on. Users, devices and tenants matter only through
     -- their peers and networks, whose own rows (and cascades) count; names,
-    -- comments, emails and roles never wake the agent.
+    -- comments, emails and roles never wake the agent. A network's dns does not matter
+    -- to the agent but to client configs: a key rotation commits only on the revision
+    -- its config was rendered from.
     FOREACH spec SLICE 1 IN ARRAY ARRAY[
         ['tenant', 'no', 'disabled_at'],
         ['tenant_block', 'yes', ''],
-        ['network', 'yes', 'port, mesh, disabled_at'],
+        ['network', 'yes', 'port, mesh, dns, disabled_at'],
         ['app_user', 'no', 'disabled_at'],
         ['device', 'no', ''],
         ['peer', 'yes', 'revoked_at, public_key'],

@@ -64,8 +64,13 @@ impl Config {
 
     pub fn check(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.public_url.path() == "/" && self.public_url.query().is_none(),
-            "public_url must be an origin without a path (the portal serves at the root)"
+            self.public_url.path() == "/"
+                && self.public_url.query().is_none()
+                && self.public_url.fragment().is_none()
+                && self.public_url.username().is_empty()
+                && self.public_url.password().is_none(),
+            "public_url must be an origin, without a path or credentials (the portal \
+             serves at the root)"
         );
         Ok(())
     }
@@ -98,6 +103,8 @@ mod tests {
         c.check().unwrap();
         let mut prefixed = c.clone();
         prefixed.public_url = "https://example.org/wgate/".parse().unwrap();
+        assert!(prefixed.check().is_err());
+        prefixed.public_url = "https://user:pw@example.org/".parse().unwrap();
         assert!(prefixed.check().is_err());
         assert!(!format!("{c:?}").contains(&c.admin_oidc.client_secret));
         let example = include_str!("../server.example.toml");

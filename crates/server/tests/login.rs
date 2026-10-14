@@ -159,6 +159,24 @@ async fn unverified_emails_and_strangers_are_refused() {
         log_in(&e.app, &idp, who("sub-9", "nobody@example.org", true)).await,
         Err(StatusCode::FORBIDDEN)
     );
+    // A login started more than 10 minutes ago, whatever the browser kept.
+    use base64::Engine;
+    let stale = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::json!({ "started": 0, "state": "s", "nonce": "n", "verifier": "v" })
+            .to_string(),
+    );
+    let res = e
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/auth/callback?code=c&state=s")
+                .header(header::COOKIE, format!("wgate_login={stale}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     // Without a session: not signed in.
     assert_eq!(
         session_role(&e.app, "wgate_session=forged").await,

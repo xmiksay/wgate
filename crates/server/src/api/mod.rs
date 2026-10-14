@@ -96,7 +96,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// A write: READ COMMITTED (the schema refuses state writes at any other level).
-async fn begin(db: &DatabaseConnection) -> Result<DatabaseTransaction, ApiError> {
+pub(crate) async fn begin(db: &DatabaseConnection) -> Result<DatabaseTransaction, ApiError> {
     Ok(db
         .begin_with_config(Some(IsolationLevel::ReadCommitted), None)
         .await?)

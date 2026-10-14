@@ -250,9 +250,20 @@ pub async fn config(
     let config = clientconf::render(&s, id, private, &mut warnings).await?;
     if let (Some(pair), Some(rendered)) = (&pair, &config) {
         let txn = begin(&s.db).await?;
+        audit::record(
+            &txn,
+            Some(actor.user_id),
+            "peer.rotate",
+            format!("peer/{id}"),
+            json!({ "public_key": pair.public }),
+        )
+        .await?;
         // Only over the key and the state this download started from: of two
         // concurrent downloads the later one learns that the earlier one's config is
-        // the live one, and a change meanwhile (rights, the hub's key) is rendered anew.
+        // the live one, and a change meanwhile (rights, DNS, the hub's key) is
+        // rendered anew. The check is the last statement before the commit: only a
+        // change committing in between can slip past (READ COMMITTED; locking the
+        // revision row would deadlock against every writer's commit trigger).
         let swapped = txn
             .execute_raw(Statement::from_sql_and_values(
                 DbBackend::Postgres,
@@ -276,14 +287,6 @@ pub async fn config(
                 "the peer or its rights changed meanwhile; download it again".into(),
             ));
         }
-        audit::record(
-            &txn,
-            Some(actor.user_id),
-            "peer.rotate",
-            format!("peer/{id}"),
-            json!({ "public_key": pair.public }),
-        )
-        .await?;
         txn.commit().await?;
     }
     Ok(Json(ConfigOut { config, warnings }))
