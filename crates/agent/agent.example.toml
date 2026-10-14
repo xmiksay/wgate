@@ -3,7 +3,7 @@
 database_url = "postgres://wgate_agent:secret@172.19.9.2:5432/wgate"
 pool = ["10.50.0.0/16"]
 routed_space = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
-reserved = ["172.16.16.0/24"]
+reserved = ["172.19.9.0/24", "172.16.16.0/24"]
 snat_source = "172.19.9.10"
 node_cidrs = ["172.19.9.0/24"]
 keys_dir = "/var/lib/wgate/keys"

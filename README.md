@@ -53,7 +53,8 @@ systemd unit is `deploy/wgate-agent.service`. The server runs unprivileged
 (`deploy/wgate-server.service`); its API is described in `docs/openapi.json` (also
 served at `/api/v1/openapi.json`).
 
-See `.env.example`. `make migrate` applies the migrations with it.
+See `.env.example`. `make migrate` applies the migrations with it. A host set up by hand
+(test hub): [`docs/install.md`](docs/install.md).
 
 ## Release
 
