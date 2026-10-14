@@ -172,14 +172,14 @@ pub async fn callback(
         .await;
     let response = match exchange {
         Ok(r) => r,
-        // The provider's own refusal (a made-up code, say) says nothing about its
-        // endpoints: anyone can cause one, so it must not flush the cache.
-        Err(e @ RequestTokenError::ServerResponse(_)) => return Err(refused("token exchange", &e)),
-        Err(e) => {
-            // Unreachable or unintelligible: the provider may have moved its endpoints.
+        // Unreachable: the provider may have moved its endpoints. Anything it answered
+        // (a refused made-up code, in whatever shape) must not flush the cache: anyone
+        // can cause that.
+        Err(e @ RequestTokenError::Request(_)) => {
             state.oidc.forget().await;
             return Err(refused("token exchange", &e));
         }
+        Err(e) => return Err(refused("token exchange", &e)),
     };
     let id_token = response
         .id_token()
@@ -268,17 +268,15 @@ async fn global_admin(
 }
 
 /// `POST /auth/logout`: ends the session if it is still there and clears the cookie
-/// either way (a session that went idle must not leave its cookie behind). No CSRF
-/// token: the cookie is `SameSite=Lax`, so no other site can post with it.
+/// (also for a session that already went idle). A failure to end it is an error, not
+/// a quiet success: the session would live on behind the user's back. No CSRF token:
+/// the cookie is `SameSite=Lax`, so no other site can post with it.
 pub async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<(CookieJar, StatusCode), ApiError> {
-    if let Some(cookie) = jar.get(session::COOKIE)
-        && let Err(e) = end_session(&state, cookie.value()).await
-    {
-        // The cookie goes anyway; the row expires on its own.
-        tracing::warn!(error = %e, "logout: ending the session");
+    if let Some(cookie) = jar.get(session::COOKIE) {
+        end_session(&state, cookie.value()).await?;
     }
     Ok((
         jar.remove(Cookie::build(session::COOKIE).path("/")),
